@@ -3,7 +3,7 @@ from typing import Optional
 
 class UserCreate(BaseModel):
     username: str
-    email: EmailStr
+    email: str
     password: str
 
 class LoginRequest(BaseModel):
@@ -13,7 +13,7 @@ class LoginRequest(BaseModel):
 class UserResponse(BaseModel):
     id: int
     username: str
-    email: EmailStr
+    email: str
     role: str
     wallet_balance: float
     upi_id: Optional[str] = None
