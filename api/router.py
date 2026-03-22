@@ -1,0 +1,10 @@
+from fastapi import APIRouter
+from api import auth, users, tournaments, wallet, ws, admin
+
+api_router = APIRouter()
+api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(users.router, prefix="/users", tags=["users"])
+api_router.include_router(tournaments.router, prefix="/tournaments", tags=["tournaments"])
+api_router.include_router(wallet.router, prefix="/wallet", tags=["wallet"])
+api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
+api_router.include_router(ws.router, tags=["websockets"])
