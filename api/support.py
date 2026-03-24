@@ -61,6 +61,27 @@ def get_my_chat(
         } for m in messages
     ]
 
+@router.get("/admin/sessions/{session_id}/messages")
+def get_session_messages(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Admin only: get any session messages"""
+    if current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    messages = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.timestamp.asc()).all()
+    return [
+        {
+            "id": m.id,
+            "content": m.content,
+            "sender_id": m.sender_id,
+            "timestamp": m.timestamp,
+            "is_admin": m.is_admin
+        } for m in messages
+    ]
+
 @router.post("/send")
 def send_message(
     message: str = Query(...),
