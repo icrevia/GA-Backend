@@ -56,7 +56,11 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
         print(f"DEBUG: User found! Role: {user.role}")
 
     # 2. Verify password
-    if not user or not verify_password(login_data.password, user.hashed_password):
+    is_password_valid = verify_password(login_data.password, user.hashed_password)
+    print(f"DEBUG: Password Valid for {user.username}: {is_password_valid}")
+
+    if not user or not is_password_valid:
+        print(f"DEBUG: LOGIN FAILED for {login_data.email}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email/username or password",
