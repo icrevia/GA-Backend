@@ -22,27 +22,6 @@ app.add_middleware(
 # Initialize DB — creates tables that don't exist, never drops
 Base.metadata.create_all(bind=engine)
 
-# EMERGENCY: Admin Password Reset
-from core.database import SessionLocal
-from core.security import hash_password
-from models.user import User
-
-def reset_admin():
-    db = SessionLocal()
-    try:
-        # Check for both zxtni.app and zxtni.in
-        admin = db.query(User).filter(User.role == "ADMIN").first()
-        if admin:
-            admin.hashed_password = hash_password("admin123")
-            db.commit()
-            print(f"EMERGENCY: {admin.email} password reset to 'admin123'")
-    except Exception as e:
-        print(f"RESET ERROR: {e}")
-    finally:
-        db.close()
-
-reset_admin()
-
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")

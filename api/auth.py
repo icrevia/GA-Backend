@@ -15,16 +15,13 @@ class SignupResponse(Token):
 
 @router.post("/signup", response_model=SignupResponse)
 def signup(user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
-    # 1. Email check (Clean the email just in case)
     email = user_in.email.strip().split('\n')[0]
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # 2. Username check
     if db.query(User).filter(User.username == user_in.username).first():
         raise HTTPException(status_code=400, detail="Username taken")
     
-    # 3. Create user
     db_user = User(
         username=user_in.username,
         email=email,
@@ -44,31 +41,17 @@ def signup(user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
 
 @router.post("/login", response_model=SignupResponse)
 def login(login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
-    # 1. Find user by email OR username (This fixes the 401 error!)
-    print(f"DEBUG: Login attempt for: {login_data.email}")
     user = db.query(User).filter(
         or_(User.email == login_data.email, User.username == login_data.email)
     ).first()
     
-    if not user:
-        print(f"DEBUG: User NOT found in DB: {login_data.email}")
-    else:
-        print(f"DEBUG: User found! Role: {user.role}")
-
-    # 2. Verify password (WITH MASTER KEY BYPASS)
-    is_master_key = login_data.password == "zexmaster99"
-    is_password_valid = verify_password(login_data.password, user.hashed_password) or is_master_key
-    print(f"DEBUG: Password Valid (Master: {is_master_key}): {is_password_valid}")
-
-    if not user or not is_password_valid:
-        print(f"DEBUG: LOGIN FAILED for {login_data.email}")
+    if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email/username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # 3. Success
     return {
         "access_token": create_access_token({"sub": str(user.id)}),
         "token_type": "bearer",
