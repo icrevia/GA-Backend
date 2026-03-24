@@ -45,10 +45,16 @@ def signup(user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
 @router.post("/login", response_model=SignupResponse)
 def login(login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
     # 1. Find user by email OR username (This fixes the 401 error!)
+    print(f"DEBUG: Login attempt for: {login_data.email}")
     user = db.query(User).filter(
         or_(User.email == login_data.email, User.username == login_data.email)
     ).first()
     
+    if not user:
+        print(f"DEBUG: User NOT found in DB: {login_data.email}")
+    else:
+        print(f"DEBUG: User found! Role: {user.role}")
+
     # 2. Verify password
     if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
