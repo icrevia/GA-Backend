@@ -270,7 +270,7 @@ def search_users(
         
     return users
 
-@router.post("/users/{user_id}/status")
+@router.put("/users/{user_id}/status")
 def update_user_status(
     user_id: int,
     is_active: bool,
