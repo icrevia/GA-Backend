@@ -294,3 +294,38 @@ def send_push_notification(
 ):
     return {"message": f"Notification '{data.title}' sent to topic: {data.topic}"}
 
+@router.get("/transactions")
+def list_all_transactions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    txs = db.query(WalletTransaction).order_by(WalletTransaction.created_at.desc()).limit(100).all()
+    res = []
+    for tx in txs:
+        u = db.query(User).filter(User.id == tx.user_id).first()
+        res.append({
+            "id": tx.id,
+            "user_id": tx.user_id,
+            "username": u.username if u else "Unknown",
+            "amount": tx.amount,
+            "type": tx.transaction_type,
+            "status": tx.status,
+            "created_at": tx.created_at,
+        })
+    return res
+
+@router.get("/leaderboard")
+def get_leaderboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    users = db.query(User).filter(User.role == 'USER').order_by(User.wallet_balance.desc()).limit(50).all()
+    return [{"id": u.id, "username": u.username, "balance": u.wallet_balance, "is_active": u.is_active} for u in users]
+
+@router.get("/banned_users")
+def get_banned_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    users = db.query(User).filter(User.is_active == False).all()
+    return [{"id": u.id, "username": u.username, "email": u.email, "balance": u.wallet_balance} for u in users]
