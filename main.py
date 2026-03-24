@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.config import settings
 from api.router import api_router
 
-from core.database import engine, Base
+from core.database import engine, Base, SessionLocal
 from models import user, tournament, wallet, support 
 
 app = FastAPI(
@@ -33,6 +33,16 @@ app.add_middleware(
 )
 
 # Initialize DB
+from sqlalchemy import text
+db = SessionLocal()
+try:
+    # Force refresh chat tables if they exist with wrong schema
+    db.execute(text("DROP TABLE IF EXISTS chat_messages CASCADE;"))
+    db.execute(text("DROP TABLE IF EXISTS chat_sessions CASCADE;"))
+    db.commit()
+finally:
+    db.close()
+
 Base.metadata.create_all(bind=engine)
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
