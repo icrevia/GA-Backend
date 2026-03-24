@@ -39,11 +39,11 @@ Base.metadata.create_all(bind=engine)
 # Admin Recovery Block
 db = SessionLocal()
 try:
-    existing_admin = db.query(user.User).filter(user.User.role == "ADMIN").first()
+    existing_admin = db.query(user.User).filter(user.User.email == "admin@zxtni.app").first()
     if not existing_admin:
         new_admin = user.User(
             username="Admin",
-            email="admin@zxtni.in",
+            email="admin@zxtni.app",
             hashed_password=hash_password("admin123"), # Default password
             role="ADMIN",
             is_active=True
