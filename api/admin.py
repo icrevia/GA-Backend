@@ -11,6 +11,13 @@ from models.config import SystemConfig
 
 router = APIRouter()
 
+@router.get("/tournaments")
+def list_tournaments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    return db.query(Tournament).order_by(Tournament.created_at.desc()).all()
+
 @router.get("/stats")
 def get_admin_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     total_users = db.query(User).count()
