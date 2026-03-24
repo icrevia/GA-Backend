@@ -17,3 +17,6 @@ class NotificationSendRequest(BaseModel):
     title: str
     body: str
     topic: str = "all"
+
+class UserStatusUpdate(BaseModel):
+    is_active: bool

@@ -9,7 +9,7 @@ from models.tournament import Tournament
 from models.wallet import WalletTransaction
 from models.config import SystemConfig
 
-from schemas.admin import SystemConfigUpdate, NotificationSendRequest
+from schemas.admin import SystemConfigUpdate, NotificationSendRequest, UserStatusUpdate
 
 router = APIRouter()
 
@@ -252,17 +252,17 @@ def search_users(
 @router.put("/users/{user_id}/status")
 def update_user_status(
     user_id: int,
-    is_active: bool,
+    status: UserStatusUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    user.is_active = is_active
+    user.is_active = status.is_active
     db.add(user)
     db.commit()
-    status_str = "Active" if is_active else "Banned"
+    status_str = "Active" if status.is_active else "Banned"
     return {"message": f"User {user.username} is now {status_str}"}
 
 @router.get("/config")
