@@ -4,7 +4,7 @@ from core.config import settings
 from api.router import api_router
 
 from core.database import engine, Base
-from models import user, tournament, wallet 
+from models import user, tournament, wallet, support 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
