@@ -28,8 +28,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize DB without destructive blocks
+# Initialize DB
 Base.metadata.create_all(bind=engine)
+
+# Re-ensure admin exists safely
+from core.security import get_password_hash
+db = SessionLocal()
+try:
+    admin = db.query(user.User).filter(user.User.email == "admin@zxtni.app").first()
+    if not admin:
+        admin = user.User(
+            email="admin@zxtni.app",
+            username="admin",
+            hashed_password=get_password_hash("admin123"), # Change ASAP
+            role="ADMIN",
+            is_active=True
+        )
+        db.add(admin)
+        db.commit()
+        print("DEBUG: Fixed missing admin account")
+except:
+    pass
+finally:
+    db.close()
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
