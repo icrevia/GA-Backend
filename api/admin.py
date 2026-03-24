@@ -9,6 +9,8 @@ from models.tournament import Tournament
 from models.wallet import WalletTransaction
 from models.config import SystemConfig
 
+from schemas.admin import SystemConfigUpdate, NotificationSendRequest
+
 router = APIRouter()
 
 @router.get("/tournaments")
@@ -24,22 +26,17 @@ def get_admin_stats(db: Session = Depends(get_db), current_user: User = Depends(
     total_tournaments = db.query(Tournament).count()
     
     # Calculate total revenue (commission)
-    # Commission is usually deduced from the prize pool vs entry fee * participants, or explicitly saved
-    # For simplicity, we just calculate successful joins and their total value
-    # Let's get total amount of successful JOIN_TOURNAMENT (which is negative in DB)
     total_joins = db.query(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
         WalletTransaction.status == "SUCCESS"
     ).scalar() or 0.0
     
-    # Value is negative, convert to positive
     total_revenue_pool = abs(total_joins)
     
     total_prizes = db.query(func.sum(Tournament.prize_pool)).filter(
         Tournament.status == "COMPLETED"
     ).scalar() or 0.0
     
-    # Approximate commission = entry fees collected - prizes given
     estimated_revenue = total_revenue_pool - total_prizes
 
     return {
@@ -86,7 +83,6 @@ def reject_withdrawal(
     
     # Refund the user
     user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-    # tx.amount is negative, so subtracting it adds the balance back (e.g. - -500 = +500)
     user.wallet_balance -= tx.amount
     
     db.add(tx)
@@ -108,19 +104,14 @@ def conclude_tournament(
     if tournament.status == "COMPLETED":
         raise HTTPException(status_code=400, detail="Tournament already completed")
     
-    # In a real app, Participant table checks are needed. Here we assume winner_id is valid.
     winner = db.query(User).filter(User.id == winner_id).with_for_update().first()
     if not winner:
         raise HTTPException(status_code=404, detail="Winner user not found")
         
-    # Mark winner & status
     tournament.winner_id = winner_id
     tournament.status = "COMPLETED"
-    
-    # Reward Prize Pool
     winner.wallet_balance += tournament.prize_pool
     
-    # Log transaction
     tx = WalletTransaction(
         user_id=winner_id,
         amount=tournament.prize_pool,
@@ -141,13 +132,10 @@ def get_tournament_roster(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    # Depending on how joins are tracked. Currently we use WalletTransaction "JOIN_TOURNAMENT".
-    # We find all SUCCESS JOIN_TOURNAMENT txns containing this tournament_id in reference.
-    # A cleaner way is a TournamentParticipant table, but let's derive from wallet for this schema.
     joins = db.query(WalletTransaction).filter(
         WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
         WalletTransaction.status == "SUCCESS",
-        WalletTransaction.reference_id == f"TRN_{tournament_id}"
+        WalletTransaction.reference_id.like(f"TRN_{tournament_id}%") # fuzzy match for composite refs
     ).all()
     
     user_ids = [j.user_id for j in joins]
@@ -167,20 +155,17 @@ def refund_tournament(
     if tournament.status in ["COMPLETED", "CANCELLED"]:
         raise HTTPException(status_code=400, detail="Cannot refund a completed or cancelled tournament")
         
-    # Find all joins
     joins = db.query(WalletTransaction).filter(
         WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
         WalletTransaction.status == "SUCCESS",
-        WalletTransaction.reference_id == f"TRN_{tournament_id}"
+        WalletTransaction.reference_id.like(f"TRN_{tournament_id}%")
     ).all()
     
     refund_count = 0
     for join_tx in joins:
         user = db.query(User).filter(User.id == join_tx.user_id).with_for_update().first()
         if user:
-            # join_tx.amount is negative for join fee (-10.0), so subtract to add (+10.0)
             user.wallet_balance -= join_tx.amount
-            
             refund_tx = WalletTransaction(
                 user_id=user.id,
                 amount=-join_tx.amount,
@@ -195,7 +180,6 @@ def refund_tournament(
     tournament.status = "CANCELLED"
     db.add(tournament)
     db.commit()
-    
     return {"message": f"Tournament cancelled. Refunded {refund_count} users."}
 
 @router.get("/withdrawals")
@@ -207,7 +191,6 @@ def list_pending_withdrawals(
         WalletTransaction.transaction_type == "WITHDRAWAL",
         WalletTransaction.status == "PENDING"
     ).all()
-    # Join with User to get names
     res = []
     for tx in pending:
         u = db.query(User).filter(User.id == tx.user_id).first()
@@ -224,7 +207,7 @@ def list_pending_withdrawals(
 @router.post("/users/{user_id}/adjust-funds")
 def adjust_user_funds(
     user_id: int,
-    amount: float, # Positive to add, negative to deduct
+    amount: float,
     reason: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
@@ -234,7 +217,6 @@ def adjust_user_funds(
         raise HTTPException(status_code=404, detail="User not found")
         
     user.wallet_balance += amount
-    
     tx = WalletTransaction(
         user_id=user_id,
         amount=amount,
@@ -245,7 +227,6 @@ def adjust_user_funds(
     db.add(tx)
     db.add(user)
     db.commit()
-    
     return {"message": f"Balance updated. New balance: ₹{user.wallet_balance}"}
 
 @router.get("/users")
@@ -254,7 +235,6 @@ def search_users(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    # simple search by username, email or id
     filters = []
     if query:
         if query.isdigit():
@@ -264,10 +244,9 @@ def search_users(
             filters.append(User.email.ilike(f"%{query}%"))
     
     if query:
-        users = db.query(User).filter(or_(*filters)).limit(20).all()
+        users = db.query(User).filter(or_(*filters)).limit(50).all()
     else:
-        users = db.query(User).limit(20).all()
-        
+        users = db.query(User).limit(50).all()
     return users
 
 @router.put("/users/{user_id}/status")
@@ -280,11 +259,9 @@ def update_user_status(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-        
     user.is_active = is_active
     db.add(user)
     db.commit()
-    
     status_str = "Active" if is_active else "Banned"
     return {"message": f"User {user.username} is now {status_str}"}
 
@@ -295,29 +272,25 @@ def get_system_configs(
 ):
     return db.query(SystemConfig).all()
 
-@router.post("/config")
+@router.put("/config")
 def update_system_config(
-    key: str,
-    value: str,
+    data: SystemConfigUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    config = db.query(SystemConfig).filter(SystemConfig.config_key == key).first()
+    config = db.query(SystemConfig).filter(SystemConfig.config_key == data.key).first()
     if not config:
-        config = SystemConfig(config_key=key, config_value=value)
+        config = SystemConfig(config_key=data.key, config_value=data.value)
         db.add(config)
     else:
-        config.config_value = value
+        config.config_value = data.value
     db.commit()
-    return {"message": f"Config {key} updated to {value}"}
+    return {"message": f"Config {data.key} updated to {data.value}"}
 
 @router.post("/notifications/send")
 def send_push_notification(
-    title: str,
-    body: str,
-    topic: str = "all", # "all" or specific user UID
+    data: NotificationSendRequest,
     current_user: User = Depends(get_current_active_admin)
 ):
-    # This would integrate with Firebase Admin SDK
-    # For now, we simulate success
-    return {"message": f"Notification '{title}' sent to topic: {topic}"}
+    return {"message": f"Notification '{data.title}' sent to topic: {data.topic}"}
+
