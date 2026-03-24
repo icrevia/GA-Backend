@@ -40,15 +40,21 @@ try:
         admin = user.User(
             email="admin@zxtni.app",
             username="admin",
-            hashed_password=hash_password("admin123"), # Change ASAP
+            hashed_password=hash_password("admin@123"), # Change ASAP
             role="ADMIN",
             is_active=True
         )
         db.add(admin)
         db.commit()
-        print("DEBUG: Fixed missing admin account")
-except:
-    pass
+    else:
+        # If exists but not admin, set it to admin
+        if admin.role != "ADMIN":
+            admin.role = "ADMIN"
+            admin.hashed_password = hash_password("admin@123")
+            db.add(admin)
+            db.commit()
+except Exception as e:
+    print(f"ADMIN RECOVERY ERROR: {e}")
 finally:
     db.close()
 
