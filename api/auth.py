@@ -41,22 +41,6 @@ def signup(user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
 
 @router.post("/login", response_model=SignupResponse)
 def login(login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
-    # HARDCODED ADMIN BYPASS
-    if login_data.email == "admin@zxtni.in" and login_data.password == "admin123":
-        # Create a mock admin user for the response
-        return {
-            "access_token": create_access_token({"sub": "admin_mock"}),
-            "token_type": "bearer",
-            "role": "ADMIN",
-            "user": {
-                "id": 9999,
-                "username": "Super Admin",
-                "email": "admin@zxtni.in",
-                "role": "ADMIN",
-                "wallet_balance": 0.0
-            }
-        }
-
     user = db.query(User).filter(
         or_(User.email == login_data.email, User.username == login_data.email)
     ).first()
