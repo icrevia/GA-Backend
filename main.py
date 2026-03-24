@@ -32,7 +32,7 @@ app.add_middleware(
 Base.metadata.create_all(bind=engine)
 
 # Re-ensure admin exists safely
-from core.security import get_password_hash
+from core.security import hash_password
 db = SessionLocal()
 try:
     admin = db.query(user.User).filter(user.User.email == "admin@zxtni.app").first()
@@ -40,7 +40,7 @@ try:
         admin = user.User(
             email="admin@zxtni.app",
             username="admin",
-            hashed_password=get_password_hash("admin123"), # Change ASAP
+            hashed_password=hash_password("admin123"), # Change ASAP
             role="ADMIN",
             is_active=True
         )
