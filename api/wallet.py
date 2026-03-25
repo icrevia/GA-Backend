@@ -152,6 +152,7 @@ async def payu_webhook(request: Request, db: Session = Depends(get_db)):
         user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
         user.wallet_balance += tx.amount
         db.add(user)
+    else:
         tx.status = "FAILED"
         
     db.add(tx)
@@ -166,9 +167,27 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
     status = form.get("status")
     
     if txnid:
-        # We just forcefully mark it FAILED if it comes through failure url or status is not success
-        # For success, we let the actual webhook do the database insertion strictly to avoid double crediting
-        if status != "success" or request.url.path.endswith("failure"):
+        # Full Secure Fallback Logic: Webhooks are often delayed. Wait or credit instantly based on SURL form data!
+        if status == "success" and not request.url.path.endswith("failure"):
+            amount = float(form.get("amount", 0))
+            productinfo = form.get("productinfo")
+            firstname = form.get("firstname")
+            email = form.get("email")
+            received_hash = form.get("hash")
+            
+            from services.payu import verify_payu_hash
+            if verify_payu_hash(txnid, amount, productinfo, firstname, email, status, received_hash):
+                # Lock and update immediately
+                tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).with_for_update().first()
+                if tx and tx.status == "PENDING":
+                    tx.status = "SUCCESS"
+                    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+                    user.wallet_balance += tx.amount
+                    db.add(tx)
+                    db.add(user)
+                    db.commit()
+        else:
+            # Force failure on cancellation or decline
             tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
             if tx and tx.status == "PENDING":
                 tx.status = "FAILED"
