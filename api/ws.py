@@ -66,7 +66,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
 
             msg_type = msg.get("type", "")
 
+            print(f"WS Signal: From={user_id} Type={msg_type} IsAdmin={is_admin}")
+
             if msg_type not in CALL_SIGNAL_TYPES:
+                print(f"WS Signal: Rejected Type={msg_type}")
                 continue
 
             if is_admin:
@@ -78,6 +81,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
             else:
                 # User → route to all admins, include caller info
                 msg["from_user_id"] = user_id
+                # Get username for convenience
+                db = SessionLocal()
+                user = db.query(User).filter(User.id == user_id).first()
+                msg["from_user_name"] = user.username if user else f"User #{user_id}"
+                db.close()
                 await manager.broadcast_to_admins(msg)
 
     except WebSocketDisconnect:
