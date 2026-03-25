@@ -18,6 +18,7 @@ class Tournament(Base):
     room_password = Column(String, nullable=True)
     
     status = Column(String, default="UPCOMING") # UPCOMING, LIVE, COMPLETED
+    match_type = Column(String, default="SOLO") # SOLO, DUO, SQUAD
     game_image_url = Column(String, nullable=True) # Banner image for the game
     winner_id = Column(Integer, nullable=True)
     

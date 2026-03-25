@@ -9,6 +9,7 @@ class TournamentBase(BaseModel):
     prize_pool: float
     commission_percentage: Optional[float] = 10.0
     match_time: datetime
+    match_type: str = "SOLO"
     game_image_url: Optional[str] = None
 
 class TournamentCreate(TournamentBase):
