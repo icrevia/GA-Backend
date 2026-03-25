@@ -53,8 +53,8 @@ def init_add_money(
     )
     
     # Example urls, usually App endpoints or deep links
-    surl = f"https://api.zexplay.com/api/v1/wallet/payu/success" 
-    furl = f"https://api.zexplay.com/api/v1/wallet/payu/failure"
+    surl = "https://web-production-051ba.up.railway.app/api/v1/wallet/payu/success" 
+    furl = "https://web-production-051ba.up.railway.app/api/v1/wallet/payu/failure"
     
     return {
         "txnid": txnid,
@@ -87,8 +87,8 @@ def payu_redirect(txnid: str, vpa: str | None = None, db: Session = Depends(get_
         email=user.email
     )
     
-    surl = "https://api.zexplay.com/api/v1/wallet/payu/success" 
-    furl = "https://api.zexplay.com/api/v1/wallet/payu/failure"
+    surl = "https://web-production-051ba.up.railway.app/api/v1/wallet/payu/success" 
+    furl = "https://web-production-051ba.up.railway.app/api/v1/wallet/payu/failure"
     
     seamless_fields = ""
     if vpa:
@@ -151,12 +151,37 @@ async def payu_webhook(request: Request, db: Session = Depends(get_db)):
         user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
         user.wallet_balance += tx.amount
         db.add(user)
-    else:
         tx.status = "FAILED"
         
     db.add(tx)
     db.commit()
     return {"message": "Webhook processed"}
+
+@router.post("/payu/success", response_class=HTMLResponse)
+@router.post("/payu/failure", response_class=HTMLResponse)
+async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
+    form = await request.form()
+    txnid = form.get("txnid")
+    status = form.get("status")
+    
+    if txnid:
+        # We just forcefully mark it FAILED if it comes through failure url or status is not success
+        # For success, we let the actual webhook do the database insertion strictly to avoid double crediting
+        if status != "success" or request.url.path.endswith("failure"):
+            tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
+            if tx and tx.status == "PENDING":
+                tx.status = "FAILED"
+                db.add(tx)
+                db.commit()
+                
+    # Return simple HTML to let the Android WebView gracefully detect the endpoint
+    bg_color = "#16A34A" if status == "success" else "#EF4444"
+    return HTMLResponse(f"""
+    <html><body style="background:#0D0E12; color:white; text-align:center; padding-top:50px;">
+        <h2 style="color:{bg_color};">{'Payment Successful!' if status == 'success' else 'Payment Failed!'}</h2>
+        <p>You can now close this screen.</p>
+    </body></html>
+    """)
 
 @router.post("/withdraw")
 def request_withdrawal(
