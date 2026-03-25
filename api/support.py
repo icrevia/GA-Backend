@@ -1,12 +1,44 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from typing import List
 from core.database import get_db
 from api.deps import get_current_user
 from models.support import ChatSession, ChatMessage
 from models.user import User
+from core.websockets import manager
 
 router = APIRouter()
+
+@router.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: int):
+    await manager.connect(user_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Handle incoming WS messages if needed (e.g., typing indicators)
+    except WebSocketDisconnect:
+        manager.disconnect(user_id, websocket)
+
+@router.get("/sessions/{session_id}/messages", response_model=List[dict])
+def get_session_messages(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Admin only: get all messages in a specific session"""
+    if current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    messages = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.timestamp.asc()).all()
+    return [
+        {
+            "id": m.id,
+            "content": m.content,
+            "sender_id": m.sender_id,
+            "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+            "is_admin": m.is_admin
+        } for m in messages
+    ]
 
 @router.get("/sessions", response_model=List[dict])
 def get_sessions(
@@ -56,13 +88,13 @@ def get_my_chat(
             "id": m.id,
             "content": m.content,
             "sender_id": m.sender_id,
-            "timestamp": m.timestamp,
+            "timestamp": m.timestamp.isoformat() if m.timestamp else None,
             "is_admin": m.is_admin
         } for m in messages
     ]
 
 @router.post("/send")
-def send_message(
+async def send_message(
     message: str = Query(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -82,10 +114,21 @@ def send_message(
     )
     db.add(new_msg)
     db.commit()
+    
+    # WebSocket Broadcast
+    msg_data = {
+        "id": new_msg.id,
+        "content": new_msg.content,
+        "sender_id": new_msg.sender_id,
+        "is_admin": new_msg.is_admin,
+        "timestamp": new_msg.timestamp.isoformat() if new_msg.timestamp else None
+    }
+    await manager.broadcast(msg_data)
+    
     return {"status": "success"}
 
 @router.post("/admin/reply")
-def admin_reply(
+async def admin_reply(
     session_id: int,
     message: str,
     db: Session = Depends(get_db),
@@ -94,6 +137,10 @@ def admin_reply(
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
     
+    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     new_msg = ChatMessage(
         session_id=session_id,
         sender_id=current_user.id,
@@ -102,4 +149,15 @@ def admin_reply(
     )
     db.add(new_msg)
     db.commit()
+    
+    # WebSocket Broadcast
+    msg_data = {
+        "id": new_msg.id,
+        "content": new_msg.content,
+        "sender_id": new_msg.sender_id,
+        "is_admin": True,
+        "timestamp": new_msg.timestamp.isoformat() if new_msg.timestamp else None
+    }
+    await manager.broadcast(msg_data)
+    
     return {"status": "success"}
