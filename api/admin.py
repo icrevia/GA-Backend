@@ -36,6 +36,21 @@ def create_tournament(
     db.refresh(db_obj)
     return db_obj
 
+@router.delete("/tournaments/{tournament_id}")
+def delete_tournament(
+    tournament_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    
+    db.delete(tournament)
+    db.commit()
+    return {"message": "Tournament deleted successfully"}
+
 @router.get("/stats")
 def get_admin_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
     total_users = db.query(User).count()
