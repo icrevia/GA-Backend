@@ -43,9 +43,10 @@ def get_system_status():
     db = SessionLocal()
     try:
         maintenance = db.query(SystemConfig).filter(SystemConfig.config_key == "maintenance_mode").first()
+        is_active = (maintenance.config_value.lower() == "true") if maintenance else False
         return {
-            "maintenance_mode": maintenance.config_value == "True" if maintenance else False,
-            "status": "online" if (not maintenance or maintenance.config_value == "False") else "maintenance"
+            "maintenance_mode": is_active,
+            "status": "maintenance" if is_active else "online"
         }
     finally:
         db.close()
