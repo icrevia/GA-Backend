@@ -7,8 +7,14 @@ from models.support import ChatSession, ChatMessage
 from models.user import User
 from core.websockets import manager
 from datetime import datetime
+from pydantic import BaseModel
 
 router = APIRouter()
+
+# --- Request Models ---
+class AdminReplyRequest(BaseModel):
+    session_id: int
+    message: str
 
 @router.websocket("/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: int):
@@ -63,7 +69,7 @@ def get_sessions(
         })
     return result
 
-@router.get("/my-chat") # Response type matches Android's ChatHistoryResponse
+@router.get("/my-chat")
 def get_my_chat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -122,22 +128,21 @@ async def send_message(
 
 @router.post("/admin/reply")
 async def admin_reply(
-    session_id: int,
-    message: str,
+    request: AdminReplyRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+    session = db.query(ChatSession).filter(ChatSession.id == request.session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     new_msg = ChatMessage(
-        session_id=session_id,
+        session_id=request.session_id,
         sender_id=current_user.id,
-        content=message,
+        content=request.message,
         is_admin=True
     )
     db.add(new_msg)
