@@ -43,10 +43,15 @@ def get_system_status():
     db = SessionLocal()
     try:
         maintenance = db.query(SystemConfig).filter(SystemConfig.config_key == "maintenance_mode").first()
+        message = db.query(SystemConfig).filter(SystemConfig.config_key == "maintenance_message").first()
+        until = db.query(SystemConfig).filter(SystemConfig.config_key == "maintenance_until").first()
+        
         is_active = (maintenance.config_value.lower() == "true") if maintenance else False
         return {
             "maintenance_mode": is_active,
-            "status": "maintenance" if is_active else "online"
+            "status": "maintenance" if is_active else "online",
+            "message": message.config_value if message else "Fine-tuning the gears for a smoother experience. We'll be back in just a blink!",
+            "until": until.config_value if until else ""
         }
     finally:
         db.close()
