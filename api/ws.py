@@ -12,26 +12,41 @@ router = APIRouter()
 
 async def get_user_from_token(token: str):
     """Returns (user_id, is_admin) or (None, False)"""
+    if not token or token == "null" or token == "undefined":
+        print("WebSocket Auth: Token is empty or null string")
+        return None, False
+
     try:
+        from core.config import settings
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id = payload.get("sub")
         if user_id is None:
+            print("WebSocket Auth: No 'sub' in token payload")
             return None, False
+            
         uid = int(user_id)
         db = SessionLocal()
         try:
             user = db.query(User).filter(User.id == uid).first()
-            is_admin = user.role == "ADMIN" if user else False
+            is_admin = (user.role == "ADMIN") if user else False
+            return uid, is_admin
+        except Exception as e:
+            print(f"WebSocket DB Error: {e}")
+            return uid, False
         finally:
             db.close()
-        return uid, is_admin
-    except JWTError:
+    except Exception as e:
+        print(f"WebSocket Token Decode Error: {e}")
         return None, False
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str):
+async def websocket_endpoint(websocket: WebSocket, token: str = ""):
+    # Accept the connection FIRST to prevent HTTP 403 Forbidden handshake rejections by ASGI proxy
+    await websocket.accept()
+    
     user_id, is_admin = await get_user_from_token(token)
     if not user_id:
+        await websocket.send_text(json.dumps({"type": "error", "message": "Authentication failed. Invalid or missing token."}))
         await websocket.close(code=1008)
         return
 
