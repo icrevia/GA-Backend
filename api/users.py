@@ -20,6 +20,8 @@ def update_user_me(
 ):
     if user_update.username is not None:
         current_user.username = user_update.username
+    if user_update.email is not None:
+        current_user.email = user_update.email
     if user_update.upi_id is not None:
         current_user.upi_id = user_update.upi_id
     if user_update.bgmi_id is not None:

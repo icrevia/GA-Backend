@@ -26,6 +26,7 @@ class UserResponse(BaseModel):
 
 class UserUpdate(BaseModel):
     username: Optional[str] = None
+    email: Optional[str] = None
     upi_id: Optional[str] = None
     bgmi_id: Optional[str] = None
     valorant_id: Optional[str] = None
