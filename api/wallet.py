@@ -71,7 +71,7 @@ def init_add_money(
     }
 
 @router.get("/payu/redirect/{txnid}", response_class=HTMLResponse)
-def payu_redirect(txnid: str, db: Session = Depends(get_db)):
+def payu_redirect(txnid: str, vpa: str | None = None, db: Session = Depends(get_db)):
     tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
     if not tx:
         raise HTTPException(404, "Transaction not found")
@@ -90,6 +90,14 @@ def payu_redirect(txnid: str, db: Session = Depends(get_db)):
     surl = "https://api.zexplay.com/api/v1/wallet/payu/success" 
     furl = "https://api.zexplay.com/api/v1/wallet/payu/failure"
     
+    seamless_fields = ""
+    if vpa:
+        seamless_fields = f"""
+            <input type="hidden" name="pg" value="UPI" />
+            <input type="hidden" name="bankcode" value="UPI" />
+            <input type="hidden" name="vpa" value="{vpa}" />
+        """
+    
     html_content = f"""
     <html>
       <head><title>Secure Transfer</title></head>
@@ -106,6 +114,7 @@ def payu_redirect(txnid: str, db: Session = Depends(get_db)):
             <input type="hidden" name="surl" value="{surl}" />
             <input type="hidden" name="furl" value="{furl}" />
             <input type="hidden" name="hash" value="{payu_hash}" />
+            {seamless_fields}
         </form>
       </body>
     </html>
