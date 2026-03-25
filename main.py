@@ -30,6 +30,21 @@ app.add_middleware(
 # Initialize DB — creates tables that don't exist, never drops
 Base.metadata.create_all(bind=engine)
 
+# Migration Helper: Auto-add columns if they are missing
+def run_migrations():
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    columns = [c['name'] for c in inspector.get_columns('tournaments')]
+    
+    with engine.connect() as conn:
+        if 'match_type' not in columns:
+            print("Migration: Adding match_type to tournaments. Status: PENDING")
+            conn.execute(text("ALTER TABLE tournaments ADD COLUMN match_type VARCHAR(255) DEFAULT 'SOLO'"))
+            conn.commit()
+            print("Migration: Adding match_type to tournaments. Status: SUCCESS")
+        
+run_migrations()
+
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
