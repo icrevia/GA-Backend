@@ -6,7 +6,12 @@ from api.deps import get_current_user
 from models.support import ChatSession, ChatMessage
 from models.user import User
 from core.websockets import manager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+IST = timezone(timedelta(hours=5, minutes=30))  # Asia/Kolkata
+
+def now_ist() -> datetime:
+    return datetime.now(IST).replace(tzinfo=None)  # Store as naive IST in DB
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -121,7 +126,7 @@ async def send_message(
         "id": new_msg.id,
         "content": new_msg.content,
         "is_admin": new_msg.is_admin,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": now_ist().isoformat()
     }
     await manager.broadcast(msg_data)
     return {"status": "success"}
@@ -152,7 +157,7 @@ async def admin_reply(
         "id": new_msg.id,
         "content": new_msg.content,
         "is_admin": True,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": now_ist().isoformat()
     }
     await manager.broadcast(msg_data)
     return {"status": "success"}
