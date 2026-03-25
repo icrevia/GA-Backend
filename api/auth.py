@@ -45,10 +45,17 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
         or_(User.email == login_data.email, User.username == login_data.email)
     ).first()
     
-    if not user or not verify_password(login_data.password, user.hashed_password):
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email/username or password",
+            detail="User not found in system",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    if not verify_password(login_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
