@@ -13,15 +13,28 @@ from models.notification import Notification
 from services.notifications import add_user_notification
 
 from schemas.admin import SystemConfigUpdate, NotificationSendRequest, UserStatusUpdate
+from schemas.tournament import TournamentCreate, TournamentResponse
 
 router = APIRouter()
 
-@router.get("/tournaments")
+@router.get("/tournaments", response_model=List[TournamentResponse])
 def list_tournaments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
     return db.query(Tournament).order_by(Tournament.created_at.desc()).all()
+
+@router.post("/tournaments", response_model=TournamentResponse)
+def create_tournament(
+    tournament_in: TournamentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = Tournament(**tournament_in.dict())
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
 
 @router.get("/stats")
 def get_admin_stats(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_admin)):
