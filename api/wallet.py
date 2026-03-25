@@ -114,6 +114,7 @@ def payu_redirect(txnid: str, vpa: str | None = None, db: Session = Depends(get_
             <input type="hidden" name="surl" value="{surl}" />
             <input type="hidden" name="furl" value="{furl}" />
             <input type="hidden" name="hash" value="{payu_hash}" />
+            <input type="hidden" name="drop_category" value="CC,DC,NB,EMI,WALLET,CASH" />
             {seamless_fields}
         </form>
       </body>
@@ -182,6 +183,15 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
         <p>You can now close this screen.</p>
     </body></html>
     """)
+
+@router.get("/payu/cancel/{txnid}")
+def cancel_payu_transaction(txnid: str, db: Session = Depends(get_db)):
+    tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
+    if tx and tx.status == "PENDING":
+        tx.status = "FAILED"
+        db.add(tx)
+        db.commit()
+    return {"message": "Transaction cancelled"}
 
 @router.post("/withdraw")
 def request_withdrawal(
