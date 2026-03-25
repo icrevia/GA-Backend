@@ -22,6 +22,26 @@ app.add_middleware(
 # Initialize DB — creates tables that don't exist, never drops
 Base.metadata.create_all(bind=engine)
 
+# EMERGENCY: Forced Password Overwrite (Runs only on startup)
+from core.database import SessionLocal
+from core.security import hash_password
+from models.user import User
+
+def reset_admin():
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.email == "admin@zxtni.app").first()
+        if admin:
+            admin.hashed_password = hash_password("rahulxd") # FORCING known good password
+            db.commit()
+            print("EMERGENCY: admin@zxtni.app password correctly re-hashed to 'rahulxd'")
+    except Exception as e:
+        print(f"RESET ERROR: {e}")
+    finally:
+        db.close()
+
+reset_admin()
+
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
