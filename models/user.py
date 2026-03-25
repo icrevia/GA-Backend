@@ -12,6 +12,7 @@ class User(Base):
     hashed_password = Column(String, nullable=True) # Kept for backward compatibility or direct login if needed
     role = Column(String, default="USER") # USER or ADMIN
     upi_id = Column(String, nullable=True)
+    profile_pic = Column(String, nullable=True)
     
     # Game IDs
     bgmi_id = Column(String, nullable=True)

@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "ZexPlay_Super_Secure_JWT_Key_2026_@"  # In prod, this should be in .env
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    APP_URL: str = "https://web-production-051ba.up.railway.app"
     
     # Database
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/zexplay_db"

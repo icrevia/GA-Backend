@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from core.database import get_db
+from core.config import settings
 from core.security import hash_password, verify_password, create_access_token
 from models.user import User
 from schemas.user import UserCreate, UserResponse, LoginRequest
@@ -29,6 +30,12 @@ def signup(user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
         role="USER",
     )
     db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    # Auto-assign one of 5 default avatars
+    avatar_id = (db_user.id % 5) + 1
+    db_user.profile_pic = f"{settings.APP_URL}/static/avatars/avatar{avatar_id}.png"
     db.commit()
     db.refresh(db_user)
     

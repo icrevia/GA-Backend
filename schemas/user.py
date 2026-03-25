@@ -17,6 +17,7 @@ class UserResponse(BaseModel):
     role: str
     wallet_balance: float
     upi_id: Optional[str] = None
+    profile_pic: Optional[str] = None
     bgmi_id: Optional[str] = None
     valorant_id: Optional[str] = None
     freefire_id: Optional[str] = None
