@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from typing import List, Dict
+import uuid
 
 from api.deps import get_db, get_current_active_admin
 from models.user import User
@@ -222,7 +223,7 @@ def adjust_user_funds(
         amount=amount,
         transaction_type="ADMIN_ADJUSTMENT",
         status="SUCCESS",
-        reference_id=f"ADJ_{func.now()}_{reason[:10]}"
+        reference_id=f"ADJ_{uuid.uuid4().hex[:8].upper()}_{reason[:5]}"
     )
     db.add(tx)
     db.add(user)
