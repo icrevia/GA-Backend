@@ -35,3 +35,17 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 @app.get("/")
 def root():
     return {"message": "ZexPlay API — Production Ready"}
+
+@app.get("/api/v1/status")
+def get_system_status():
+    from core.database import SessionLocal
+    from models.config import SystemConfig
+    db = SessionLocal()
+    try:
+        maintenance = db.query(SystemConfig).filter(SystemConfig.config_key == "maintenance_mode").first()
+        return {
+            "maintenance_mode": maintenance.config_value == "True" if maintenance else False,
+            "status": "online" if (not maintenance or maintenance.config_value == "False") else "maintenance"
+        }
+    finally:
+        db.close()
