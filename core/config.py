@@ -4,7 +4,7 @@ from typing import Optional
 class Settings(BaseSettings):
     PROJECT_NAME: str = "ZexPlay"
     API_V1_STR: str = "/api/v1"
-    SECRET_KEY: str = "SUPER_SECRET_KEY_FOR_JWT_ZEXPLAY"  # In prod, this should be in .env
+    SECRET_KEY: str = "ZexPlay_Super_Secure_JWT_Key_2026_@"  # In prod, this should be in .env
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
