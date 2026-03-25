@@ -9,6 +9,8 @@ from models.user import User
 from models.tournament import Tournament
 from models.wallet import WalletTransaction
 from models.config import SystemConfig
+from models.notification import Notification
+from services.notifications import add_user_notification
 
 from schemas.admin import SystemConfigUpdate, NotificationSendRequest, UserStatusUpdate
 
@@ -291,9 +293,23 @@ def update_system_config(
 @router.post("/notifications/send")
 def send_push_notification(
     data: NotificationSendRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    return {"message": f"Notification '{data.title}' sent to topic: {data.topic}"}
+    # Save to database for all users so it shows up in their Notification Screen
+    users = db.query(User).filter(User.role == "USER").all()
+    
+    for user in users:
+        notif = Notification(
+            user_id=user.id,
+            title=data.title,
+            content=data.body,
+            type="SYSTEM"
+        )
+        db.add(notif)
+    
+    db.commit()
+    return {"message": f"Broadcast '{data.title}' saved for {len(users)} users and sent to topic: {data.topic}"}
 
 @router.get("/transactions")
 def list_all_transactions(
