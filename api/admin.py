@@ -42,10 +42,15 @@ def delete_tournament(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
+    from models.participant import TournamentParticipant
+    
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Tournament not found")
+    
+    # Cascade delete participants manually to avoid foreign key errors
+    db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == tournament_id).delete()
     
     db.delete(tournament)
     db.commit()
