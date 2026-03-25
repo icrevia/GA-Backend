@@ -39,6 +39,15 @@ def signup(user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
     db.commit()
     db.refresh(db_user)
     
+    from services.notifications import add_user_notification
+    add_user_notification(
+        db, 
+        db_user.id, 
+        "Welcome to ZexPlay", 
+        "Start your esports journey with India's fastest tournament platform. 🦾",
+        "APP"
+    )
+    
     return {
         "access_token": create_access_token({"sub": str(db_user.id)}),
         "token_type": "bearer",

@@ -103,6 +103,15 @@ def join_tournament(
     db.commit()
     db.refresh(user_to_update)
     
+    from services.notifications import add_user_notification
+    add_user_notification(
+        db, 
+        user_to_update.id, 
+        "Arena Entry Confirmed", 
+        f"You have successfully joined the {db_tournament.title} tournament. Get ready for battle!",
+        "TOURNAMENT"
+    )
+    
     return {
         "message": "Successfully joined the tournament",
         "tournament_id": tournament_id,

@@ -10,6 +10,7 @@ from models.wallet import WalletTransaction
 from schemas.wallet import AddMoneyRequest, PayUInitResponse, WithdrawalRequest, WalletTransactionResponse, WalletBalanceResponse
 from services.payu import generate_payu_hash, verify_payu_hash
 from core.config import settings
+from services.notifications import add_user_notification
 
 router = APIRouter()
 
@@ -43,6 +44,14 @@ def init_add_money(
     )
     db.add(tx)
     db.commit()
+    
+    add_user_notification(
+        db, 
+        current_user.id, 
+        "Recharge Initiated", 
+        f"You have initiated a recharge of \u20b9{req.amount}. Complete the payment to see it in your wallet.",
+        "WALLET"
+    )
     
     payu_hash = generate_payu_hash(
         txnid=txnid,
@@ -186,6 +195,14 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
                     db.add(tx)
                     db.add(user)
                     db.commit()
+                    
+                    add_user_notification(
+                        db, 
+                        user.id, 
+                        "Payment Received", 
+                        f"Successfully added \u20b9{tx.amount} to your ZexPlay wallet via PayU.",
+                        "WALLET"
+                    )
         else:
             # Force failure on cancellation or decline
             tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
@@ -244,5 +261,13 @@ def request_withdrawal(
     db.add(tx)
     db.add(user)
     db.commit()
+    
+    add_user_notification(
+        db, 
+        user.id, 
+        "Withdrawal Requested", 
+        f"Your withdrawal request of \u20b9{req.amount} has been submitted and is pending admin approval.",
+        "WALLET"
+    )
     
     return {"message": "Withdrawal requested successfully. Waiting for admin approval."}
