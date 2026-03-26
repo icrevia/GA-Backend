@@ -14,6 +14,7 @@ from models.config import SystemConfig
 from models.notification import Notification
 from models.participant import TournamentParticipant
 from services.notifications import add_user_notification
+from core.websockets import manager as ws_manager
 
 from schemas.admin import (
     SystemConfigUpdate, 

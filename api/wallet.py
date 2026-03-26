@@ -11,6 +11,7 @@ from schemas.wallet import AddMoneyRequest, PayUInitResponse, WithdrawalRequest,
 from services.payu import generate_payu_hash, verify_payu_hash
 from core.config import settings
 from services.notifications import add_user_notification
+from core.websockets import manager as ws_manager
 
 router = APIRouter()
 
@@ -179,6 +180,8 @@ async def payu_webhook(request: Request, db: Session = Depends(get_db)):
         
     db.add(tx)
     db.commit()
+    import asyncio
+    asyncio.create_task(ws_manager.broadcast_to_admins({"type": "finance_update"}))
     return {"message": "Webhook processed"}
 
 @router.post("/payu/success", response_class=HTMLResponse)
@@ -210,6 +213,8 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
                     db.add(tx)
                     db.add(user)
                     db.commit()
+                    import asyncio
+                    asyncio.create_task(ws_manager.broadcast_to_admins({"type": "finance_update"}))
                     add_user_notification(
                         db, user.id,
                         "Payment Confirmed ✅",
@@ -225,6 +230,8 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
                 tx.failure_reason = field9 or status or "USER_CANCELLED"
                 db.add(tx)
                 db.commit()
+                import asyncio
+                asyncio.create_task(ws_manager.broadcast_to_admins({"type": "finance_update"}))
                 
     bg_color = "#16A34A" if status == "success" else "#EF4444"
     return HTMLResponse(f"""
