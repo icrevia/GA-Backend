@@ -8,7 +8,13 @@ from models.user import User
 from models.tournament import Tournament
 from models.participant import TournamentParticipant
 from models.wallet import WalletTransaction
-from schemas.tournament import TournamentCreate, TournamentUpdate, TournamentResponse, TournamentJoinResponse
+from schemas.tournament import (
+    TournamentCreate, 
+    TournamentUpdate, 
+    TournamentResponse, 
+    TournamentJoinResponse,
+    TournamentJoinRequest
+)
 
 router = APIRouter()
 
