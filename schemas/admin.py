@@ -25,6 +25,9 @@ class TournamentRoomUpdate(BaseModel):
     room_id: str
     room_password: Optional[str] = None
 
+class TournamentConclude(BaseModel):
+    winner_id: int
+
 class TournamentCreateAdmin(BaseModel):
     title: str
     game_name: str

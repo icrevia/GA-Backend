@@ -17,7 +17,8 @@ from schemas.admin import (
     SystemConfigUpdate, 
     NotificationSendRequest, 
     UserStatusUpdate, 
-    TournamentRoomUpdate, 
+    TournamentRoomUpdate,
+    TournamentConclude, 
     TournamentCreateAdmin
 )
 from schemas.tournament import TournamentCreate, TournamentResponse
@@ -423,3 +424,87 @@ def get_banned_users(
 ):
     users = db.query(User).filter(User.is_active == False).all()
     return [{"id": u.id, "username": u.username, "email": u.email, "balance": u.wallet_balance} for u in users]
+
+@router.post("/tournaments/{tournament_id}/conclude")
+def conclude_tournament(
+    tournament_id: int,
+    data: TournamentConclude,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Tournament not found")
+        
+    winner = db.query(User).filter(User.id == data.winner_id).first()
+    if not winner:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Winner user not found")
+        
+    # Prize Payout
+    prize = tournament.prize_pool
+    winner.wallet_balance += prize
+    
+    # Tournament Log
+    win_tx = WalletTransaction(
+        user_id=winner.id,
+        amount=prize,
+        transaction_type="TOURNAMENT_WIN",
+        status="SUCCESS",
+        reference_id=f"WIN_{tournament_id}"
+    )
+    db.add(win_tx)
+    db.add(winner)
+    
+    tournament.status = "COMPLETED"
+    db.add(tournament)
+    db.commit()
+    
+    # Broadcast notification to winner
+    try:
+        from services.notifications import add_user_notification
+        add_user_notification(
+            db, 
+            winner.id, 
+            "CHAMPION! 🏆", 
+            f"You won ₹{prize} in {tournament.title}! Check your wallet."
+        )
+    except: pass
+    
+    return {"message": f"Tournament concluded. Winner paid ₹{prize}"}
+
+@router.post("/tournaments/{tournament_id}/refund")
+def refund_tournament(
+    tournament_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Tournament not found")
+        
+    participants = db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == tournament_id).all()
+    
+    ref_count = 0
+    for p in participants:
+        user = db.query(User).filter(User.id == p.user_id).with_for_update().first()
+        if user:
+            user.wallet_balance += tournament.entry_fee
+            ref_tx = WalletTransaction(
+                user_id=user.id,
+                amount=tournament.entry_fee,
+                transaction_type="REFUND",
+                status="SUCCESS",
+                reference_id=f"REFUND_{tournament_id}_{user.id}"
+            )
+            db.add(ref_tx)
+            db.add(user)
+            ref_count += 1
+            
+    tournament.status = "CANCELLED"
+    db.add(tournament)
+    db.commit()
+    
+    return {"message": f"Refunded all {ref_count} participants"}
