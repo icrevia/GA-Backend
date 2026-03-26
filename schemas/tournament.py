@@ -27,6 +27,15 @@ class TournamentUpdate(BaseModel):
     room_password: Optional[str] = None
     winner_id: Optional[int] = None
 
+class ParticipantResponse(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    avatar_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
 class TournamentResponse(TournamentBase):
     id: int
     status: str
@@ -35,6 +44,7 @@ class TournamentResponse(TournamentBase):
     room_id: Optional[str] = None
     room_password: Optional[str] = None
     winner_id: Optional[int] = None
+    participants: Optional[list[ParticipantResponse]] = []
 
     class Config:
         from_attributes = True
