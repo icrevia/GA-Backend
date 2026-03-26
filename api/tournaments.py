@@ -9,14 +9,15 @@ from models.tournament import Tournament
 from models.participant import TournamentParticipant
 from models.wallet import WalletTransaction
 from schemas.tournament import (
-    TournamentCreate, 
-    TournamentUpdate, 
-    TournamentResponse, 
+    TournamentCreate,
+    TournamentUpdate,
+    TournamentResponse,
     TournamentJoinResponse,
     TournamentJoinRequest
 )
 
 router = APIRouter()
+
 
 def _with_count(tournament: Tournament, db: Session) -> Tournament:
     """Attach joined_count so clients can show slot fill progress."""
@@ -26,6 +27,7 @@ def _with_count(tournament: Tournament, db: Session) -> Tournament:
     tournament.joined_count = count  # type: ignore[attr-defined]
     return tournament
 
+
 @router.get("/", response_model=List[TournamentResponse])
 def get_upcoming_tournaments(db: Session = Depends(get_db)):
     tournaments = db.query(Tournament).filter(
@@ -33,17 +35,20 @@ def get_upcoming_tournaments(db: Session = Depends(get_db)):
     ).order_by(Tournament.match_time.asc()).all()
     return [_with_count(t, db) for t in tournaments]
 
+
 @router.post("/", response_model=TournamentResponse)
 def create_tournament(
     tournament_in: TournamentCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    db_obj = Tournament(**tournament_in.dict())
+    # FIXED: .model_dump() replaces deprecated .dict()
+    db_obj = Tournament(**tournament_in.model_dump())
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
     return _with_count(db_obj, db)
+
 
 @router.put("/{tournament_id}", response_model=TournamentResponse)
 def update_tournament(
@@ -55,15 +60,17 @@ def update_tournament(
     db_obj = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not db_obj:
         raise HTTPException(status_code=404, detail="Tournament not found")
-        
-    update_data = tournament_in.dict(exclude_unset=True)
-    for field in update_data:
-        setattr(db_obj, field, update_data[field])
-        
+
+    # FIXED: .model_dump() replaces deprecated .dict()
+    update_data = tournament_in.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(db_obj, field, value)
+
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
     return _with_count(db_obj, db)
+
 
 @router.post("/{tournament_id}/join", response_model=TournamentJoinResponse)
 def join_tournament(
@@ -72,35 +79,42 @@ def join_tournament(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    # FIXED: Lock the tournament row first to eliminate the slot race condition
+    tournament = db.query(Tournament).filter(
+        Tournament.id == tournament_id
+    ).with_for_update().first()
+
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
-        
+
     if tournament.status != "UPCOMING":
         raise HTTPException(status_code=400, detail="Tournament is already Live or Completed")
-        
-    # Check if tournament is full
-    participant_count = db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == tournament_id).count()
+
+    # Slot check (done after lock — now race-condition-safe)
+    participant_count = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id
+    ).count()
     if participant_count >= (tournament.max_slots or 100):
         raise HTTPException(status_code=400, detail="Arena is full! Try another one.")
 
-    # Check if already joined
+    # Already joined?
     existing = db.query(TournamentParticipant).filter(
         TournamentParticipant.tournament_id == tournament_id,
         TournamentParticipant.user_id == current_user.id
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="Already joined this arena")
-        
-    # Check and update wallet (atomic)
-    user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+
+    # Lock user row for atomic balance update
+    user_wallet = db.query(User).filter(
+        User.id == current_user.id
+    ).with_for_update().first()
+
     if user_wallet.wallet_balance < tournament.entry_fee:
         raise HTTPException(status_code=400, detail="Insufficient balance")
-        
-    # Deduct fee
+
     user_wallet.wallet_balance -= tournament.entry_fee
-    
-    # Create transaction log
+
     transaction = WalletTransaction(
         user_id=current_user.id,
         amount=-tournament.entry_fee,
@@ -109,39 +123,42 @@ def join_tournament(
         reference_id=f"TOUR_{tournament_id}_{current_user.id}"
     )
     db.add(transaction)
-    
-    # Create participant record
+
     participant = TournamentParticipant(
-        tournament_id=tournament_id, 
+        tournament_id=tournament_id,
         user_id=current_user.id,
         game_username=request.game_username,
         game_uid=request.game_uid
     )
     db.add(participant)
     db.commit()
-    
+
     return {
         "message": f"Successfully joined {tournament.title}!",
         "tournament_id": tournament_id,
-        "new_wallet_balance": user_wallet.wallet_balance
+        "new_wallet_balance": float(user_wallet.wallet_balance)
     }
+
 
 @router.get("/my", response_model=List[TournamentResponse])
 def get_my_tournaments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    participants = db.query(TournamentParticipant).filter(TournamentParticipant.user_id == current_user.id).all()
+    participants = db.query(TournamentParticipant).filter(
+        TournamentParticipant.user_id == current_user.id
+    ).all()
     tournament_ids = [p.tournament_id for p in participants]
-    
+
     tournaments = db.query(Tournament).filter(Tournament.id.in_(tournament_ids)).all()
-    
-    # Optional logic: Only expose room details if match_time is near or status is LIVE
+
     for t in tournaments:
         if t.status != "LIVE":
-            t.room_id = None
+            t.room_id       = None
             t.room_password = None
+
     return [_with_count(t, db) for t in tournaments]
+
 
 @router.get("/{tournament_id}", response_model=TournamentResponse)
 def get_tournament(
@@ -152,15 +169,14 @@ def get_tournament(
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
-        
-    # Check if this user is a participant to show room details
+
     is_participant = db.query(TournamentParticipant).filter(
         TournamentParticipant.tournament_id == tournament_id,
         TournamentParticipant.user_id == current_user.id
     ).first()
-    
+
     if not is_participant or tournament.status != "LIVE":
-        tournament.room_id = None
+        tournament.room_id       = None
         tournament.room_password = None
 
     return _with_count(tournament, db)

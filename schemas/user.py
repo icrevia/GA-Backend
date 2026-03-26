@@ -1,14 +1,24 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
+import re
+
 
 class UserCreate(BaseModel):
-    username: str
-    email: str
-    password: str
+    # FIXED: Added min/max lengths to prevent bcrypt DoS and enumeration
+    username: str = Field(..., min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def username_no_spaces(cls, v: str) -> str:
+        return v.strip()
+
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., max_length=320)   # RFC 5321 max email length
+    password: str = Field(..., max_length=128) # Prevent bcrypt CPU-spike DoS
+
 
 class UserResponse(BaseModel):
     id: int
@@ -21,14 +31,16 @@ class UserResponse(BaseModel):
     bgmi_id: Optional[str] = None
     valorant_id: Optional[str] = None
     freefire_id: Optional[str] = None
-    
+    is_active: bool = True
+
     class Config:
         from_attributes = True
 
+
 class UserUpdate(BaseModel):
-    username: Optional[str] = None
-    email: Optional[str] = None
-    upi_id: Optional[str] = None
-    bgmi_id: Optional[str] = None
-    valorant_id: Optional[str] = None
-    freefire_id: Optional[str] = None
+    username: Optional[str] = Field(None, min_length=3, max_length=32)
+    email: Optional[EmailStr] = None
+    upi_id: Optional[str] = Field(None, max_length=50)
+    bgmi_id: Optional[str] = Field(None, max_length=50)
+    valorant_id: Optional[str] = Field(None, max_length=50)
+    freefire_id: Optional[str] = Field(None, max_length=50)

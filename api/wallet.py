@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import List
 import uuid
+import html
+import logging
 
 from api.deps import get_db, get_current_user, get_current_active_admin
 from models.user import User
@@ -13,15 +15,47 @@ from core.config import settings
 from services.notifications import add_user_notification
 from core.websockets import manager as ws_manager
 
+logger = logging.getLogger("zexplay.wallet")
+
 router = APIRouter()
+
+
+# ─────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────
+
+def _payu_surl() -> str:
+    return f"{settings.APP_URL}/api/v1/wallet/payu/success"
+
+def _payu_furl() -> str:
+    return f"{settings.APP_URL}/api/v1/wallet/payu/failure"
+
+
+# ─────────────────────────────────────────────────────────────────
+# Wallet balance & history
+# ─────────────────────────────────────────────────────────────────
 
 @router.get("/balance", response_model=WalletBalanceResponse)
 def get_balance(current_user: User = Depends(get_current_user)):
     return {"balance": current_user.wallet_balance}
 
+
 @router.get("/transactions", response_model=List[WalletTransactionResponse])
-def get_transactions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return db.query(WalletTransaction).filter(WalletTransaction.user_id == current_user.id).order_by(WalletTransaction.created_at.desc()).all()
+def get_transactions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return (
+        db.query(WalletTransaction)
+        .filter(WalletTransaction.user_id == current_user.id)
+        .order_by(WalletTransaction.created_at.desc())
+        .all()
+    )
+
+
+# ─────────────────────────────────────────────────────────────────
+# Initiate a PayU payment
+# ─────────────────────────────────────────────────────────────────
 
 @router.post("/add-money/init", response_model=PayUInitResponse)
 def init_add_money(
@@ -30,12 +64,13 @@ def init_add_money(
     current_user: User = Depends(get_current_user)
 ):
     if req.amount < 1:
-        raise HTTPException(status_code=400, detail="Minimum recharge amount is \u20b91")
-        
+        raise HTTPException(status_code=400, detail="Minimum recharge amount is ₹1")
+    if req.amount > 100_000:
+        raise HTTPException(status_code=400, detail="Maximum recharge amount is ₹1,00,000")
+
     txnid = f"ZEX_{uuid.uuid4().hex[:12].upper()}"
     productinfo = "ZexPlay Wallet Recharge"
-    
-    # Create pending transaction
+
     tx = WalletTransaction(
         user_id=current_user.id,
         amount=req.amount,
@@ -45,15 +80,15 @@ def init_add_money(
     )
     db.add(tx)
     db.commit()
-    
+
     add_user_notification(
-        db, 
-        current_user.id, 
-        "Recharge Initiated", 
-        f"You have initiated a recharge of \u20b9{req.amount}. Complete the payment to see it in your wallet.",
+        db,
+        current_user.id,
+        "Recharge Initiated",
+        f"You have initiated a recharge of ₹{req.amount}. Complete the payment to see it in your wallet.",
         "WALLET"
     )
-    
+
     payu_hash = generate_payu_hash(
         txnid=txnid,
         amount=req.amount,
@@ -61,11 +96,7 @@ def init_add_money(
         firstname=current_user.username,
         email=current_user.email
     )
-    
-    # Example urls, usually App endpoints or deep links
-    surl = "https://web-production-051ba.up.railway.app/api/v1/wallet/payu/success" 
-    furl = "https://web-production-051ba.up.railway.app/api/v1/wallet/payu/failure"
-    
+
     return {
         "txnid": txnid,
         "amount": req.amount,
@@ -73,21 +104,35 @@ def init_add_money(
         "firstname": current_user.username,
         "email": current_user.email,
         "phone": "9999999999",
-        "surl": surl,
-        "furl": furl,
+        "surl": _payu_surl(),
+        "furl": _payu_furl(),
         "hash": payu_hash,
         "key": settings.PAYU_MERCHANT_KEY,
         "action": f"{settings.PAYU_BASE_URL}/_payment"
     }
 
+
+# ─────────────────────────────────────────────────────────────────
+# PayU redirect page — FIXED: all user data is HTML-escaped
+# ─────────────────────────────────────────────────────────────────
+
 @router.get("/payu/redirect/{txnid}", response_class=HTMLResponse)
-def payu_redirect(txnid: str, vpa: str | None = None, db: Session = Depends(get_db)):
+def payu_redirect(
+    txnid: str,
+    vpa: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # FIXED: requires auth
+):
     tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
     if not tx:
         raise HTTPException(404, "Transaction not found")
-        
+
+    # Ownership check — users can only redirect their own transactions
+    if tx.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+
     user = db.query(User).filter(User.id == tx.user_id).first()
-    
+
     productinfo = "ZexPlay Wallet Recharge"
     payu_hash = generate_payu_hash(
         txnid=tx.reference_id,
@@ -96,73 +141,97 @@ def payu_redirect(txnid: str, vpa: str | None = None, db: Session = Depends(get_
         firstname=user.username,
         email=user.email
     )
-    
-    surl = "https://web-production-051ba.up.railway.app/api/v1/wallet/payu/success" 
-    furl = "https://web-production-051ba.up.railway.app/api/v1/wallet/payu/failure"
-    
+
+    # FIX: escape ALL user-controlled data before injecting into HTML
+    safe_txnid       = html.escape(str(tx.reference_id))
+    safe_amount      = html.escape(f"{tx.amount:.2f}")
+    safe_productinfo = html.escape(productinfo)
+    safe_firstname   = html.escape(str(user.username))
+    safe_email       = html.escape(str(user.email))
+    safe_surl        = html.escape(_payu_surl())
+    safe_furl        = html.escape(_payu_furl())
+    safe_hash        = html.escape(payu_hash)
+    safe_key         = html.escape(settings.PAYU_MERCHANT_KEY)
+    safe_action      = html.escape(f"{settings.PAYU_BASE_URL}/_payment")
+
     seamless_fields = ""
     if vpa:
+        safe_vpa = html.escape(str(vpa))
         seamless_fields = f"""
             <input type="hidden" name="pg" value="UPI" />
             <input type="hidden" name="bankcode" value="UPI" />
-            <input type="hidden" name="vpa" value="{vpa}" />
+            <input type="hidden" name="vpa" value="{safe_vpa}" />
         """
-    
-    html_content = f"""
-    <html>
-      <head><title>Secure Transfer</title></head>
-      <body onload="document.forms['payuForm'].submit();" style="background:#0D0E12; color:#FFB800; font-family:sans-serif; text-align:center; padding-top:100px;">
-        <h2>Connecting to Secure Arena Gateway...</h2>
-        <form action="{settings.PAYU_BASE_URL}/_payment" method="post" name="payuForm">
-            <input type="hidden" name="key" value="{settings.PAYU_MERCHANT_KEY}" />
-            <input type="hidden" name="txnid" value="{tx.reference_id}" />
-            <input type="hidden" name="amount" value="{tx.amount:.2f}" />
-            <input type="hidden" name="productinfo" value="{productinfo}" />
-            <input type="hidden" name="firstname" value="{user.username}" />
-            <input type="hidden" name="email" value="{user.email}" />
-            <input type="hidden" name="phone" value="9999999999" />
-            <input type="hidden" name="surl" value="{surl}" />
-            <input type="hidden" name="furl" value="{furl}" />
-            <input type="hidden" name="hash" value="{payu_hash}" />
-            <input type="hidden" name="drop_category" value="CC,DC,NB,EMI,WALLET,CASH" />
-            {seamless_fields}
-        </form>
-      </body>
-    </html>
-    """
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+  <head>
+    <title>Secure Transfer</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; form-action {settings.PAYU_BASE_URL}; script-src 'none';">
+  </head>
+  <body onload="document.forms['payuForm'].submit();"
+        style="background:#0D0E12; color:#FFB800; font-family:sans-serif; text-align:center; padding-top:100px;">
+    <h2>Connecting to Secure Arena Gateway...</h2>
+    <form action="{safe_action}" method="post" name="payuForm">
+        <input type="hidden" name="key"        value="{safe_key}" />
+        <input type="hidden" name="txnid"      value="{safe_txnid}" />
+        <input type="hidden" name="amount"     value="{safe_amount}" />
+        <input type="hidden" name="productinfo" value="{safe_productinfo}" />
+        <input type="hidden" name="firstname"  value="{safe_firstname}" />
+        <input type="hidden" name="email"      value="{safe_email}" />
+        <input type="hidden" name="phone"      value="9999999999" />
+        <input type="hidden" name="surl"       value="{safe_surl}" />
+        <input type="hidden" name="furl"       value="{safe_furl}" />
+        <input type="hidden" name="hash"       value="{safe_hash}" />
+        <input type="hidden" name="drop_category" value="CC,DC,NB,EMI,WALLET,CASH" />
+        {seamless_fields}
+    </form>
+  </body>
+</html>"""
     return html_content
 
+
+# ─────────────────────────────────────────────────────────────────
+# PayU webhook — called directly by PayU servers
+# ─────────────────────────────────────────────────────────────────
+
 @router.post("/payu/webhook")
-async def payu_webhook(request: Request, db: Session = Depends(get_db)):
+async def payu_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
     form = await request.form()
-    
-    txnid = form.get("txnid")
-    amount = float(form.get("amount", 0))
-    productinfo = form.get("productinfo")
-    firstname = form.get("firstname")
-    email = form.get("email")
-    status = form.get("status")
+
+    txnid         = form.get("txnid")
+    amount        = float(form.get("amount", 0))
+    productinfo   = form.get("productinfo")
+    firstname     = form.get("firstname")
+    email         = form.get("email")
+    status        = form.get("status")
     received_hash = form.get("hash")
-    mihpayid = form.get("mihpayid", "")   # PayU's own transaction ID
-    mode = form.get("mode", "")            # Payment mode: UPI, CC, DC, NB, WALLET
-    field9 = form.get("field9", "")        # Failure reason from PayU
-    
+    mihpayid      = form.get("mihpayid", "")
+    mode          = form.get("mode", "")
+    field9        = form.get("field9", "")
+
     is_valid = verify_payu_hash(txnid, amount, productinfo, firstname, email, status, received_hash)
     if not is_valid:
+        logger.warning(f"Webhook hash validation failed for txnid={txnid}")
         raise HTTPException(status_code=400, detail="Invalid hash")
-        
-    # Lock transaction row (prevents double credit)
-    tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).with_for_update().first()
+
+    tx = db.query(WalletTransaction).filter(
+        WalletTransaction.reference_id == txnid
+    ).with_for_update().first()
+
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
-        
+
     if tx.status != "PENDING":
         return {"message": "Transaction already processed"}
-    
-    # Store PayU traceability fields regardless of status
-    tx.payu_txn_id = mihpayid
+
+    tx.payu_txn_id  = mihpayid
     tx.payment_mode = mode
-        
+
     if status == "success":
         tx.status = "SUCCESS"
         user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
@@ -174,47 +243,63 @@ async def payu_webhook(request: Request, db: Session = Depends(get_db)):
             f"₹{tx.amount:.0f} has been added to your ZexPlay wallet.",
             "WALLET"
         )
+        logger.info(f"Payment SUCCESS: txnid={txnid} user={tx.user_id} amount={tx.amount}")
     else:
         tx.status = "FAILED"
-        tx.failure_reason = field9 or status  # store reason code
-        
+        tx.failure_reason = field9 or status
+        logger.info(f"Payment FAILED: txnid={txnid} reason={tx.failure_reason}")
+
     db.add(tx)
     db.commit()
-    import asyncio
-    asyncio.create_task(ws_manager.broadcast_to_admins({"type": "finance_update"}))
+
+    # FIXED: use BackgroundTasks instead of asyncio.create_task
+    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
     return {"message": "Webhook processed"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# PayU return handler (SURL / FURL — browser redirect after payment)
+# ─────────────────────────────────────────────────────────────────
 
 @router.post("/payu/success", response_class=HTMLResponse)
 @router.post("/payu/failure", response_class=HTMLResponse)
-async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
+async def payu_return_handler(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
     form = await request.form()
-    txnid = form.get("txnid")
-    status = form.get("status")
+    txnid    = form.get("txnid")
+    status   = form.get("status")
     mihpayid = form.get("mihpayid", "")
-    mode = form.get("mode", "")
-    field9 = form.get("field9", "")  # failure reason
-    
+    mode     = form.get("mode", "")
+    field9   = form.get("field9", "")
+
     if txnid:
         if status == "success" and not request.url.path.endswith("failure"):
-            amount = float(form.get("amount", 0))
+            amount      = float(form.get("amount", 0))
             productinfo = form.get("productinfo")
-            firstname = form.get("firstname")
-            email = form.get("email")
-            received_hash = form.get("hash")
-            
-            if verify_payu_hash(txnid, amount, productinfo, firstname, email, status, received_hash):
-                tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).with_for_update().first()
+            firstname   = form.get("firstname")
+            email       = form.get("email")
+            recv_hash   = form.get("hash")
+
+            if verify_payu_hash(txnid, amount, productinfo, firstname, email, status, recv_hash):
+                tx = db.query(WalletTransaction).filter(
+                    WalletTransaction.reference_id == txnid
+                ).with_for_update().first()
+
                 if tx and tx.status == "PENDING":
-                    tx.status = "SUCCESS"
-                    tx.payu_txn_id = mihpayid
+                    tx.status       = "SUCCESS"
+                    tx.payu_txn_id  = mihpayid
                     tx.payment_mode = mode
                     user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
                     user.wallet_balance += tx.amount
                     db.add(tx)
                     db.add(user)
                     db.commit()
-                    import asyncio
-                    asyncio.create_task(ws_manager.broadcast_to_admins({"type": "finance_update"}))
+                    background_tasks.add_task(
+                        ws_manager.broadcast_to_admins, {"type": "finance_update"}
+                    )
                     add_user_notification(
                         db, user.id,
                         "Payment Confirmed ✅",
@@ -222,25 +307,65 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
                         "WALLET"
                     )
         else:
-            # User cancelled / payment failed
-            tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
+            tx = db.query(WalletTransaction).filter(
+                WalletTransaction.reference_id == txnid
+            ).first()
             if tx and tx.status == "PENDING":
-                tx.status = "FAILED"
-                tx.payu_txn_id = mihpayid
+                tx.status         = "FAILED"
+                tx.payu_txn_id    = mihpayid
                 tx.failure_reason = field9 or status or "USER_CANCELLED"
                 db.add(tx)
                 db.commit()
-                import asyncio
-                asyncio.create_task(ws_manager.broadcast_to_admins({"type": "finance_update"}))
-                
-    bg_color = "#16A34A" if status == "success" else "#EF4444"
-    return HTMLResponse(f"""
-    <html><body style="background:#0D0E12; color:white; text-align:center; padding-top:50px;">
-        <h2 style="color:{bg_color};">{'Payment Successful!' if status == 'success' else 'Payment Failed!'}</h2>
-        <p>You can now close this screen.</p>
-    </body></html>
-    """)
+                background_tasks.add_task(
+                    ws_manager.broadcast_to_admins, {"type": "finance_update"}
+                )
 
+    bg_color = "#16A34A" if status == "success" else "#EF4444"
+    label    = "Payment Successful!" if status == "success" else "Payment Failed!"
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><body style="background:#0D0E12; color:white; text-align:center; padding-top:50px;">
+    <h2 style="color:{html.escape(bg_color)};">{html.escape(label)}</h2>
+    <p>You can now close this screen.</p>
+</body></html>""")
+
+
+# ─────────────────────────────────────────────────────────────────
+# UPI intent — FIXED: requires authentication + ownership check
+# ─────────────────────────────────────────────────────────────────
+
+@router.get("/payu/upi-intent/{txnid}")
+def get_upi_intent(
+    txnid: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # FIXED: auth required
+):
+    """Returns a native upi://pay deep link so Android can open GPay/PhonePe directly."""
+    tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
+    if not tx:
+        raise HTTPException(404, "Transaction not found")
+
+    # FIXED: ownership check
+    if tx.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+
+    merchant_vpa = settings.PAYU_MERCHANT_VPA
+    amount_str   = f"{tx.amount:.2f}"
+    upi_link = (
+        f"upi://pay"
+        f"?pa={merchant_vpa}"
+        f"&pn=ZexPlay"
+        f"&am={amount_str}"
+        f"&cu=INR"
+        f"&tn=ZexPlay+Wallet+Recharge"
+        f"&tr={txnid}"
+        f"&mc=7372"
+    )
+    return {"upi_link": upi_link, "txnid": txnid, "amount": tx.amount}
+
+
+# ─────────────────────────────────────────────────────────────────
+# Payment status polling
+# ─────────────────────────────────────────────────────────────────
 
 @router.get("/status/{txnid}")
 def get_payment_status(
@@ -251,27 +376,51 @@ def get_payment_status(
     """Android polls this after payment to confirm final status without trusting WebView URL."""
     tx = db.query(WalletTransaction).filter(
         WalletTransaction.reference_id == txnid,
-        WalletTransaction.user_id == current_user.id  # Security: user can only check their own txn
+        WalletTransaction.user_id == current_user.id
     ).first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return {
-        "txnid": txnid,
-        "status": tx.status,
-        "amount": tx.amount,
-        "payment_mode": tx.payment_mode,
+        "txnid":          txnid,
+        "status":         tx.status,
+        "amount":         tx.amount,
+        "payment_mode":   tx.payment_mode,
         "failure_reason": tx.failure_reason,
-        "payu_txn_id": tx.payu_txn_id,
+        "payu_txn_id":    tx.payu_txn_id,
     }
 
+
+# ─────────────────────────────────────────────────────────────────
+# Cancel transaction — FIXED: requires auth + ownership check
+# ─────────────────────────────────────────────────────────────────
+
 @router.get("/payu/cancel/{txnid}")
-def cancel_payu_transaction(txnid: str, db: Session = Depends(get_db)):
+def cancel_payu_transaction(
+    txnid: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)  # FIXED: auth required
+):
     tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
-    if tx and tx.status == "PENDING":
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    # FIXED: ownership check
+    if tx.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if tx.status == "PENDING":
         tx.status = "FAILED"
+        tx.failure_reason = "USER_CANCELLED"
         db.add(tx)
         db.commit()
+        logger.info(f"Transaction cancelled by user: txnid={txnid} user={current_user.id}")
+
     return {"message": "Transaction cancelled"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# Withdrawal request
+# ─────────────────────────────────────────────────────────────────
 
 @router.post("/withdraw")
 def request_withdrawal(
@@ -281,37 +430,36 @@ def request_withdrawal(
 ):
     if req.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
-        
-    # Lock user
+    if req.amount > 50_000:
+        raise HTTPException(status_code=400, detail="Maximum withdrawal per request is ₹50,000")
+
+    # Lock user row to prevent race conditions
     user = db.query(User).filter(User.id == current_user.id).with_for_update().first()
-    
+
     if user.wallet_balance < req.amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
-        
-    # Deduct balance immediately to prevent double spend
+
     user.wallet_balance -= req.amount
-    
-    # Save UPI ID
     user.upi_id = req.upi_id
-    
+
     tx = WalletTransaction(
         user_id=user.id,
         amount=-req.amount,
         transaction_type="WITHDRAWAL",
-        status="PENDING", # Requires admin approval
+        status="PENDING",
         reference_id=f"WITHDRAW_{uuid.uuid4().hex[:8].upper()}"
     )
-    
+
     db.add(tx)
     db.add(user)
     db.commit()
-    
+
     add_user_notification(
-        db, 
-        user.id, 
-        "Withdrawal Requested", 
-        f"Your withdrawal request of \u20b9{req.amount} has been submitted and is pending admin approval.",
+        db,
+        user.id,
+        "Withdrawal Requested",
+        f"Your withdrawal request of ₹{req.amount} has been submitted and is pending admin approval.",
         "WALLET"
     )
-    
+
     return {"message": "Withdrawal requested successfully. Waiting for admin approval."}

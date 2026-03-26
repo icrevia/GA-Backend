@@ -1,76 +1,79 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from core.config import settings
 import os
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
+logger = logging.getLogger("zexplay")
 
 from api.router import api_router
-
 from core.database import engine, Base
 from models import user, tournament, wallet, support
 
+# ─────────────────────────────────────────────
+# Rate limiter (global, keyed by IP)
+# ─────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+    # Disable public OpenAPI docs in production via env flag
+    openapi_url=f"{settings.API_V1_STR}/openapi.json" if settings.DEBUG else None,
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ─────────────────────────────────────────────
 # Static Files
+# ─────────────────────────────────────────────
 if not os.path.exists("static"):
     os.makedirs("static")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Startup DB migration/fix logic
-@app.on_event("startup")
-def startup_db_fix():
-    from core.database import engine
-    from sqlalchemy import text
-    with engine.connect() as conn:
-        try:
-            # Add missing columns if they don't exist
-            conn.execute(text("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS max_slots INTEGER DEFAULT 100"))
-            conn.execute(text("ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS game_username VARCHAR"))
-            conn.execute(text("ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS game_uid VARCHAR"))
-            # PayU traceability columns (added 2026-03-27)
-            conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS payu_txn_id VARCHAR"))
-            conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS payment_mode VARCHAR"))
-            conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS failure_reason VARCHAR"))
-            conn.commit()
-            print("DB Schema Migration: Checked/Fixed Columns 🦾")
-        except Exception as e:
-            print(f"Non-critical migration skip: {str(e)}")
-
+# ─────────────────────────────────────────────
+# CORS — explicit origins only, never wildcard
+# ─────────────────────────────────────────────
+ALLOWED_ORIGINS = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
-# Initialize DB — creates tables that don't exist, never drops
+# ─────────────────────────────────────────────
+# DB — create tables (no DROP, safe for prod)
+# ─────────────────────────────────────────────
 Base.metadata.create_all(bind=engine)
 
-# Migration Helper: Auto-add columns if they are missing
-def run_migrations():
-    from sqlalchemy import inspect, text
-    inspector = inspect(engine)
-    columns = [c['name'] for c in inspector.get_columns('tournaments')]
-    
-    with engine.connect() as conn:
-        if 'match_type' not in columns:
-            print("Migration: Adding match_type to tournaments. Status: PENDING")
-            conn.execute(text("ALTER TABLE tournaments ADD COLUMN match_type VARCHAR(255) DEFAULT 'SOLO'"))
-            conn.commit()
-            print("Migration: Adding match_type to tournaments. Status: SUCCESS")
-        
-run_migrations()
+
+@app.on_event("startup")
+def startup_event():
+    logger.info("ZexPlay API starting up...")
+    logger.info(f"DEBUG mode: {settings.DEBUG}")
+    logger.info(f"Allowed origins: {ALLOWED_ORIGINS}")
+
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+
 @app.get("/")
 def root():
-    return {"message": "ZexPlay API — Production Ready"}
+    return {"message": "ZexPlay API — Online", "version": "2.0"}
+
 
 @app.get("/api/v1/status")
 def get_system_status():
@@ -78,22 +81,25 @@ def get_system_status():
     from models.config import SystemConfig
     db = SessionLocal()
     try:
-        # Fetch all relevant configs in one go or individually
         configs = db.query(SystemConfig).all()
         config_map = {c.config_key: c.config_value for c in configs}
-        
         maintenance_mode = config_map.get("maintenance_mode", "false").lower() == "true"
-        
         return {
             "maintenance_mode": maintenance_mode,
             "status": "maintenance" if maintenance_mode else "online",
-            "message": config_map.get("maintenance_message", "Fine-tuning the gears for a smoother experience. We'll be back in just a blink!"),
+            "message": config_map.get(
+                "maintenance_message",
+                "Fine-tuning the gears for a smoother experience. We'll be back in just a blink!"
+            ),
             "until": config_map.get("maintenance_until", ""),
             "latest_version_code": int(config_map.get("latest_version_code", "1")),
             "latest_version_name": config_map.get("latest_version_name", "1.0"),
             "update_url": config_map.get("update_url", ""),
             "force_update": config_map.get("force_update", "false").lower() == "true",
-            "update_message": config_map.get("update_message", "A new version of ZexPlay is available! Upgrade now for the latest features and improved performance.")
+            "update_message": config_map.get(
+                "update_message",
+                "A new version of ZexPlay is available! Upgrade now for the latest features."
+            )
         }
     finally:
         db.close()
