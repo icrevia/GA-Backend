@@ -19,6 +19,20 @@ if not os.path.exists("static"):
     os.makedirs("static")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Startup DB migration/fix logic
+@app.on_event("startup")
+def startup_db_fix():
+    from core.database import engine
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            # Add missing columns if they don't exist
+            conn.execute(text("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS max_slots INTEGER DEFAULT 100"))
+            conn.commit()
+            print("DB Schema Migration: Checked/Fixed 'max_slots' column 🦾")
+        except Exception as e:
+            print(f"Non-critical migration skip: {str(e)}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
