@@ -142,27 +142,40 @@ async def payu_webhook(request: Request, db: Session = Depends(get_db)):
     email = form.get("email")
     status = form.get("status")
     received_hash = form.get("hash")
+    mihpayid = form.get("mihpayid", "")   # PayU's own transaction ID
+    mode = form.get("mode", "")            # Payment mode: UPI, CC, DC, NB, WALLET
+    field9 = form.get("field9", "")        # Failure reason from PayU
     
     is_valid = verify_payu_hash(txnid, amount, productinfo, firstname, email, status, received_hash)
     if not is_valid:
         raise HTTPException(status_code=400, detail="Invalid hash")
         
-    # Lock transaction row
+    # Lock transaction row (prevents double credit)
     tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).with_for_update().first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
         
     if tx.status != "PENDING":
         return {"message": "Transaction already processed"}
+    
+    # Store PayU traceability fields regardless of status
+    tx.payu_txn_id = mihpayid
+    tx.payment_mode = mode
         
     if status == "success":
         tx.status = "SUCCESS"
-        # Update user wallet balance atomically
         user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
         user.wallet_balance += tx.amount
         db.add(user)
+        add_user_notification(
+            db, user.id,
+            "Payment Confirmed ✅",
+            f"₹{tx.amount:.0f} has been added to your ZexPlay wallet.",
+            "WALLET"
+        )
     else:
         tx.status = "FAILED"
+        tx.failure_reason = field9 or status  # store reason code
         
     db.add(tx)
     db.commit()
@@ -174,9 +187,11 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
     txnid = form.get("txnid")
     status = form.get("status")
+    mihpayid = form.get("mihpayid", "")
+    mode = form.get("mode", "")
+    field9 = form.get("field9", "")  # failure reason
     
     if txnid:
-        # Full Secure Fallback Logic: Webhooks are often delayed. Wait or credit instantly based on SURL form data!
         if status == "success" and not request.url.path.endswith("failure"):
             amount = float(form.get("amount", 0))
             productinfo = form.get("productinfo")
@@ -184,34 +199,33 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
             email = form.get("email")
             received_hash = form.get("hash")
             
-            from services.payu import verify_payu_hash
             if verify_payu_hash(txnid, amount, productinfo, firstname, email, status, received_hash):
-                # Lock and update immediately
                 tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).with_for_update().first()
                 if tx and tx.status == "PENDING":
                     tx.status = "SUCCESS"
+                    tx.payu_txn_id = mihpayid
+                    tx.payment_mode = mode
                     user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
                     user.wallet_balance += tx.amount
                     db.add(tx)
                     db.add(user)
                     db.commit()
-                    
                     add_user_notification(
-                        db, 
-                        user.id, 
-                        "Payment Received", 
-                        f"Successfully added \u20b9{tx.amount} to your ZexPlay wallet via PayU.",
+                        db, user.id,
+                        "Payment Confirmed ✅",
+                        f"₹{tx.amount:.0f} has been added to your ZexPlay wallet.",
                         "WALLET"
                     )
         else:
-            # Force failure on cancellation or decline
+            # User cancelled / payment failed
             tx = db.query(WalletTransaction).filter(WalletTransaction.reference_id == txnid).first()
             if tx and tx.status == "PENDING":
                 tx.status = "FAILED"
+                tx.payu_txn_id = mihpayid
+                tx.failure_reason = field9 or status or "USER_CANCELLED"
                 db.add(tx)
                 db.commit()
                 
-    # Return simple HTML to let the Android WebView gracefully detect the endpoint
     bg_color = "#16A34A" if status == "success" else "#EF4444"
     return HTMLResponse(f"""
     <html><body style="background:#0D0E12; color:white; text-align:center; padding-top:50px;">
@@ -219,6 +233,29 @@ async def payu_return_handler(request: Request, db: Session = Depends(get_db)):
         <p>You can now close this screen.</p>
     </body></html>
     """)
+
+
+@router.get("/status/{txnid}")
+def get_payment_status(
+    txnid: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Android polls this after payment to confirm final status without trusting WebView URL."""
+    tx = db.query(WalletTransaction).filter(
+        WalletTransaction.reference_id == txnid,
+        WalletTransaction.user_id == current_user.id  # Security: user can only check their own txn
+    ).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return {
+        "txnid": txnid,
+        "status": tx.status,
+        "amount": tx.amount,
+        "payment_mode": tx.payment_mode,
+        "failure_reason": tx.failure_reason,
+        "payu_txn_id": tx.payu_txn_id,
+    }
 
 @router.get("/payu/cancel/{txnid}")
 def cancel_payu_transaction(txnid: str, db: Session = Depends(get_db)):

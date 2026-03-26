@@ -431,22 +431,180 @@ def send_push_notification(
 @router.get("/transactions")
 def list_all_transactions(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_admin)
+    current_user: User = Depends(get_current_active_admin),
+    status: str = "",      # filter: PENDING / SUCCESS / FAILED
+    type: str = "",        # filter: ADD_MONEY / WITHDRAWAL / etc
+    search: str = "",      # search: username, email, reference_id, payu_txn_id
+    limit: int = 100
 ):
-    txs = db.query(WalletTransaction).order_by(WalletTransaction.created_at.desc()).limit(100).all()
+    """Full transaction audit log — all types, all statuses, all users."""
+    q = db.query(WalletTransaction).order_by(WalletTransaction.created_at.desc())
+    
+    # Apply filters
+    if status:
+        q = q.filter(WalletTransaction.status == status.upper())
+    if type:
+        q = q.filter(WalletTransaction.transaction_type == type.upper())
+
+    txs = q.limit(limit * 3).all()  # Over-fetch to allow search filtering
+    
+    # Build response with user enrichment
     res = []
     for tx in txs:
         u = db.query(User).filter(User.id == tx.user_id).first()
+        username = u.username if u else "Unknown"
+        email = u.email if u else ""
+        
+        # Apply search filter
+        if search:
+            search_lower = search.lower()
+            if not any([
+                search_lower in username.lower(),
+                search_lower in email.lower(),
+                search_lower in (tx.reference_id or "").lower(),
+                search_lower in (tx.payu_txn_id or "").lower(),
+                search_lower in str(tx.user_id),
+            ]):
+                continue
+        
         res.append({
             "id": tx.id,
             "user_id": tx.user_id,
-            "username": u.username if u else "Unknown",
+            "username": username,
+            "email": email,
             "amount": tx.amount,
             "type": tx.transaction_type,
             "status": tx.status,
+            "reference_id": tx.reference_id,
+            "payu_txn_id": getattr(tx, 'payu_txn_id', None),
+            "payment_mode": getattr(tx, 'payment_mode', None),
+            "failure_reason": getattr(tx, 'failure_reason', None),
             "created_at": tx.created_at,
         })
+        if len(res) >= limit:
+            break
+    
     return res
+
+
+@router.get("/finance-stats")
+def get_finance_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    """Dashboard stats for admin finance panel."""
+    from datetime import datetime, timezone, timedelta
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    total_recharged_today = db.query(func.sum(WalletTransaction.amount)).filter(
+        WalletTransaction.transaction_type == "ADD_MONEY",
+        WalletTransaction.status == "SUCCESS",
+        WalletTransaction.created_at >= today_start
+    ).scalar() or 0.0
+
+    failed_today = db.query(func.count(WalletTransaction.id)).filter(
+        WalletTransaction.transaction_type == "ADD_MONEY",
+        WalletTransaction.status == "FAILED",
+        WalletTransaction.created_at >= today_start
+    ).scalar() or 0
+
+    pending_payments = db.query(func.count(WalletTransaction.id)).filter(
+        WalletTransaction.transaction_type == "ADD_MONEY",
+        WalletTransaction.status == "PENDING"
+    ).scalar() or 0
+
+    pending_withdrawals = db.query(func.count(WalletTransaction.id)).filter(
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+        WalletTransaction.status == "PENDING"
+    ).scalar() or 0
+
+    total_recharged_all = db.query(func.sum(WalletTransaction.amount)).filter(
+        WalletTransaction.transaction_type == "ADD_MONEY",
+        WalletTransaction.status == "SUCCESS"
+    ).scalar() or 0.0
+
+    return {
+        "total_recharged_today": round(total_recharged_today, 2),
+        "failed_today": failed_today,
+        "pending_payments": pending_payments,
+        "pending_withdrawals": pending_withdrawals,
+        "total_recharged_all_time": round(total_recharged_all, 2),
+    }
+
+
+@router.post("/transactions/{transaction_id}/manual-credit")
+def manual_credit_transaction(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    """
+    Admin manually credits a PENDING ADD_MONEY transaction.
+    Used when user paid but webhook/SURL failed to fire.
+    Creates full audit trail.
+    """
+    tx = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).with_for_update().first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx.transaction_type != "ADD_MONEY":
+        raise HTTPException(status_code=400, detail="Can only manually credit ADD_MONEY transactions")
+    if tx.status == "SUCCESS":
+        raise HTTPException(status_code=400, detail="Transaction already credited")
+    if tx.status == "FAILED":
+        raise HTTPException(status_code=400, detail="Transaction is marked FAILED. Use adjust-funds instead if needed.")
+    
+    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    tx.status = "SUCCESS"
+    tx.failure_reason = None
+    # Mark it as admin-credited so it's distinguishable in the log
+    if not getattr(tx, 'payu_txn_id', None) or not tx.payu_txn_id:
+        tx.payu_txn_id = f"ADMIN_CREDITED_BY_{current_user.username}"
+    
+    user.wallet_balance += tx.amount
+    db.add(tx)
+    db.add(user)
+    db.commit()
+    
+    add_user_notification(
+        db, user.id,
+        "Payment Manually Credited ✅",
+        f"₹{tx.amount:.0f} has been manually added to your wallet by support. Sorry for the delay!",
+        "WALLET"
+    )
+    
+    return {
+        "message": f"Successfully credited ₹{tx.amount} to {user.username}. New balance: ₹{user.wallet_balance:.2f}"
+    }
+
+
+@router.post("/transactions/{transaction_id}/mark-failed")
+def mark_transaction_failed(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    """
+    Admin marks a stuck PENDING transaction as FAILED.
+    Used when user clearly cancelled/abandoned payment.
+    """
+    tx = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).with_for_update().first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx.status != "PENDING":
+        raise HTTPException(status_code=400, detail=f"Transaction is already {tx.status}")
+    if tx.transaction_type not in ("ADD_MONEY", "WITHDRAWAL"):
+        raise HTTPException(status_code=400, detail="Only ADD_MONEY or WITHDRAWAL can be marked failed")
+    
+    tx.status = "FAILED"
+    tx.failure_reason = f"MARKED_FAILED_BY_ADMIN:{current_user.username}"
+    db.add(tx)
+    db.commit()
+    
+    return {"message": f"Transaction #{transaction_id} marked as FAILED."}
+
 
 @router.get("/leaderboard")
 def get_leaderboard(

@@ -30,10 +30,15 @@ def startup_db_fix():
             conn.execute(text("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS max_slots INTEGER DEFAULT 100"))
             conn.execute(text("ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS game_username VARCHAR"))
             conn.execute(text("ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS game_uid VARCHAR"))
+            # PayU traceability columns (added 2026-03-27)
+            conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS payu_txn_id VARCHAR"))
+            conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS payment_mode VARCHAR"))
+            conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS failure_reason VARCHAR"))
             conn.commit()
             print("DB Schema Migration: Checked/Fixed Columns 🦾")
         except Exception as e:
             print(f"Non-critical migration skip: {str(e)}")
+
 
 app.add_middleware(
     CORSMiddleware,
