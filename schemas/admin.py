@@ -36,3 +36,4 @@ class TournamentCreateAdmin(BaseModel):
     match_type: str
     match_time: str
     game_image_url: Optional[str] = None
+    max_slots: Optional[int] = 100

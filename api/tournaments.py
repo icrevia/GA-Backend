@@ -18,9 +18,20 @@ from schemas.tournament import (
 
 router = APIRouter()
 
+def _with_count(tournament: Tournament, db: Session) -> Tournament:
+    """Attach joined_count so clients can show slot fill progress."""
+    count = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament.id
+    ).count()
+    tournament.joined_count = count  # type: ignore[attr-defined]
+    return tournament
+
 @router.get("/", response_model=List[TournamentResponse])
 def get_upcoming_tournaments(db: Session = Depends(get_db)):
-    return db.query(Tournament).filter(or_(Tournament.status == "UPCOMING", Tournament.status == "LIVE")).order_by(Tournament.match_time.asc()).all()
+    tournaments = db.query(Tournament).filter(
+        or_(Tournament.status == "UPCOMING", Tournament.status == "LIVE")
+    ).order_by(Tournament.match_time.asc()).all()
+    return [_with_count(t, db) for t in tournaments]
 
 @router.post("/", response_model=TournamentResponse)
 def create_tournament(
@@ -32,7 +43,7 @@ def create_tournament(
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
-    return db_obj
+    return _with_count(db_obj, db)
 
 @router.put("/{tournament_id}", response_model=TournamentResponse)
 def update_tournament(
@@ -52,9 +63,7 @@ def update_tournament(
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
-    
-    # Broadcast realtime update logic here ideally (call WebSocket manager)
-    return db_obj
+    return _with_count(db_obj, db)
 
 @router.post("/{tournament_id}/join", response_model=TournamentJoinResponse)
 def join_tournament(
@@ -132,8 +141,7 @@ def get_my_tournaments(
         if t.status != "LIVE":
             t.room_id = None
             t.room_password = None
-            
-    return tournaments
+    return [_with_count(t, db) for t in tournaments]
 
 @router.get("/{tournament_id}", response_model=TournamentResponse)
 def get_tournament(
@@ -154,5 +162,5 @@ def get_tournament(
     if not is_participant or tournament.status != "LIVE":
         tournament.room_id = None
         tournament.room_password = None
-        
-    return tournament
+
+    return _with_count(tournament, db)

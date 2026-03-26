@@ -27,6 +27,7 @@ class TournamentUpdate(BaseModel):
     room_id: Optional[str] = None
     room_password: Optional[str] = None
     winner_id: Optional[int] = None
+    max_slots: Optional[int] = None
 
 class ParticipantResponse(BaseModel):
     id: int
@@ -46,6 +47,7 @@ class TournamentResponse(TournamentBase):
     room_password: Optional[str] = None
     winner_id: Optional[int] = None
     participants: Optional[list[ParticipantResponse]] = []
+    joined_count: Optional[int] = 0  # computed — number of confirmed participants
 
     class Config:
         from_attributes = True

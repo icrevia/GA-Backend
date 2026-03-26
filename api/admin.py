@@ -66,7 +66,9 @@ def list_tournaments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    return db.query(Tournament).order_by(Tournament.created_at.desc()).all()
+    from api.tournaments import _with_count
+    tournaments = db.query(Tournament).order_by(Tournament.created_at.desc()).all()
+    return [_with_count(t, db) for t in tournaments]
 
 @router.post("/tournaments", response_model=TournamentResponse)
 def create_tournament(
@@ -80,6 +82,7 @@ def create_tournament(
     except Exception:
         dt = datetime.now()
         
+    from api.tournaments import _with_count
     db_obj = Tournament(
         title=data.title,
         game_name=data.game_name,
@@ -88,12 +91,13 @@ def create_tournament(
         match_type=data.match_type,
         match_time=dt,
         game_image_url=data.game_image_url,
+        max_slots=data.max_slots or 100,
         status="UPCOMING"
     )
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
-    return db_obj
+    return _with_count(db_obj, db)
 
 @router.post("/tournaments/{tournament_id}/set-room", response_model=TournamentResponse)
 def set_tournament_room(
