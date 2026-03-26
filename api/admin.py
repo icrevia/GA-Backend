@@ -425,13 +425,17 @@ def get_banned_users(
     users = db.query(User).filter(User.is_active == False).all()
     return [{"id": u.id, "username": u.username, "email": u.email, "balance": u.wallet_balance} for u in users]
 
-@router.post("/tournaments/{tournament_id}/conclude")
+@router.post("/tournaments/finish/{tournament_id}", response_model=dict)
 def conclude_tournament(
     tournament_id: int,
-    data: TournamentConclude,
+    data: dict, # Using raw dict to bypass strict schema for now
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
+    winner_id = data.get("winner_id")
+    if not winner_id:
+        raise HTTPException(status_code=422, detail="Winner ID is required")
+        
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         from fastapi import HTTPException
