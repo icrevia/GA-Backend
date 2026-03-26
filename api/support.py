@@ -123,12 +123,15 @@ async def send_message(
     db.commit()
     
     msg_data = {
+        "type": "chat_message",
         "id": new_msg.id,
+        "session_id": session.id,
         "content": new_msg.content,
         "is_admin": new_msg.is_admin,
         "timestamp": now_ist().isoformat()
     }
-    await manager.broadcast(msg_data)
+    # User message -> send to all admins
+    await manager.broadcast_to_admins(msg_data)
     return {"status": "success"}
 
 @router.post("/admin/reply")
@@ -154,10 +157,13 @@ async def admin_reply(
     db.commit()
     
     msg_data = {
+        "type": "chat_message",
         "id": new_msg.id,
+        "session_id": request.session_id,
         "content": new_msg.content,
         "is_admin": True,
         "timestamp": now_ist().isoformat()
     }
-    await manager.broadcast(msg_data)
+    # Admin reply -> send directly to the user
+    await manager.send_personal_message(msg_data, session.user_id)
     return {"status": "success"}

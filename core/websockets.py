@@ -2,7 +2,7 @@ from fastapi import WebSocket
 from typing import Dict, List
 import json
 
-CALL_SIGNAL_TYPES = {"call_ring", "call_accepted", "call_rejected", "call_end", "offer", "answer", "ice_candidate", "admin_call_request"}
+CALL_SIGNAL_TYPES = {"call_ring", "call_accepted", "call_rejected", "call_end", "offer", "answer", "ice_candidate", "admin_call_request", "call_busy", "chat_message"}
 
 class ConnectionManager:
     def __init__(self):
