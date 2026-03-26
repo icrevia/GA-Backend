@@ -76,23 +76,55 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
                 # Admin → route to specific user
                 target_user_id = msg.get("to_user_id")
                 if target_user_id:
+                    target_user_id = int(target_user_id)
+                    # Stamp admin's user_id so Android can identify which admin sent this
+                    msg["from_user_id"] = user_id
                     msg["from"] = "admin"
-                    await manager.send_personal_message(msg, int(target_user_id))
+
+                    # Track call pairing when admin sends an offer or initiates a call
+                    if msg_type in ("offer", "admin_call_request"):
+                        manager.set_call_pair(user_id, target_user_id)
+                        print(f"WS CallPair: Admin={user_id} ↔ User={target_user_id}")
+
+                    # Clear call pairing when call ends
+                    if msg_type in ("call_end", "call_rejected"):
+                        manager.clear_call_pair_by_admin(user_id)
+                        print(f"WS CallPair cleared for Admin={user_id}")
+
+                    await manager.send_personal_message(msg, target_user_id)
             else:
                 # User → route to all admins, include caller info
                 msg["from_user_id"] = user_id
                 # Get username for convenience
                 db = SessionLocal()
-                user = db.query(User).filter(User.id == user_id).first()
-                msg["from_user_name"] = user.username if user else f"User #{user_id}"
-                db.close()
+                try:
+                    user = db.query(User).filter(User.id == user_id).first()
+                    msg["from_user_name"] = user.username if user else f"User #{user_id}"
+                finally:
+                    db.close()
+
+                # Clear call pairing when user ends/rejects
+                if msg_type in ("call_end", "call_rejected"):
+                    manager.clear_call_pair_by_user(user_id)
+                    print(f"WS CallPair cleared for User={user_id}")
+
                 await manager.broadcast_to_admins(msg)
 
     except WebSocketDisconnect:
         manager.disconnect(user_id, websocket)
         if is_admin:
-            # Notify all users that an admin left, so any active calls can cleanup
-            await manager.broadcast({"type": "call_end", "from": "admin", "reason": "admin_disconnected"})
+            # Only notify the specific user this admin was in a call with (not ALL users!)
+            paired_user_id = manager.get_user_for_admin(user_id)
+            manager.clear_call_pair_by_admin(user_id)
+            if paired_user_id:
+                print(f"WS: Admin {user_id} disconnected, notifying only user {paired_user_id}")
+                await manager.send_personal_message(
+                    {"type": "call_end", "from_user_id": user_id, "from": "admin", "reason": "admin_disconnected"},
+                    paired_user_id
+                )
         else:
-            await manager.broadcast_to_admins({"type": "call_end", "from_user_id": user_id, "reason": "user_disconnected"})
-
+            # User disconnected — notify admins
+            manager.clear_call_pair_by_user(user_id)
+            await manager.broadcast_to_admins(
+                {"type": "call_end", "from_user_id": user_id, "reason": "user_disconnected"}
+            )
