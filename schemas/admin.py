@@ -1,5 +1,4 @@
-from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Union, Any
 
 class SystemConfigResponse(BaseModel):
     id: int
@@ -26,7 +25,7 @@ class TournamentRoomUpdate(BaseModel):
     room_password: Optional[str] = None
 
 class TournamentConclude(BaseModel):
-    winner_id: int
+    winner_id: Union[int, str]
 
 class TournamentCreateAdmin(BaseModel):
     title: str
