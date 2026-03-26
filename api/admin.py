@@ -10,6 +10,7 @@ from models.tournament import Tournament
 from models.wallet import WalletTransaction
 from models.config import SystemConfig
 from models.notification import Notification
+from models.participant import TournamentParticipant
 from services.notifications import add_user_notification
 
 from schemas.admin import (
@@ -83,8 +84,6 @@ def delete_tournament(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    from models.participant import TournamentParticipant
-    
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         from fastapi import HTTPException
@@ -209,16 +208,20 @@ def get_tournament_roster(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    joins = db.query(WalletTransaction).filter(
-        WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
-        WalletTransaction.status == "SUCCESS",
-        WalletTransaction.reference_id.like(f"TRN_{tournament_id}%") # fuzzy match for composite refs
-    ).all()
+    participants = db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == tournament_id).all()
     
-    user_ids = [j.user_id for j in joins]
+    user_ids = [p.user_id for p in participants]
     users = db.query(User).filter(User.id.in_(user_ids)).all()
+    user_map = {u.id: u for u in users}
     
-    return [{"id": u.id, "username": u.username, "email": u.email, "bgmi_id": u.bgmi_id} for u in users]
+    return [
+        {
+            "id": p.user_id, 
+            "username": user_map[p.user_id].username if p.user_id in user_map else "Unknown",
+            "game_username": p.game_username,
+            "game_uid": p.game_uid
+        } for p in participants
+    ]
 
 @router.post("/tournaments/{tournament_id}/refund")
 def refund_tournament(
