@@ -1,3 +1,4 @@
+from pydantic import BaseModel
 from typing import Optional, Union, Any
 
 class SystemConfigResponse(BaseModel):
