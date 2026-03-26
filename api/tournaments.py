@@ -53,69 +53,62 @@ def update_tournament(
 @router.post("/{tournament_id}/join", response_model=TournamentJoinResponse)
 def join_tournament(
     tournament_id: int,
+    request: TournamentJoinRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    db_tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-    if not db_tournament:
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
         
-    if db_tournament.status != "UPCOMING":
-        raise HTTPException(status_code=400, detail="Cannot join active or completed tournament")
+    if tournament.status != "UPCOMING":
+        raise HTTPException(status_code=400, detail="Tournament is already Live or Completed")
         
+    # Check if tournament is full
+    participant_count = db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == tournament_id).count()
+    if participant_count >= (tournament.max_slots or 100):
+        raise HTTPException(status_code=400, detail="Arena is full! Try another one.")
+
     # Check if already joined
-    participant = db.query(TournamentParticipant).filter(
+    existing = db.query(TournamentParticipant).filter(
         TournamentParticipant.tournament_id == tournament_id,
         TournamentParticipant.user_id == current_user.id
     ).first()
-    
-    if participant:
-        raise HTTPException(status_code=400, detail="Already joined this tournament")
+    if existing:
+        raise HTTPException(status_code=400, detail="Already joined this arena")
         
-    # Atomic wallet deduction
-    # Lock the user row for update
-    user_to_update = db.query(User).filter(User.id == current_user.id).with_for_update().first()
-    
-    if user_to_update.wallet_balance < db_tournament.entry_fee:
-        raise HTTPException(status_code=400, detail="Insufficient wallet balance")
+    # Check and update wallet (atomic)
+    user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+    if user_wallet.wallet_balance < tournament.entry_fee:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
         
-    # Deduct balance
-    user_to_update.wallet_balance -= db_tournament.entry_fee
+    # Deduct fee
+    user_wallet.wallet_balance -= tournament.entry_fee
     
-    # Create transaction
+    # Create transaction log
     transaction = WalletTransaction(
-        user_id=user_to_update.id,
-        amount=-db_tournament.entry_fee,
+        user_id=current_user.id,
+        amount=-tournament.entry_fee,
         transaction_type="JOIN_TOURNAMENT",
         status="SUCCESS",
-        reference_id=f"TOUR_{tournament_id}_{user_to_update.id}"
+        reference_id=f"TOUR_{tournament_id}_{current_user.id}"
     )
-    
-    # Create participant
-    new_participant = TournamentParticipant(
-        tournament_id=tournament_id,
-        user_id=user_to_update.id
-    )
-    
     db.add(transaction)
-    db.add(new_participant)
-    db.add(user_to_update)
-    db.commit()
-    db.refresh(user_to_update)
     
-    from services.notifications import add_user_notification
-    add_user_notification(
-        db, 
-        user_to_update.id, 
-        "Arena Entry Confirmed", 
-        f"You have successfully joined the {db_tournament.title} tournament. Get ready for battle!",
-        "TOURNAMENT"
+    # Create participant record
+    participant = TournamentParticipant(
+        tournament_id=tournament_id, 
+        user_id=current_user.id,
+        game_username=request.game_username,
+        game_uid=request.game_uid
     )
+    db.add(participant)
+    db.commit()
     
     return {
-        "message": "Successfully joined the tournament",
+        "message": f"Successfully joined {tournament.title}!",
         "tournament_id": tournament_id,
-        "new_wallet_balance": user_to_update.wallet_balance
+        "new_wallet_balance": user_wallet.wallet_balance
     }
 
 @router.get("/my", response_model=List[TournamentResponse])

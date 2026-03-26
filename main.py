@@ -28,8 +28,10 @@ def startup_db_fix():
         try:
             # Add missing columns if they don't exist
             conn.execute(text("ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS max_slots INTEGER DEFAULT 100"))
+            conn.execute(text("ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS game_username VARCHAR"))
+            conn.execute(text("ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS game_uid VARCHAR"))
             conn.commit()
-            print("DB Schema Migration: Checked/Fixed 'max_slots' column 🦾")
+            print("DB Schema Migration: Checked/Fixed Columns 🦾")
         except Exception as e:
             print(f"Non-critical migration skip: {str(e)}")
 

@@ -54,3 +54,7 @@ class TournamentJoinResponse(BaseModel):
     message: str
     tournament_id: int
     new_wallet_balance: float
+
+class TournamentJoinRequest(BaseModel):
+    game_username: str
+    game_uid: str
