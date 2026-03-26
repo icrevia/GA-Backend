@@ -131,7 +131,53 @@ async def send_message(
         "timestamp": now_ist().isoformat()
     }
     # User message -> send to all admins
-    await manager.broadcast_to_admins(msg_data)
+    await manager.broadcast(msg_data)
+    return {"status": "success"}
+
+@router.post("/log-call")
+async def log_call(
+    type: str = Query(...), # MISSED, REJECTED, FINISHED, BUSY
+    duration: str = Query(None),
+    user_id: int = Query(None), # Used by Admin to log to a specific user's session
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    target_user_id = user_id if (current_user.role == "ADMIN" and user_id) else current_user.id
+    session = db.query(ChatSession).filter(ChatSession.user_id == target_user_id).first()
+    if not session:
+        session = ChatSession(user_id=target_user_id)
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+    
+    content = f"[CALL_LOG:{type}]"
+    if duration:
+        content = f"[CALL_LOG:{type}:{duration}]"
+        
+    new_msg = ChatMessage(
+        session_id=session.id,
+        sender_id=current_user.id,
+        content=content,
+        is_admin=(current_user.role == "ADMIN")
+    )
+    db.add(new_msg)
+    db.commit()
+    
+    msg_data = {
+        "type": "chat_message",
+        "id": new_msg.id,
+        "session_id": session.id,
+        "content": content,
+        "is_admin": new_msg.is_admin,
+        "timestamp": now_ist().isoformat()
+    }
+    
+    # Broadcast to relevant parties
+    if current_user.role == "ADMIN":
+        await manager.send_personal_message(msg_data, target_user_id)
+    else:
+        await manager.broadcast_to_admins(msg_data)
+        
     return {"status": "success"}
 
 @router.post("/admin/reply")
