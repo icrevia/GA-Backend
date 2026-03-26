@@ -135,3 +135,25 @@ def get_my_tournaments(
             t.room_password = None
             
     return tournaments
+
+@router.get("/{tournament_id}", response_model=TournamentResponse)
+def get_tournament(
+    tournament_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+        
+    # Check if this user is a participant to show room details
+    is_participant = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id,
+        TournamentParticipant.user_id == current_user.id
+    ).first()
+    
+    if not is_participant or tournament.status != "LIVE":
+        tournament.room_id = None
+        tournament.room_password = None
+        
+    return tournament
