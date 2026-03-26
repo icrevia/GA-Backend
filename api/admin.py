@@ -12,7 +12,13 @@ from models.config import SystemConfig
 from models.notification import Notification
 from services.notifications import add_user_notification
 
-from schemas.admin import SystemConfigUpdate, NotificationSendRequest, UserStatusUpdate
+from schemas.admin import (
+    SystemConfigUpdate, 
+    NotificationSendRequest, 
+    UserStatusUpdate, 
+    TournamentRoomUpdate, 
+    TournamentCreateAdmin
+)
 from schemas.tournament import TournamentCreate, TournamentResponse
 
 router = APIRouter()
@@ -26,11 +32,46 @@ def list_tournaments(
 
 @router.post("/tournaments", response_model=TournamentResponse)
 def create_tournament(
-    tournament_in: TournamentCreate,
+    data: TournamentCreateAdmin,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    db_obj = Tournament(**tournament_in.dict())
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(data.match_time.replace('Z', '+00:00'))
+    except Exception:
+        dt = datetime.now()
+        
+    db_obj = Tournament(
+        title=data.title,
+        game_name=data.game_name,
+        entry_fee=data.entry_fee,
+        prize_pool=data.prize_pool,
+        match_type=data.match_type,
+        match_time=dt,
+        game_image_url=data.game_image_url,
+        status="UPCOMING"
+    )
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+@router.post("/tournaments/{tournament_id}/set-room", response_model=TournamentResponse)
+def set_tournament_room(
+    tournament_id: int,
+    data: TournamentRoomUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+        
+    db_obj.room_id = data.room_id
+    db_obj.room_password = data.room_password
+    db_obj.status = "LIVE"
+    
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)

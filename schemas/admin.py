@@ -20,3 +20,16 @@ class NotificationSendRequest(BaseModel):
 
 class UserStatusUpdate(BaseModel):
     is_active: bool
+
+class TournamentRoomUpdate(BaseModel):
+    room_id: str
+    room_password: Optional[str] = None
+
+class TournamentCreateAdmin(BaseModel):
+    title: str
+    game_name: str
+    entry_fee: float
+    prize_pool: float
+    match_type: str
+    match_time: str
+    game_image_url: Optional[str] = None
