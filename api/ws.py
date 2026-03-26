@@ -90,8 +90,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
 
     except WebSocketDisconnect:
         manager.disconnect(user_id, websocket)
-        # Notify the other side if a call was active
         if is_admin:
-            pass  # Admin left — couldn't easily know which user to notify
+            # Notify all users that an admin left, so any active calls can cleanup
+            await manager.broadcast({"type": "call_end", "from": "admin", "reason": "admin_disconnected"})
         else:
-            await manager.broadcast_to_admins({"type": "call_end", "from_user_id": user_id, "reason": "disconnected"})
+            await manager.broadcast_to_admins({"type": "call_end", "from_user_id": user_id, "reason": "user_disconnected"})
+

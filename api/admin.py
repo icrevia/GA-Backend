@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from typing import List, Dict
 import uuid
+import os
+import shutil
 
 from api.deps import get_db, get_current_active_admin
 from models.user import User
@@ -24,6 +26,39 @@ from schemas.admin import (
 from schemas.tournament import TournamentCreate, TournamentResponse
 
 router = APIRouter()
+
+@router.post("/config/upload-apk")
+def upload_apk(
+    file: UploadFile = File(...),
+    admin: User = Depends(get_current_active_admin)
+):
+    """
+    Directly upload an APK to the static directory for OTA updates.
+    """
+    print(f"DEBUG: Received APK upload request for {file.filename} 📥")
+    if not file.filename.endswith(".apk"):
+        print(f"DEBUG: Invalid file type: {file.filename} ❌")
+        raise HTTPException(status_code=400, detail="Only APK files are allowed! 🤖🛡️")
+    
+    # Save to static directory
+    static_dir = "static"
+    if not os.path.exists(static_dir):
+        os.makedirs(static_dir)
+        print(f"DEBUG: Created static directory 📂")
+    
+    file_path = os.path.join(static_dir, file.filename)
+    print(f"DEBUG: Saving file to {file_path} ...")
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        print(f"DEBUG: File saved successfully! ✅")
+    except Exception as e:
+        print(f"DEBUG: Failed to save file: {str(e)} ❌")
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    # Generate public URL (assuming the API runs on the same domain)
+    return {"url": f"/static/{file.filename}", "filename": file.filename}
 
 @router.get("/tournaments", response_model=List[TournamentResponse])
 def list_tournaments(
@@ -219,8 +254,12 @@ def get_tournament_roster(
         {
             "id": p.user_id, 
             "username": user_map[p.user_id].username if p.user_id in user_map else "Unknown",
+            "avatar_url": user_map[p.user_id].profile_pic if p.user_id in user_map else None,
             "game_username": p.game_username,
-            "game_uid": p.game_uid
+            "game_uid": p.game_uid,
+            "bgmi_id": user_map[p.user_id].bgmi_id if p.user_id in user_map else None,
+            "freefire_id": user_map[p.user_id].freefire_id if p.user_id in user_map else None,
+            "valorant_id": user_map[p.user_id].valorant_id if p.user_id in user_map else None,
         } for p in participants
     ]
 

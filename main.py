@@ -73,16 +73,22 @@ def get_system_status():
     from models.config import SystemConfig
     db = SessionLocal()
     try:
-        maintenance = db.query(SystemConfig).filter(SystemConfig.config_key == "maintenance_mode").first()
-        message = db.query(SystemConfig).filter(SystemConfig.config_key == "maintenance_message").first()
-        until = db.query(SystemConfig).filter(SystemConfig.config_key == "maintenance_until").first()
+        # Fetch all relevant configs in one go or individually
+        configs = db.query(SystemConfig).all()
+        config_map = {c.config_key: c.config_value for c in configs}
         
-        is_active = (maintenance.config_value.lower() == "true") if maintenance else False
+        maintenance_mode = config_map.get("maintenance_mode", "false").lower() == "true"
+        
         return {
-            "maintenance_mode": is_active,
-            "status": "maintenance" if is_active else "online",
-            "message": message.config_value if message else "Fine-tuning the gears for a smoother experience. We'll be back in just a blink!",
-            "until": until.config_value if until else ""
+            "maintenance_mode": maintenance_mode,
+            "status": "maintenance" if maintenance_mode else "online",
+            "message": config_map.get("maintenance_message", "Fine-tuning the gears for a smoother experience. We'll be back in just a blink!"),
+            "until": config_map.get("maintenance_until", ""),
+            "latest_version_code": int(config_map.get("latest_version_code", "1")),
+            "latest_version_name": config_map.get("latest_version_name", "1.0"),
+            "update_url": config_map.get("update_url", ""),
+            "force_update": config_map.get("force_update", "false").lower() == "true",
+            "update_message": config_map.get("update_message", "A new version of ZexPlay is available! Upgrade now for the latest features and improved performance.")
         }
     finally:
         db.close()
