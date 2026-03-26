@@ -11,6 +11,7 @@ class TournamentBase(BaseModel):
     match_time: datetime
     match_type: str = "SOLO"
     game_image_url: Optional[str] = None
+    max_slots: Optional[int] = 100
 
 class TournamentCreate(TournamentBase):
     pass

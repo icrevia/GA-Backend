@@ -20,6 +20,7 @@ class Tournament(Base):
     status = Column(String, default="UPCOMING") # UPCOMING, LIVE, COMPLETED
     match_type = Column(String, default="SOLO") # SOLO, DUO, SQUAD
     game_image_url = Column(String, nullable=True) # Banner image for the game
+    max_slots = Column(Integer, default=100)
     winner_id = Column(Integer, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
