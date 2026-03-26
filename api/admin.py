@@ -441,7 +441,7 @@ def conclude_tournament(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Tournament not found")
         
-    winner = db.query(User).filter(User.id == data.winner_id).first()
+    winner = db.query(User).filter(User.id == winner_id).first()
     if not winner:
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Winner user not found")
