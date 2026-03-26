@@ -167,7 +167,7 @@ def payu_redirect(
 <html>
   <head>
     <title>Secure Transfer</title>
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; form-action {settings.PAYU_BASE_URL}; script-src 'none';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; form-action {html.escape(settings.PAYU_BASE_URL)}; script-src 'none';">
   </head>
   <body onload="document.forms['payuForm'].submit();"
         style="background:#0D0E12; color:#FFB800; font-family:sans-serif; text-align:center; padding-top:100px;">

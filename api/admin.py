@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
-from typing import List, Dict
+from typing import List
 import uuid
 import os
-import shutil
 import logging
 
 from api.deps import get_db, get_current_active_admin
@@ -459,6 +458,14 @@ def update_user_status(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     user.is_active = status.is_active
+
+    # SECURITY: Increment token_version to instantly revoke all existing JWTs
+    # for this user — they cannot use their old token even if it hasn't expired.
+    if not status.is_active:
+        current_tv = getattr(user, "token_version", 0) or 0
+        user.token_version = current_tv + 1
+        logger.info(f"Revoked all tokens for user {user_id} (token_version -> {user.token_version})")
+
     db.add(user)
     db.commit()
     status_str = "Active" if status.is_active else "Banned"

@@ -60,8 +60,9 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
 
     logger.info(f"New signup: user_id={db_user.id} username={db_user.username}")
 
+    token_version = getattr(db_user, "token_version", 0) or 0
     return {
-        "access_token": create_access_token({"sub": str(db_user.id)}),
+        "access_token": create_access_token({"sub": str(db_user.id), "tv": token_version}),
         "token_type": "bearer",
         "role": db_user.role,
         "user": db_user
@@ -105,8 +106,9 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
 
     logger.info(f"Successful login: user_id={user.id}")
 
+    token_version = getattr(user, "token_version", 0) or 0
     return {
-        "access_token": create_access_token({"sub": str(user.id)}),
+        "access_token": create_access_token({"sub": str(user.id), "tv": token_version}),
         "token_type": "bearer",
         "role": user.role,
         "user": user

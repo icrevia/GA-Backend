@@ -20,10 +20,16 @@ class User(Base):
     valorant_id     = Column(String, nullable=True)
     freefire_id     = Column(String, nullable=True)
 
-    # FIXED: Use Numeric(10,2) instead of Float — IEEE 754 float is not safe for money
-    # Numeric stores exact decimal values, eliminating floating-point rounding errors
+    # Numeric(12,2): exact decimal arithmetic — no floating-point rounding errors
     wallet_balance  = Column(Numeric(precision=12, scale=2), default=0.00)
 
     is_active       = Column(Boolean, default=True)
+
+    # Token versioning for instant JWT revocation.
+    # Increment this (user.token_version += 1) to immediately invalidate
+    # all existing tokens for a user (e.g. when banning or force-logout).
+    # Added at startup via IF NOT EXISTS migration in main.py.
+    token_version   = Column(Integer, default=0, nullable=False, server_default="0")
+
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
