@@ -5,7 +5,9 @@ from typing import List
 from decimal import Decimal, ROUND_HALF_UP
 import uuid
 import os
+import uuid
 import logging
+from datetime import datetime, timedelta
 
 from api.deps import get_db, get_current_active_admin
 from models.user import User
@@ -288,6 +290,7 @@ def get_admin_stats(
     total_users       = db.query(User).count()
     total_tournaments = db.query(Tournament).count()
 
+    # Base Metrics
     total_joins = db.query(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
         WalletTransaction.status == "SUCCESS"
@@ -301,12 +304,49 @@ def get_admin_stats(
 
     estimated_revenue = total_revenue_pool - float(total_prizes)
 
+    # NEW: Pending Withdrawals count
+    pending_withdrawals = db.query(WalletTransaction).filter(
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+        WalletTransaction.status == "PENDING"
+    ).count()
+
+    # NEW: Daily Revenue for Chart (Last 7 Days)
+    # We group by date of created_at
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    daily_res = db.query(
+        func.date(WalletTransaction.created_at).label("day_date"),
+        func.sum(func.abs(WalletTransaction.amount)).label("daily_sum")
+    ).filter(
+        WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
+        WalletTransaction.status == "SUCCESS",
+        WalletTransaction.created_at >= seven_days_ago
+    ).group_by("day_date").order_by("day_date").all()
+
+    # Map to frontend format: [{ day: 'Mon', revenue: 4200 }, ...]
+    # We'll fill missing days with 0 to keep the chart continuous
+    days_map = { (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d"): 0.0 for i in range(7) }
+    for r in daily_res:
+        if r.day_date in days_map:
+            days_map[r.day_date] = float(r.daily_sum)
+    
+    # Sort and format for Recharts
+    chart_data = []
+    # weekday names
+    for date_str in sorted(days_map.keys()):
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        chart_data.append({
+            "day": dt.strftime("%a"), # 'Mon', 'Tue'...
+            "revenue": days_map[date_str]
+        })
+
     return {
         "total_users": total_users,
         "total_tournaments": total_tournaments,
         "total_revenue_pool": total_revenue_pool,
         "total_prizes_distributed": float(total_prizes),
-        "estimated_platform_revenue": estimated_revenue
+        "estimated_platform_revenue": estimated_revenue,
+        "pending_withdrawals_count": pending_withdrawals,
+        "daily_revenue": chart_data
     }
 
 
@@ -381,7 +421,7 @@ def reject_withdrawal(
 
     # Refund the user
     user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-    user.wallet_balance -= float(tx.amount)  # tx.amount is negative for withdrawals
+    user.wallet_balance -= tx.amount  # tx.amount is negative for withdrawals, so this adds it back
     db.add(tx)
     db.add(user)
     db.commit()
