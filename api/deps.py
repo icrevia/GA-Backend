@@ -6,12 +6,12 @@ from core.config import settings
 from core.security import decode_access_token
 from models.user import User
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
 
 def get_current_user(
     db: Session = Depends(get_db),
-    token: str = Depends(oauth2_scheme),
+    token: str | None = Depends(oauth2_scheme),
     query_token: str | None = Query(None, alias="token")
 ) -> User:
     # Use header token if available, else try query parameter
