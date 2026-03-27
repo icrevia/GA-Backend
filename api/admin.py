@@ -717,7 +717,7 @@ def manual_credit_transaction(
     if not getattr(tx, 'payu_txn_id', None) or not tx.payu_txn_id:
         tx.payu_txn_id = f"ADMIN_CREDITED_BY_{current_user.username}"
 
-    user.wallet_balance += float(tx.amount)
+    user.wallet_balance = (user.wallet_balance or Decimal(0)) + tx.amount
     db.add(tx)
     db.add(user)
     db.commit()
