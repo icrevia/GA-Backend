@@ -15,6 +15,7 @@ from schemas.tournament import (
     TournamentJoinResponse,
     TournamentJoinRequest
 )
+from services.notifications import add_user_notification
 
 router = APIRouter()
 
@@ -140,6 +141,16 @@ def join_tournament(
     )
     db.add(participant)
     db.commit()
+
+    try:
+        add_user_notification(
+            db,
+            current_user.id,
+            "Tournament Joined! 🎮",
+            f"You have successfully joined '{tournament.title}'. Match starts at {tournament.match_time.strftime('%I:%M %p')}. Stay ready!",
+            "APP"
+        )
+    except Exception: pass
 
     return {
         "message": f"Successfully joined {tournament.title}!",

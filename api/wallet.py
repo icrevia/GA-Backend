@@ -298,6 +298,12 @@ async def payu_webhook(
     else:
         tx.status = "FAILED"
         tx.failure_reason = field9 or status
+        add_user_notification(
+            db, tx.user_id,
+            "Recharge Failed ❌",
+            f"Your payment of ₹{tx.amount} has failed. Reason: {tx.failure_reason or 'Gateway Error'}. If money was deducted, it will be refunded automatically.",
+            "WALLET"
+        )
         logger.info(f"Payment FAILED: txnid={txnid} reason={tx.failure_reason}")
 
     db.add(tx)
@@ -375,6 +381,12 @@ async def payu_return_handler(
                 tx.failure_reason = field9 or status or "USER_CANCELLED"
                 db.add(tx)
                 db.commit()
+                add_user_notification(
+                    db, tx.user_id,
+                    "Recharge Failed ❌",
+                    f"Transaction #{txnid} failed or was cancelled. Reason: {tx.failure_reason}",
+                    "WALLET"
+                )
                 background_tasks.add_task(
                     ws_manager.broadcast_to_admins, {"type": "finance_update"}
                 )

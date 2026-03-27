@@ -143,6 +143,19 @@ def set_tournament_room(
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
+
+    # BROADCAST TO ALL PARTICIPANTS
+    try:
+        parts = db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == tournament_id).all()
+        for p in parts:
+            add_user_notification(
+                db, p.user_id,
+                "MATCH IS LIVE! 🚀",
+                f"Room ID and Password for '{db_obj.title}' are now available in the app. Join quickly!",
+                "APP"
+            )
+    except Exception: pass
+
     return db_obj
 
 
@@ -228,6 +241,20 @@ def conclude_tournament(
         pass
 
     logger.info(f"Tournament {tournament_id} concluded. Winner: {winner_id}, Prize: ₹{prize}")
+    
+    # BROADCAST TO ALL PARTICIPANTS
+    try:
+        parts = db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == tournament_id).all()
+        for p in parts:
+            if p.user_id != winner_id: # Winner already gets a notification
+                add_user_notification(
+                    db, p.user_id,
+                    "Tournament Completed 🏆",
+                    f"'{tournament.title}' has ended. Check the results in the app. Better luck next time!",
+                    "APP"
+                )
+    except Exception: pass
+
     return {"message": f"Tournament concluded. Winner paid ₹{prize}"}
 
 
@@ -399,6 +426,16 @@ def approve_withdrawal(
     db.add(tx)
     db.commit()
 
+    # NOTIFY USER
+    try:
+        add_user_notification(
+            db, tx.user_id,
+            "Withdrawal Successful ✅",
+            f"Your withdrawal request of ₹{abs(float(tx.amount))} has been approved and sent to your UPI ID. Check your bank account.",
+            "WALLET"
+        )
+    except Exception: pass
+
     logger.info(f"Withdrawal {transaction_id} approved by admin={current_user.username}")
     return {"message": "Withdrawal approved"}
 
@@ -425,6 +462,16 @@ def reject_withdrawal(
     db.add(tx)
     db.add(user)
     db.commit()
+
+    # NOTIFY USER
+    try:
+        add_user_notification(
+            db, tx.user_id,
+            "Withdrawal Rejected ❌",
+            f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. The amount has been refunded to your wallet balance.",
+            "WALLET"
+        )
+    except Exception: pass
 
     logger.info(f"Withdrawal {transaction_id} rejected by admin={current_user.username}")
     return {"message": "Withdrawal rejected and refunded"}
@@ -793,6 +840,16 @@ def mark_transaction_failed(
     tx.failure_reason = f"MARKED_FAILED_BY_ADMIN:{current_user.username}"
     db.add(tx)
     db.commit()
+
+    # NOTIFY USER
+    try:
+        add_user_notification(
+            db, tx.user_id,
+            "Transaction Failed ❌",
+            f"Your transaction #{transaction_id} which was PENDING has been marked as failed by the administrator.",
+            "WALLET"
+        )
+    except Exception: pass
 
     logger.info(f"Transaction {transaction_id} marked FAILED by admin={current_user.username}")
     return {"message": f"Transaction #{transaction_id} marked as FAILED."}
