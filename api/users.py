@@ -26,6 +26,8 @@ def update_user_me(
         current_user.upi_id = user_update.upi_id
     if user_update.bgmi_id is not None:
         current_user.bgmi_id = user_update.bgmi_id
+    if user_update.phone_number is not None:
+        current_user.phone_number = user_update.phone_number
     if user_update.valorant_id is not None:
         current_user.valorant_id = user_update.valorant_id
     if user_update.freefire_id is not None:
