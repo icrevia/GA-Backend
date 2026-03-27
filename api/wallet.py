@@ -205,7 +205,9 @@ def payu_redirect(
   </head>
   <body onload="document.forms['payuForm'].submit();"
         style="background:#0D0E12; color:#FFB800; font-family:sans-serif; text-align:center; padding-top:100px;">
-    <h2>Connecting to Secure Arena Gateway...</h2>
+    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh;">
+        <h2 style="font-weight: 500; font-size: 18px; color: rgba(255,255,255,0.85);">Redirecting to Secure Gateway...</h2>
+    </div>
     <form action="{safe_action}" method="post" name="payuForm">
         <input type="hidden" name="key"        value="{safe_key}" />
         <input type="hidden" name="txnid"      value="{safe_txnid}" />
