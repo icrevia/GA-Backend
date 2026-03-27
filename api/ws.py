@@ -75,7 +75,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
             data = await websocket.receive_text()
 
             if data == "ping":
-                await websocket.send_text("pong")
+                await websocket.send_text(json.dumps({"type": "pong"}))
                 continue
 
             try:
