@@ -527,6 +527,7 @@ def search_users(
         else:
             filters.append(User.username.ilike(f"%{query}%"))
             filters.append(User.email.ilike(f"%{query}%"))
+            filters.append(User.phone_number.ilike(f"%{query}%"))
 
     if filters:
         users = db.query(User).filter(or_(*filters)).limit(50).all()

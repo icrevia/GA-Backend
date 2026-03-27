@@ -8,6 +8,7 @@ class UserCreate(BaseModel):
     # Blocks: XSS chars (< > " ' / \ & ; `), SQL injection chars
     username: str = Field(..., min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_ .\-]+$")
     email: EmailStr
+    phone_number: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
     password: str = Field(..., min_length=8, max_length=128)
 
     @field_validator("username")
@@ -25,6 +26,7 @@ class UserResponse(BaseModel):
     id: int
     username: str
     email: str
+    phone_number: Optional[str] = None
     role: str
     wallet_balance: float
     upi_id: Optional[str] = None
@@ -41,6 +43,7 @@ class UserResponse(BaseModel):
 class UserUpdate(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=32)
     email: Optional[EmailStr] = None
+    phone_number: Optional[str] = Field(None, pattern=r"^\+?[0-9]{10,15}$")
     upi_id: Optional[str] = Field(None, max_length=50)
     bgmi_id: Optional[str] = Field(None, max_length=50)
     valorant_id: Optional[str] = Field(None, max_length=50)

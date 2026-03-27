@@ -134,8 +134,11 @@ def startup_event():
             conn.execute(text(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0"
             ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(20)"
+            ))
             conn.commit()
-            logger.info("DB migration: token_version column ensured on users table")
+            logger.info("DB migration: phone_number and token_version columns ensured")
         except Exception as e:
             logger.warning(f"DB migration skipped (non-critical): {e}")
 

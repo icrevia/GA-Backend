@@ -26,9 +26,16 @@ class SignupResponse(Token):
 @limiter.limit("5/minute")  # Rate limit: 5 signups per minute per IP
 def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
     email = user_in.email.strip().lower().split('\n')[0]
+    phone = user_in.phone_number.strip().replace(" ", "")
+    # Auto-format 10 digit numbers to +91 (India)
+    if len(phone) == 10 and phone.isdigit():
+        phone = f"+91{phone}"
 
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
+
+    if db.query(User).filter(User.phone_number == phone).first():
+        raise HTTPException(status_code=400, detail="Phone number already in use")
 
     if db.query(User).filter(User.username == user_in.username).first():
         raise HTTPException(status_code=400, detail="Username taken")
@@ -36,6 +43,7 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
     db_user = User(
         username=user_in.username,
         email=email,
+        phone_number=phone,
         hashed_password=hash_password(user_in.password),
         role="USER",
     )
@@ -72,10 +80,16 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
 @router.post("/login", response_model=SignupResponse)
 @limiter.limit("10/minute")  # Rate limit: 10 login attempts per minute per IP
 def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
+    # Normalize identifier (could be email or phone)
+    identifier = login_data.email.strip().lower()
+    if identifier.isdigit() and len(identifier) == 10:
+        identifier = f"+91{identifier}"
+
     user = db.query(User).filter(
         or_(
-            User.email == login_data.email.strip().lower(),
-            User.username == login_data.email.strip()
+            User.email == identifier,
+            User.username == login_data.email.strip(),
+            User.phone_number == identifier
         )
     ).first()
 
