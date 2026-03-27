@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Backgro
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from typing import List
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
 import os
 import logging
@@ -483,16 +484,24 @@ def adjust_user_funds(
 ):
     # Cap single adjustment to prevent accidental or malicious mass crediting
     if abs(amount) > 50_000:
-        raise HTTPException(status_code=400, detail="Single adjustment cannot exceed ₹50,000")
+        raise HTTPException(status_code=400, detail="Single adjustment cannot exceed \u20b950,000")
 
     user = db.query(User).filter(User.id == user_id).with_for_update().first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user.wallet_balance += amount
+    # FIXED: Convert float to Decimal before arithmetic — wallet_balance is Numeric(12,2)
+    # Using str(amount) avoids float binary precision issues (e.g. 0.1 + 0.2 != 0.3)
+    decimal_amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    new_balance = (user.wallet_balance or Decimal(0)) + decimal_amount
+    if new_balance < Decimal(0):
+        raise HTTPException(status_code=400, detail="Adjustment would result in negative balance")
+
+    user.wallet_balance = new_balance
     tx = WalletTransaction(
         user_id=user_id,
-        amount=amount,
+        amount=decimal_amount,
         transaction_type="ADMIN_ADJUSTMENT",
         status="SUCCESS",
         reference_id=f"ADJ_{uuid.uuid4().hex[:8].upper()}"
@@ -503,9 +512,9 @@ def adjust_user_funds(
 
     logger.info(
         f"Admin adjustment: admin={current_user.username} user={user_id} "
-        f"amount={amount} reason={reason[:100]}"
+        f"amount={decimal_amount} reason={reason[:100]}"
     )
-    return {"message": f"Balance updated. New balance: ₹{float(user.wallet_balance):.2f}"}
+    return {"message": f"Balance updated. New balance: \u20b9{float(user.wallet_balance):.2f}"}
 
 
 # ─────────────────────────────────────────────────────────────────
