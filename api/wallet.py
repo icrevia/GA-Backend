@@ -71,7 +71,7 @@ def init_add_money(
         raise HTTPException(status_code=400, detail="Maximum recharge amount is ₹1,00,000")
 
     txnid = f"ZEX_{uuid.uuid4().hex[:12].upper()}"
-    productinfo = "ZexPlay Wallet Recharge"
+    productinfo = "Digital Services"
 
     tx = WalletTransaction(
         user_id=current_user.id,
@@ -166,7 +166,7 @@ def payu_redirect(
 
     user = db.query(User).filter(User.id == tx.user_id).first()
 
-    productinfo = "ZexPlay Wallet Recharge"
+    productinfo = "Digital Services"
     payu_hash = generate_payu_hash(
         txnid=tx.reference_id,
         amount=tx.amount,
