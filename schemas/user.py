@@ -4,8 +4,9 @@ import re
 
 
 class UserCreate(BaseModel):
-    # FIXED: Added min/max lengths to prevent bcrypt DoS and enumeration
-    username: str = Field(..., min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
+    # Allows: letters, digits, spaces, dots, underscores, hyphens (full names like "Rahul Mondalaa")
+    # Blocks: XSS chars (< > " ' / \ & ; `), SQL injection chars
+    username: str = Field(..., min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_ .\-]+$")
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
 
