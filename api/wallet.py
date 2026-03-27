@@ -192,7 +192,7 @@ def payu_redirect(
         safe_vpa = html.escape(str(vpa))
         seamless_fields = f"""
             <input type="hidden" name="pg" value="UPI" />
-            <input type="hidden" name="bankcode" value="UPI" />
+            <input type="hidden" name="bankcode" value="UPI-VPA" />
             <input type="hidden" name="vpa" value="{safe_vpa}" />
         """
 
