@@ -201,12 +201,16 @@ def payu_redirect(
 <html>
   <head>
     <title>Secure Transfer</title>
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; form-action {html.escape(settings.PAYU_BASE_URL)}; script-src 'unsafe-inline';">
+    <style>
+      body {{ background: #0D0E12; margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; color: white; }}
+      .loader {{ border: 3px solid rgba(255,255,255,0.1); border-top: 3px solid #FFB800; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin-bottom: 20px; }}
+      @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+    </style>
   </head>
-  <body onload="document.forms['payuForm'].submit();"
-        style="background:#0D0E12; color:#FFB800; font-family:sans-serif; text-align:center; padding-top:100px;">
-    <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh;">
-        <h2 style="font-weight: 500; font-size: 18px; color: rgba(255,255,255,0.85);">Redirecting to Secure Gateway...</h2>
+  <body onload="document.forms['payuForm'].submit();">
+    <div style="text-align: center;">
+        <div class="loader" style="margin: 0 auto 20px auto;"></div>
+        <h2 style="font-weight: 500; font-size: 18px; color: rgba(255,255,255,0.8);">Redirecting to Secure Gateway...</h2>
     </div>
     <form action="{safe_action}" method="post" name="payuForm">
         <input type="hidden" name="key"        value="{safe_key}" />
