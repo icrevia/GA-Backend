@@ -111,7 +111,15 @@ def join_tournament(
     ).with_for_update().first()
 
     if user_wallet.wallet_balance < tournament.entry_fee:
-        raise HTTPException(status_code=400, detail="Insufficient balance")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"Insufficient balance! You need ₹{tournament.entry_fee} to join. Your current balance is ₹{float(user_wallet.wallet_balance):.0f}.",
+                "error_code": "INSUFFICIENT_BALANCE",
+                "required": float(tournament.entry_fee),
+                "available": float(user_wallet.wallet_balance),
+            }
+        )
 
     user_wallet.wallet_balance -= tournament.entry_fee
 
