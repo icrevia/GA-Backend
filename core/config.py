@@ -33,7 +33,11 @@ class Settings(BaseSettings):
     PAYU_MERCHANT_KEY:  str = "TEST_KEY"
     PAYU_MERCHANT_SALT: str = "TEST_SALT"
     PAYU_BASE_URL:      str = "https://secure.payu.in"
-    PAYU_MERCHANT_VPA:  str = "zexplay@ybl"
+    PAYU_MERCHANT_VPA:  str = "zxtni@ybl"
+    
+    # ── Razorpay ──────────────────────────────────────────────────────────────
+    RAZORPAY_KEY_ID:     str = ""
+    RAZORPAY_KEY_SECRET: str = ""
 
     class Config:
         env_file = ".env"
@@ -88,6 +92,14 @@ class Settings(BaseSettings):
             print(
                 "[CONFIG WARNING] ALLOWED_ORIGINS not set. Defaulting to '*' (insecure). "
                 "Set ALLOWED_ORIGINS in Railway environment variables.",
+                file=sys.stderr
+            )
+        
+        # ── Razorpay Soft Warning ─────────────────────────────────────────────
+        if not self.RAZORPAY_KEY_ID or not self.RAZORPAY_KEY_SECRET:
+            print(
+                "[CONFIG WARNING] Razorpay Key ID or Secret not set. "
+                "Razorpay payments will fail.",
                 file=sys.stderr
             )
 

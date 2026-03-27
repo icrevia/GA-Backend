@@ -22,6 +22,21 @@ class PayUInitResponse(BaseModel):
     key: str
     action: str
 
+class RazorpayInitResponse(BaseModel):
+    order_id: str
+    amount: int  # in paise
+    currency: str = "INR"
+    key_id: str
+    description: str
+    prefill_name: str
+    prefill_email: str
+    prefill_contact: str
+
+class PaymentInitResponse(BaseModel):
+    gateway: str  # "PAYU" or "RAZORPAY"
+    payu_init: Optional[PayUInitResponse] = None
+    razorpay_init: Optional[RazorpayInitResponse] = None
+
 
 class WithdrawalRequest(BaseModel):
     amount: Decimal

@@ -37,6 +37,20 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# ─────────────────────────────────────────────
+# Global Exception Handler
+# Prevents leaking Python tracebacks to the client
+# ─────────────────────────────────────────────
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.error(f"rid={request_id} global_error={str(exc)}", exc_info=True)
+    return Response(
+        content='{"detail": "An internal server error occurred. Please contact support if this persists."}',
+        status_code=500,
+        media_type="application/json"
+    )
+
 
 # ─────────────────────────────────────────────
 # Security headers middleware

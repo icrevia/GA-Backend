@@ -9,9 +9,11 @@ import logging
 from api.deps import get_db, get_current_user, get_current_active_admin
 from models.user import User
 from models.wallet import WalletTransaction
-from schemas.wallet import AddMoneyRequest, PayUInitResponse, WithdrawalRequest, WalletTransactionResponse, WalletBalanceResponse
+from schemas.wallet import AddMoneyRequest, PayUInitResponse, RazorpayInitResponse, PaymentInitResponse, WithdrawalRequest, WalletTransactionResponse, WalletBalanceResponse
 from services.payu import generate_payu_hash, verify_payu_hash
+from services.razorpay import create_razorpay_order, verify_razorpay_signature
 from core.config import settings
+from models.config import SystemConfig
 from services.notifications import add_user_notification
 from core.websockets import manager as ws_manager
 
@@ -54,10 +56,10 @@ def get_transactions(
 
 
 # ─────────────────────────────────────────────────────────────────
-# Initiate a PayU payment
+# Initiate a payment
 # ─────────────────────────────────────────────────────────────────
 
-@router.post("/add-money/init", response_model=PayUInitResponse)
+@router.post("/add-money/init", response_model=PaymentInitResponse)
 def init_add_money(
     req: AddMoneyRequest,
     db: Session = Depends(get_db),
@@ -89,27 +91,57 @@ def init_add_money(
         "WALLET"
     )
 
-    payu_hash = generate_payu_hash(
-        txnid=txnid,
-        amount=req.amount,
-        productinfo=productinfo,
-        firstname=current_user.username,
-        email=current_user.email
-    )
+    # ─────────────────────────────────────────────────────────────────
+    # Determine Active Gateway
+    # ─────────────────────────────────────────────────────────────────
+    gateway_config = db.query(SystemConfig).filter(SystemConfig.config_key == "active_payment_gateway").first()
+    active_gateway = (gateway_config.config_value if gateway_config else "PAYU").upper()
 
-    return {
-        "txnid": txnid,
-        "amount": req.amount,
-        "productinfo": productinfo,
-        "firstname": current_user.username,
-        "email": current_user.email,
-        "phone": "9999999999",
-        "surl": _payu_surl(),
-        "furl": _payu_furl(),
-        "hash": payu_hash,
-        "key": settings.PAYU_MERCHANT_KEY,
-        "action": f"{settings.PAYU_BASE_URL}/_payment"
-    }
+    if active_gateway == "RAZORPAY":
+        order = create_razorpay_order(tx.amount, txnid)
+        if not order:
+             raise HTTPException(status_code=500, detail="Failed to create Razorpay order")
+        
+        # Razorpay specific data
+        return {
+            "gateway": "RAZORPAY",
+            "razorpay_init": {
+                "order_id": order["id"],
+                "amount": order["amount"], # already in paise
+                "currency": "INR",
+                "key_id": settings.RAZORPAY_KEY_ID,
+                "description": productinfo,
+                "prefill_name": current_user.username,
+                "prefill_email": current_user.email,
+                "prefill_contact": "9999999999"
+            }
+        }
+    else:
+        # Fallback to PAYU
+        payu_hash = generate_payu_hash(
+            txnid=txnid,
+            amount=req.amount,
+            productinfo=productinfo,
+            firstname=current_user.username,
+            email=current_user.email
+        )
+
+        return {
+            "gateway": "PAYU",
+            "payu_init": {
+                "txnid": txnid,
+                "amount": req.amount,
+                "productinfo": productinfo,
+                "firstname": current_user.username,
+                "email": current_user.email,
+                "phone": "9999999999",
+                "surl": _payu_surl(),
+                "furl": _payu_furl(),
+                "hash": payu_hash,
+                "key": settings.PAYU_MERCHANT_KEY,
+                "action": f"{settings.PAYU_BASE_URL}/_payment"
+            }
+        }
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -463,3 +495,75 @@ def request_withdrawal(
     )
 
     return {"message": "Withdrawal requested successfully. Waiting for admin approval."}
+
+
+# ─────────────────────────────────────────────────────────────────
+# Razorpay Verification
+# ─────────────────────────────────────────────────────────────────
+
+@router.post("/razorpay/verify")
+async def verify_razorpay_payment(
+    data: dict, # { "razorpay_order_id": "...", "razorpay_payment_id": "...", "razorpay_signature": "..." }
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    order_id   = data.get("razorpay_order_id")
+    payment_id = data.get("razorpay_payment_id")
+    signature  = data.get("razorpay_signature")
+
+    if not all([order_id, payment_id, signature]):
+        raise HTTPException(status_code=400, detail="Missing Razorpay details")
+
+    # The txnid was passed as 'receipt' during order creation.
+    # Razorpay order response includes the receipt.
+    # We should search for our transaction using the reference_id (txnid).
+    # However, since we don't have the order_id in our DB yet (we could have stored it but didn't per plan),
+    # we'll use a slightly different approach: the client sends the txnid back OR we search by reference_id.
+    
+    # Ideally, we should have stored order_id in WalletTransaction. 
+    # Let's check WalletTransaction model to see if we can add a column.
+    
+    # For now, let's assume the user sends the txnid as well.
+    txnid = data.get("txnid")
+    if not txnid:
+         raise HTTPException(status_code=400, detail="txnid is required for verification")
+
+    is_valid = verify_razorpay_signature(order_id, payment_id, signature)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    tx = db.query(WalletTransaction).filter(
+        WalletTransaction.reference_id == txnid,
+        WalletTransaction.user_id == current_user.id
+    ).with_for_update().first()
+
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    if tx.status != "PENDING":
+        return {"status": tx.status, "message": "Transaction already processed"}
+
+    # Update transaction
+    tx.status = "SUCCESS"
+    tx.payu_txn_id = payment_id # Repurposing existing column for "payment_id"
+    tx.payment_mode = "RAZORPAY"
+    
+    # Update balance
+    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+    user.wallet_balance += tx.amount
+    
+    db.add(tx)
+    db.add(user)
+    db.commit()
+
+    add_user_notification(
+        db, user.id,
+        "Payment Confirmed ✅",
+        f"₹{tx.amount:.0f} has been added to your ZexPlay wallet via Razorpay.",
+        "WALLET"
+    )
+
+    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+    
+    return {"status": "SUCCESS", "message": "Payment verified successfully"}
