@@ -113,7 +113,7 @@ def init_add_money(
                 "description": productinfo,
                 "prefill_name": current_user.username,
                 "prefill_email": current_user.email,
-                "prefill_contact": "9999999999",
+                "prefill_contact": current_user.phone_number or "9999999999",
                 "txnid": txnid
             }
         }
@@ -135,7 +135,7 @@ def init_add_money(
                 "productinfo": productinfo,
                 "firstname": current_user.username,
                 "email": current_user.email,
-                "phone": "9999999999",
+                "phone": current_user.phone_number or "9999999999",
                 "surl": _payu_surl(),
                 "furl": _payu_furl(),
                 "hash": payu_hash,
@@ -219,7 +219,7 @@ def payu_redirect(
         <input type="hidden" name="productinfo" value="{safe_productinfo}" />
         <input type="hidden" name="firstname"  value="{safe_firstname}" />
         <input type="hidden" name="email"      value="{safe_email}" />
-        <input type="hidden" name="phone"      value="9999999999" />
+        <input type="hidden" name="phone"      value="{html.escape(str(user.phone_number or '9999999999'))}" />
         <input type="hidden" name="surl"       value="{safe_surl}" />
         <input type="hidden" name="furl"       value="{safe_furl}" />
         <input type="hidden" name="hash"       value="{safe_hash}" />
