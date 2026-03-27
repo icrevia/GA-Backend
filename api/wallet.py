@@ -194,13 +194,14 @@ def payu_redirect(
             <input type="hidden" name="pg" value="UPI" />
             <input type="hidden" name="bankcode" value="UPI-VPA" />
             <input type="hidden" name="vpa" value="{safe_vpa}" />
+            <input type="hidden" name="api_version" value="1" />
         """
 
     html_content = f"""<!DOCTYPE html>
 <html>
   <head>
     <title>Secure Transfer</title>
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; form-action {html.escape(settings.PAYU_BASE_URL)}; script-src 'none';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; form-action {html.escape(settings.PAYU_BASE_URL)}; script-src 'unsafe-inline';">
   </head>
   <body onload="document.forms['payuForm'].submit();"
         style="background:#0D0E12; color:#FFB800; font-family:sans-serif; text-align:center; padding-top:100px;">
