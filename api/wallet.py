@@ -217,6 +217,7 @@ def payu_redirect(
         <input type="hidden" name="furl"       value="{safe_furl}" />
         <input type="hidden" name="hash"       value="{safe_hash}" />
         <input type="hidden" name="drop_category" value="CC,DC,NB,EMI,WALLET,CASH" />
+        <input type="hidden" name="enforce_paymethod" value="UPI" />
         {seamless_fields}
     </form>
   </body>
