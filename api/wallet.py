@@ -113,7 +113,8 @@ def init_add_money(
                 "description": productinfo,
                 "prefill_name": current_user.username,
                 "prefill_email": current_user.email,
-                "prefill_contact": "9999999999"
+                "prefill_contact": "9999999999",
+                "txnid": txnid
             }
         }
     else:

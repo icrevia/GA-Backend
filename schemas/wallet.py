@@ -31,6 +31,7 @@ class RazorpayInitResponse(BaseModel):
     prefill_name: str
     prefill_email: str
     prefill_contact: str
+    txnid: str
 
 class PaymentInitResponse(BaseModel):
     gateway: str  # "PAYU" or "RAZORPAY"
