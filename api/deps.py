@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from core.database import get_db
@@ -9,8 +9,23 @@ from models.user import User
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login")
 
 
-def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_scheme)) -> User:
-    payload = decode_access_token(token)
+def get_current_user(
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme),
+    query_token: str | None = Query(None, alias="token")
+) -> User:
+    # Use header token if available, else try query parameter
+    actual_token = token if token else query_token
+    
+    if not actual_token:
+        # Fallback to a custom 401 if NO token at all is provided
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Please provide a token in the Authorization header or ?token query parameter.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = decode_access_token(actual_token)
 
     user_id: str = payload.get("sub")
     if user_id is None:
