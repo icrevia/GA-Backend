@@ -257,7 +257,7 @@ async def payu_webhook(
 
     is_valid = verify_payu_hash(txnid, amount, productinfo, firstname, email, status, received_hash)
     if not is_valid:
-        logger.warning(f"Webhook hash validation failed for txnid={txnid}")
+        logger.warning(f"Webhook hash validation failed for txnid={txnid} (PayU)")
         raise HTTPException(status_code=400, detail="Invalid hash")
 
     tx = db.query(WalletTransaction).filter(
@@ -265,7 +265,17 @@ async def payu_webhook(
     ).with_for_update().first()
 
     if not tx:
+        logger.error(f"Transaction not found in webhook: txnid={txnid}")
         raise HTTPException(status_code=404, detail="Transaction not found")
+
+    # SECURITY: Verify that the amount matched!
+    if abs(float(tx.amount) - amount) > 0.01:
+        logger.critical(f"AMOUNT MISMATCH for txnid={txnid}: db={tx.amount} gateway={amount}")
+        tx.status = "FAILED"
+        tx.failure_reason = "FRAUD_ATTEMPT:AMOUNT_MISMATCH"
+        db.add(tx)
+        db.commit()
+        raise HTTPException(status_code=400, detail="Amount mismatch")
 
     if tx.status != "PENDING":
         return {"message": "Transaction already processed"}
@@ -330,23 +340,31 @@ async def payu_return_handler(
                 ).with_for_update().first()
 
                 if tx and tx.status == "PENDING":
-                    tx.status       = "SUCCESS"
-                    tx.payu_txn_id  = mihpayid
-                    tx.payment_mode = mode
-                    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-                    user.wallet_balance += tx.amount
-                    db.add(tx)
-                    db.add(user)
-                    db.commit()
-                    background_tasks.add_task(
-                        ws_manager.broadcast_to_admins, {"type": "finance_update"}
-                    )
-                    add_user_notification(
-                        db, user.id,
-                        "Payment Confirmed ✅",
-                        f"₹{tx.amount:.0f} has been added to your ZexPlay wallet.",
-                        "WALLET"
-                    )
+                    # SECURITY: Verify amount in return handler too
+                    if abs(float(tx.amount) - amount) > 0.01:
+                        logger.critical(f"RET_AMOUNT_MISMATCH for txnid={txnid}: db={tx.amount} gateway={amount}")
+                        tx.status = "FAILED"
+                        tx.failure_reason = "FRAUD_ATTEMPT:RET_AMOUNT_MISMATCH"
+                        db.add(tx)
+                        db.commit()
+                    else:
+                        tx.status       = "SUCCESS"
+                        tx.payu_txn_id  = mihpayid
+                        tx.payment_mode = mode
+                        user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+                        user.wallet_balance += tx.amount
+                        db.add(tx)
+                        db.add(user)
+                        db.commit()
+                        background_tasks.add_task(
+                            ws_manager.broadcast_to_admins, {"type": "finance_update"}
+                        )
+                        add_user_notification(
+                            db, user.id,
+                            "Payment Confirmed ✅",
+                            f"₹{tx.amount:.0f} has been added to your ZexPlay wallet.",
+                            "WALLET"
+                        )
         else:
             tx = db.query(WalletTransaction).filter(
                 WalletTransaction.reference_id == txnid
@@ -488,7 +506,8 @@ def request_withdrawal(
         amount=-req.amount,
         transaction_type="WITHDRAWAL",
         status="PENDING",
-        reference_id=f"WITHDRAW_{uuid.uuid4().hex[:8].upper()}"
+        reference_id=f"WITHDRAW_{uuid.uuid4().hex[:8].upper()}",
+        payu_txn_id=req.upi_id  # Freeze current UPI ID in this field for admin audit
     )
 
     db.add(tx)

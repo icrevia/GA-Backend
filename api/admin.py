@@ -335,7 +335,7 @@ def list_pending_withdrawals(
             "username":   users[tx.user_id].username if tx.user_id in users else "Unknown",
             "amount":     abs(float(tx.amount)),
             "created_at": tx.created_at,
-            "upi_id":     users[tx.user_id].upi_id if tx.user_id in users else "N/A"
+            "upi_id":     tx.payu_txn_id or (users[tx.user_id].upi_id if tx.user_id in users else "N/A")
         }
         for tx in pending
     ]
