@@ -104,8 +104,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
                 # Check if target user is actually connected BEFORE trying to send
                 if not manager.is_user_online(target_user_id):
                     logger.warning(
-                        f"WS Call failed: Admin={user_id} tried to call User={target_user_id} "
-                        f"but user is NOT connected to WebSocket"
+                        f"WS Call Dropped: Admin {user_id} -> User {target_user_id} (Reason: User Offline). "
+                        f"Signal Type: {msg_type}"
                     )
                     # Notify admin that user is offline
                     await websocket.send_text(json.dumps({
