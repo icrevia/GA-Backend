@@ -9,7 +9,7 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_ .\-]+$")
     email: EmailStr
     phone_number: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
-    password: str = Field(..., min_length=8, max_length=128)
+    password: str = Field(..., min_length=6, max_length=128)
 
     @field_validator("username")
     @classmethod
