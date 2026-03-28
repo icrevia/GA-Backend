@@ -53,6 +53,34 @@ def get_current_user(
     return user
 
 
+def get_user_for_support(
+    db: Session = Depends(get_db),
+    token: str | None = Depends(oauth2_scheme),
+    query_token: str | None = Query(None, alias="token")
+) -> User:
+    """Special dependency for support — allows users to connect even if restricted/banned."""
+    actual_token = token if token else query_token
+    if not actual_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    payload = decode_access_token(actual_token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    # Token version check — must still match current user version
+    token_version = payload.get("tv", 0)
+    db_token_version = getattr(user, "token_version", 0) or 0
+    if int(token_version) != int(db_token_version):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session revoked")
+
+    return user
+
+
 def get_current_active_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")

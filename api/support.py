@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
 from core.database import get_db
-from api.deps import get_current_user
+from api.deps import get_current_user, get_user_for_support
 from models.support import ChatSession, ChatMessage
 from models.user import User
 from core.websockets import manager
@@ -137,7 +137,7 @@ def get_sessions(
 @router.get("/my-chat")
 def get_my_chat(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_user_for_support)
 ):
     session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id).first()
     if not session:
@@ -169,7 +169,7 @@ def get_my_chat(
 async def send_message(
     body: SendMessageRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_user_for_support)
 ):
     if not body.message or not body.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -208,7 +208,7 @@ async def log_call(
     duration: str = Query(None),
     user_id: int = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_user_for_support)
 ):
     target_user_id = user_id if (current_user.role == "ADMIN" and user_id) else current_user.id
     session = db.query(ChatSession).filter(ChatSession.user_id == target_user_id).first()
