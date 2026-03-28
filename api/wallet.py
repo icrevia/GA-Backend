@@ -5,6 +5,8 @@ from typing import List
 import uuid
 import html
 import logging
+import requests
+import json
 
 from api.deps import get_db, get_current_user, get_current_active_admin
 from models.user import User
@@ -435,6 +437,61 @@ def get_upi_intent(
     if tx.user_id != current_user.id:
         raise HTTPException(403, "Access denied")
 
+    # OFFICIAL PAYU S2S V4 FLOW for Dynamic QR
+    # Documentation: Generate Dynamic QR via pg=DBQR, bankcode=UPIDBQR, txn_s2s_flow=4
+    try:
+        from services.payu import generate_payu_hash
+        
+        productinfo = "ZexPlay Wallet Recharge"
+        firstname = current_user.name or "User"
+        email = current_user.email or "user@zexplay.com"
+        
+        # Calculate Hash
+        payu_hash = generate_payu_hash(
+            txnid=txnid,
+            amount=tx.amount,
+            productinfo=productinfo,
+            firstname=firstname,
+            email=email
+        )
+        
+        # Prepare PayU S2S Request
+        payu_url = "https://secure.payu.in/_payment" 
+        payload = {
+            "key": settings.PAYU_MERCHANT_KEY,
+            "txnid": txnid,
+            "amount": f"{tx.amount:.2f}",
+            "productinfo": productinfo,
+            "firstname": firstname,
+            "email": email,
+            "phone": current_user.phone or "9999999999",
+            "surl": _payu_surl(),
+            "furl": _payu_furl(),
+            "hash": payu_hash,
+            "pg": "DBQR",
+            "bankcode": "UPIDBQR",
+            "txn_s2s_flow": "4",  # V4 S2S JSON Response
+            "s2s_client_ip": "127.0.0.1",
+            "s2s_device_info": "Android-Native"
+        }
+        
+        logger.info(f"Fetching Official PayU QR for {txnid}...")
+        response = requests.post(payu_url, data=payload, timeout=10)
+        
+        if response.status_code == 200:
+            res_json = response.json()
+            if res_json.get("status") == 1 and "result" in res_json:
+                qr_string = res_json["result"].get("qrString")
+                if qr_string:
+                    logger.info(f"Success! Official PayU QR String: {qr_string}")
+                    return {"upi_link": qr_string, "txnid": txnid, "amount": tx.amount, "is_official": True}
+        
+        logger.warning(f"PayU S2S V4 Failed: {response.text}")
+    except Exception as e:
+        logger.error(f"Error calling PayU S2S QR API: {str(e)}")
+
+    # FALLBACK (Manual link if PayU API fails or credentials are missing)
+    logger.info(f"Using Fallback UPI Link for {txnid}")
     merchant_vpa = settings.PAYU_MERCHANT_VPA
     amount_str   = f"{tx.amount:.2f}"
     upi_link = (
@@ -447,7 +504,7 @@ def get_upi_intent(
         f"&tr={txnid}"
         f"&mc=7372"
     )
-    return {"upi_link": upi_link, "txnid": txnid, "amount": tx.amount}
+    return {"upi_link": upi_link, "txnid": txnid, "amount": tx.amount, "is_official": False}
 
 
 # ─────────────────────────────────────────────────────────────────
