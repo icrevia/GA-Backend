@@ -775,7 +775,10 @@ def get_ccavenue_rsa(order_id: str, current_user: User = Depends(get_current_use
     }
     try:
         response = requests.get(url, params=params, timeout=10)
-        return {"rsa_key": response.text.strip()}
+        # CCAvenue sometimes returns the key inside an HTML-like block or with whitespace
+        rsa_key = response.text.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").strip()
+        logger.info(f"Successfully fetched RSA key for {order_id}")
+        return {"rsa_key": rsa_key}
     except Exception as e:
         logger.error(f"Failed to fetch CCAvenue RSA key: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch RSA key")
@@ -788,16 +791,16 @@ def get_ccavenue_payment_options(current_user: User = Depends(get_current_user))
     import requests
     url = "https://api.ccavenue.com/apis/servlet/DoWebTrans"
     
-    # Payload for fetching payment options
-    # command=getPaymentOptions&merchant_id=...&access_code=...&currency=INR
-    plain_params = f"command=getPaymentOptions&merchant_id={settings.CCAVENUE_MERCHANT_ID}&access_code={settings.CCAVENUE_ACCESS_CODE}&currency=INR"
+    # Simplified encrypted payload (command and access_code are in the outer payload)
+    plain_params = f"currency=INR"
     enc_request = encrypt_ccavenue(plain_params, settings.CCAVENUE_WORKING_KEY)
     
     payload = {
         "enc_request": enc_request,
         "access_code": settings.CCAVENUE_ACCESS_CODE,
         "command": "getPaymentOptions",
-        "request_type": "JSON"
+        "request_type": "JSON",
+        "response_type": "JSON"
     }
     
     try:
@@ -808,7 +811,9 @@ def get_ccavenue_payment_options(current_user: User = Depends(get_current_user))
         import re
         if not re.fullmatch(r"^[0-9a-fA-F]+$", resp_text):
             logger.error(f"CCAvenue API returned non-hex response: {resp_text}")
-            # Raising the literal error from CCAvenue so the user can see it (e.g., "Invalid Request" or "IP Not Whitelisted")
+            # Identify redundant errors
+            if "Invalid command name" in resp_text:
+                logger.error("Fix: Check if Seamless API is enabled in CCAvenue MARS Dashboard")
             raise HTTPException(status_code=400, detail=f"Gateway Error: {resp_text}")
 
         decrypted_resp = decrypt_ccavenue(resp_text, settings.CCAVENUE_WORKING_KEY)
