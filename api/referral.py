@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from core.database import get_db
 from models.user import User
 from models.wallet import WalletTransaction
-from services.auth import get_current_user
+from api.deps import get_current_user
 from typing import List, Any
 from pydantic import BaseModel
 
