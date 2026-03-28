@@ -191,10 +191,24 @@ def payu_redirect(
 
     seamless_fields = ""
     if vpa:
-        vpa_upper = vpa.upper()
-        if vpa_upper in ["GPAY", "PHONEPE", "PAYTM", "TEZ"]:
-            # Official PayU Intent flow to skip selection and trigger apps directly
-            seamless_fields = """
+        # Handle popular app codes for Direct Redirection
+        if vpa == "GOOGLEPAY":
+            seamless_fields = f"""
+                <input type="hidden" name="pg" value="UPI" />
+                <input type="hidden" name="bankcode" value="TEZ" />
+            """
+        elif vpa == "PHONEPE":
+            seamless_fields = f"""
+                <input type="hidden" name="pg" value="UPI" />
+                <input type="hidden" name="bankcode" value="PHONEPE" />
+            """
+        elif vpa == "PAYTM":
+            seamless_fields = f"""
+                <input type="hidden" name="pg" value="UPI" />
+                <input type="hidden" name="bankcode" value="PAYTM" />
+            """
+        elif vpa == "INTENT": # Standard Generic Intent
+            seamless_fields = f"""
                 <input type="hidden" name="pg" value="UPI" />
                 <input type="hidden" name="bankcode" value="INTENT" />
             """
