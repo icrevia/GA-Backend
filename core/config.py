@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # Generate: python -c "import secrets; print(secrets.token_hex(32))"
     SECRET_KEY: str = "CHANGE_ME"
     ALGORITHM:  str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080 # 7 days (60 * 24 * 7)
 
     # ── App URL ───────────────────────────────────────────────────────────────
     # Set this in Railway environment variables.
@@ -24,16 +24,17 @@ class Settings(BaseSettings):
     RAILWAY_PUBLIC_DOMAIN: str = ""  # Injected automatically by Railway
 
     # ── CORS ──────────────────────────────────────────────────────────────────
+    # Comma-separated list of origins: "https://admin.zexplay.com, http://localhost:3000"
     ALLOWED_ORIGINS: str = ""
 
     # ── Database ──────────────────────────────────────────────────────────────
     DATABASE_URL: str = ""
 
     # ── PayU ──────────────────────────────────────────────────────────────────
-    PAYU_MERCHANT_KEY:  str = "TEST_KEY"
-    PAYU_MERCHANT_SALT: str = "TEST_SALT"
+    PAYU_MERCHANT_KEY:  str = ""
+    PAYU_MERCHANT_SALT: str = ""
     PAYU_BASE_URL:      str = "https://secure.payu.in"
-    PAYU_MERCHANT_VPA:  str = "zxtni@ybl"
+    PAYU_MERCHANT_VPA:  str = ""
     
     # ── Razorpay ──────────────────────────────────────────────────────────────
     RAZORPAY_KEY_ID:     str = ""

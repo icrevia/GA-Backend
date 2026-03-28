@@ -175,7 +175,9 @@ def get_system_status():
             "update_message":     config_map.get(
                 "update_message",
                 "A new version of ZexPlay is available! Upgrade now for the latest features."
-            )
+            ),
+            "payu_merchant_vpa":  settings.PAYU_MERCHANT_VPA,
+            "support_email":      "support@zexplay.com" # Example, could be from settings
         }
     finally:
         db.close()
