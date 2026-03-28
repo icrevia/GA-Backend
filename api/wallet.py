@@ -135,7 +135,17 @@ def init_add_money(
         cancel_param   = f"cancel_url={cancel_url}"
         language_param = "language=EN"
         
-        merchant_data = f"{merchant_param}&{order_param}&{currency_param}&{amount_param}&{redirect_param}&{cancel_param}&{language_param}"
+        # Pre-fill billing details for a better user experience
+        billing_name   = f"billing_name={current_user.username}"
+        billing_address = "billing_address=Not Provided"
+        billing_city    = "billing_city=Mumbai"
+        billing_state   = "billing_state=Maharashtra"
+        billing_zip     = "billing_zip=400001"
+        billing_country = "billing_country=India"
+        billing_tel     = f"billing_tel={current_user.phone_number or '9999999999'}"
+        billing_email   = f"billing_email={current_user.email}"
+        
+        merchant_data = f"{merchant_param}&{order_param}&{currency_param}&{amount_param}&{redirect_param}&{cancel_param}&{language_param}&{billing_name}&{billing_address}&{billing_city}&{billing_state}&{billing_zip}&{billing_country}&{billing_tel}&{billing_email}"
         
         enc_request = encrypt_ccavenue(merchant_data, settings.CCAVENUE_WORKING_KEY)
         
