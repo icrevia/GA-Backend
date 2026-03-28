@@ -777,24 +777,28 @@ def get_ccavenue_rsa(order_id: str, current_user: User = Depends(get_current_use
         response = requests.get(url, params=params, timeout=10)
         raw_text = response.text.strip()
         
-        # CCAvenue sometimes returns 'status=1&rsa_key=...' or just the raw key
-        if "rsa_key=" in raw_text:
-            try:
-                # Extract value after rsa_key=
-                rsa_key = raw_text.split("rsa_key=")[1].split("&")[0]
-            except Exception:
-                rsa_key = raw_text
+        # CCAvenue returns the key in a format like 'status=1&rsa_key=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...'
+        # or sometimes it can have HTML-ish garbage. We use Regex to be surgical.
+        import re
+        # Look for the longest Alphanumeric string that looks like a Base64 key
+        match = re.search(r'rsa_key=([a-zA-Z0-9\+\/=\s\n\r]+)', raw_text)
+        if match:
+            rsa_key = match.group(1).strip()
         else:
+            # Fallback for raw response
             rsa_key = raw_text
             
-        # Final clean for PEM headers
+        # Comprehensive cleanup
         rsa_key = rsa_key.replace("-----BEGIN PUBLIC KEY-----", "")\
                          .replace("-----END PUBLIC KEY-----", "")\
                          .replace("-----BEGIN RSA PUBLIC KEY-----", "")\
                          .replace("-----END RSA PUBLIC KEY-----", "")\
-                         .replace("\n", "").replace("\r", "").strip()
+                         .replace("\n", "").replace("\r", "").replace(" ", "").strip()
+        
+        # Remove any trailing non-base64 chars (like & if the regex overshot)
+        rsa_key = rsa_key.split("&")[0].split("<")[0]
                          
-        logger.info(f"Cleaned RSA Key for {order_id} (Length: {len(rsa_key)})")
+        logger.info(f"Surgically Cleaned RSA Key for {order_id} (Length: {len(rsa_key)})")
         return {"rsa_key": rsa_key}
     except Exception as e:
         logger.error(f"Failed to fetch CCAvenue RSA key: {e}")
