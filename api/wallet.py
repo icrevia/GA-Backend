@@ -443,7 +443,7 @@ def get_upi_intent(
         from services.payu import generate_payu_hash
         
         productinfo = "ZexPlay Wallet Recharge"
-        firstname = current_user.name or "User"
+        firstname = current_user.username or "User"
         email = current_user.email or "user@zexplay.com"
         
         # Calculate Hash
@@ -464,7 +464,7 @@ def get_upi_intent(
             "productinfo": productinfo,
             "firstname": firstname,
             "email": email,
-            "phone": current_user.phone or "9999999999",
+            "phone": current_user.phone_number or "9999999999",
             "surl": _payu_surl(),
             "furl": _payu_furl(),
             "hash": payu_hash,
