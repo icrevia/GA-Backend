@@ -885,3 +885,27 @@ def get_banned_users(
         {"id": u.id, "username": u.username, "email": u.email, "balance": float(u.wallet_balance)}
         for u in users
     ]
+@router.post("/transactions/reject-all-pending")
+def reject_all_pending_transactions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    """Mark all currently PENDING transactions as FAILED."""
+    affected = db.query(WalletTransaction).filter(
+        WalletTransaction.status == "PENDING"
+    ).update({"status": "FAILED", "failure_reason": "REJECTED_BY_ADMIN_BULK"})
+    db.commit()
+    logger.info(f"Admin {current_user.username} rejected all pending transactions. Affected: {affected}")
+    return {"message": f"Successfully rejected {affected} pending transactions"}
+
+
+@router.post("/transactions/clear-history")
+def clear_transaction_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    """PERMANENTLY DELETE all wallet transactions. Use with extreme caution!"""
+    deleted_count = db.query(WalletTransaction).delete()
+    db.commit()
+    logger.info(f"Admin {current_user.username} PERMANENTLY CLEARED ALL TRANSACTION HISTORY. Deleted: {deleted_count}")
+    return {"message": f"History cleared. Deleted {deleted_count} records."}
