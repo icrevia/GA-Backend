@@ -775,9 +775,26 @@ def get_ccavenue_rsa(order_id: str, current_user: User = Depends(get_current_use
     }
     try:
         response = requests.get(url, params=params, timeout=10)
-        # CCAvenue sometimes returns the key inside an HTML-like block or with whitespace
-        rsa_key = response.text.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").strip()
-        logger.info(f"Successfully fetched RSA key for {order_id}")
+        raw_text = response.text.strip()
+        
+        # CCAvenue sometimes returns 'status=1&rsa_key=...' or just the raw key
+        if "rsa_key=" in raw_text:
+            try:
+                # Extract value after rsa_key=
+                rsa_key = raw_text.split("rsa_key=")[1].split("&")[0]
+            except Exception:
+                rsa_key = raw_text
+        else:
+            rsa_key = raw_text
+            
+        # Final clean for PEM headers
+        rsa_key = rsa_key.replace("-----BEGIN PUBLIC KEY-----", "")\
+                         .replace("-----END PUBLIC KEY-----", "")\
+                         .replace("-----BEGIN RSA PUBLIC KEY-----", "")\
+                         .replace("-----END RSA PUBLIC KEY-----", "")\
+                         .replace("\n", "").replace("\r", "").strip()
+                         
+        logger.info(f"Cleaned RSA Key for {order_id} (Length: {len(rsa_key)})")
         return {"rsa_key": rsa_key}
     except Exception as e:
         logger.error(f"Failed to fetch CCAvenue RSA key: {e}")
