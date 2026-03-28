@@ -802,10 +802,18 @@ def get_ccavenue_payment_options(current_user: User = Depends(get_current_user))
     
     try:
         response = requests.post(url, data=payload, timeout=10)
-        # CCAvenue returns an encrypted string that must be decrypted using the Working Key
-        decrypted_resp = decrypt_ccavenue(response.text.strip(), settings.CCAVENUE_WORKING_KEY)
+        resp_text = response.text.strip()
+        
+        # Check if response is a valid hex string (at least 32 chars and hex)
+        import re
+        if not re.fullmatch(r"^[0-9a-fA-F]+$", resp_text):
+            logger.error(f"CCAvenue API returned non-hex response: {resp_text}")
+            raise HTTPException(status_code=400, detail=f"Gateway Error: {resp_text}")
+
+        decrypted_resp = decrypt_ccavenue(resp_text, settings.CCAVENUE_WORKING_KEY)
         import json
         return json.loads(decrypted_resp)
     except Exception as e:
+        if isinstance(e, HTTPException): raise e
         logger.error(f"Failed to fetch CCAvenue payment options: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch payment options")
