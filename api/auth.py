@@ -93,14 +93,11 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         )
     ).first()
 
-    # FIXED: Generic error message — does not reveal whether email exists or not
-    GENERIC_AUTH_ERROR = "Invalid email, username, or password"
-
     if not user:
         logger.warning(f"Login attempt for unknown identifier: {login_data.email[:30]}")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=GENERIC_AUTH_ERROR,
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found. Please sign up or check your identifier.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -108,7 +105,7 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         logger.warning(f"Failed login attempt for user_id={user.id}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=GENERIC_AUTH_ERROR,
+            detail="Incorrect password. Please try again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
