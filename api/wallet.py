@@ -121,22 +121,17 @@ def init_add_money(
             }
         }
     elif active_gateway == "CCAVENUE":
-        # CCAvenue Logic
-        redirect_url = f"{settings.APP_URL}/api/v1/wallet/ccavenue/return"
-        cancel_url   = f"{settings.APP_URL}/api/v1/wallet/ccavenue/return"
+        # Ensure amount has exactly 2 decimal places (Strict CCAvenue requirement)
+        amount_val = f"{float(req.amount):.2f}"
         
-        # CCAvenue Parameter string
-        # merchant_id, order_id, amount, currency, redirect_url, cancel_url, language
         merchant_param = f"merchant_id={settings.CCAVENUE_MERCHANT_ID}"
-        order_param    = f"order_id={txnid}"
+        order_param = f"order_id={txnid}"
         currency_param = "currency=INR"
-        amount_param   = f"amount={tx.amount:.2f}"
-        redirect_param = f"redirect_url={redirect_url}"
-        cancel_param   = f"cancel_url={cancel_url}"
+        amount_param = f"amount={amount_val}"
+        redirect_param = f"redirect_url={settings.APP_URL}/api/v1/wallet/ccavenue/return"
+        cancel_param = f"cancel_url={settings.APP_URL}/api/v1/wallet/ccavenue/return"
         language_param = "language=EN"
-        
-        # Pre-fill billing details for a better user experience
-        billing_name   = f"billing_name={current_user.username}"
+        billing_name = f"billing_name={current_user.username}"
         billing_address = "billing_address=Not Provided"
         billing_city    = "billing_city=Mumbai"
         billing_state   = "billing_state=Maharashtra"
