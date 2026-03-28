@@ -94,7 +94,7 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     ).first()
 
     # FIXED: Generic error message — does not reveal whether email exists or not
-    GENERIC_AUTH_ERROR = "Invalid credentials"
+    GENERIC_AUTH_ERROR = "Invalid email, username, or password"
 
     if not user:
         logger.warning(f"Login attempt for unknown identifier: {login_data.email[:30]}")
