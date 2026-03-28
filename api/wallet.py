@@ -774,19 +774,24 @@ def get_ccavenue_rsa(order_id: str, current_user: User = Depends(get_current_use
         "order_id": order_id
     }
     try:
-        response = requests.get(url, params=params, timeout=10)
+        # CCAvenue requires POST for getting the RSA key
+        response = requests.post(url, data=params, timeout=10)
         raw_text = response.text.strip()
         
+        # If we got HTML, it's an error page from CCAvenue
+        if "<html" in raw_text.lower():
+            logger.error(f"CCAvenue returned HTML instead of RSA key: {raw_text[:200]}")
+            raise HTTPException(status_code=500, detail="Invalid response from payment gateway")
+
         # CCAvenue returns the key in a format like 'status=1&rsa_key=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...'
-        # or sometimes it can have HTML-ish garbage. We use Regex to be surgical.
+        # or sometimes it can be just the raw key.
         import re
-        # Look for the longest Alphanumeric string that looks like a Base64 key
         match = re.search(r'rsa_key=([a-zA-Z0-9\+\/=\s\n\r]+)', raw_text)
         if match:
             rsa_key = match.group(1).strip()
         else:
-            # Fallback for raw response
-            rsa_key = raw_text
+            # Fallback for raw response (remove any status=1& if present)
+            rsa_key = raw_text.replace("status=1&", "").replace("status=0&", "").strip()
             
         # Comprehensive cleanup
         rsa_key = rsa_key.replace("-----BEGIN PUBLIC KEY-----", "")\
@@ -795,10 +800,10 @@ def get_ccavenue_rsa(order_id: str, current_user: User = Depends(get_current_use
                          .replace("-----END RSA PUBLIC KEY-----", "")\
                          .replace("\n", "").replace("\r", "").replace(" ", "").strip()
         
-        # Remove any trailing non-base64 chars (like & if the regex overshot)
+        # Ensure we don't have trailing garbage from the split
         rsa_key = rsa_key.split("&")[0].split("<")[0]
                          
-        logger.info(f"Surgically Cleaned RSA Key for {order_id} (Length: {len(rsa_key)})")
+        logger.info(f"VERIFIED RSA Key for {order_id} (Length: {len(rsa_key)})")
         return {"rsa_key": rsa_key}
     except Exception as e:
         logger.error(f"Failed to fetch CCAvenue RSA key: {e}")
