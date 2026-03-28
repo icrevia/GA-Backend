@@ -144,7 +144,8 @@ def init_add_money(
             "ccavenue_init": {
                 "encRequest": enc_request,
                 "access_code": settings.CCAVENUE_ACCESS_CODE,
-                "action": "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction"
+                "action": "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction",
+                "order_id": txnid
             }
         }
     else:

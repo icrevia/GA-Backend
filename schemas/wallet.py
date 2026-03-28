@@ -37,6 +37,7 @@ class CCAvenueInitResponse(BaseModel):
     encRequest: str
     access_code: str
     action: str
+    order_id: str
 
 class PaymentInitResponse(BaseModel):
     gateway: str
