@@ -757,3 +757,55 @@ async def ccavenue_return_handler(
     <h2 style="color:{html.escape(bg_color)};">{html.escape(label)}</h2>
     <p>You can now close this screen and return to the app.</p>
 </body></html>""")
+
+# ─────────────────────────────────────────────────────────────────
+# CCAvenue Seamless Handshake (Mobile SDK)
+# ─────────────────────────────────────────────────────────────────
+
+@router.get("/ccavenue/get-rsa")
+def get_ccavenue_rsa(order_id: str, current_user: User = Depends(get_current_user)):
+    """
+    Fetch the dynamic RSA Public Key from CCAvenue for transaction encryption.
+    """
+    import requests
+    url = "https://secure.ccavenue.com/transaction/getRSAKey"
+    params = {
+        "access_code": settings.CCAVENUE_ACCESS_CODE,
+        "order_id": order_id
+    }
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        return {"rsa_key": response.text.strip()}
+    except Exception as e:
+        logger.error(f"Failed to fetch CCAvenue RSA key: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch RSA key")
+
+@router.get("/ccavenue/payment-options")
+def get_ccavenue_payment_options(current_user: User = Depends(get_current_user)):
+    """
+    Fetch available payment options (Cards, UPI, NetBanking) as JSON from CCAvenue.
+    """
+    import requests
+    url = "https://api.ccavenue.com/apis/servlet/DoWebTrans"
+    
+    # Payload for fetching payment options
+    # command=getPaymentOptions&access_code=...&currency=INR
+    plain_params = f"command=getPaymentOptions&access_code={settings.CCAVENUE_ACCESS_CODE}&currency=INR"
+    enc_request = encrypt_ccavenue(plain_params, settings.CCAVENUE_WORKING_KEY)
+    
+    payload = {
+        "enc_request": enc_request,
+        "access_code": settings.CCAVENUE_ACCESS_CODE,
+        "command": "getPaymentOptions",
+        "response_type": "JSON"
+    }
+    
+    try:
+        response = requests.post(url, data=payload, timeout=10)
+        # CCAvenue returns an encrypted string that must be decrypted using the Working Key
+        decrypted_resp = decrypt_ccavenue(response.text.strip(), settings.CCAVENUE_WORKING_KEY)
+        import json
+        return json.loads(decrypted_resp)
+    except Exception as e:
+        logger.error(f"Failed to fetch CCAvenue payment options: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch payment options")
