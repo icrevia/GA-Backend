@@ -14,6 +14,7 @@ from models.wallet import WalletTransaction
 from schemas.wallet import AddMoneyRequest, PayUInitResponse, RazorpayInitResponse, PaymentInitResponse, WithdrawalRequest, WalletTransactionResponse, WalletBalanceResponse
 from services.payu import generate_payu_hash, verify_payu_hash
 from services.razorpay import create_razorpay_order, verify_razorpay_signature
+from services.ccavenue import encrypt_ccavenue, decrypt_ccavenue
 from core.config import settings
 from models.config import SystemConfig
 from services.notifications import add_user_notification
@@ -117,6 +118,33 @@ def init_add_money(
                 "prefill_email": current_user.email,
                 "prefill_contact": current_user.phone_number or "9999999999",
                 "txnid": txnid
+            }
+        }
+    elif active_gateway == "CCAVENUE":
+        # CCAvenue Logic
+        redirect_url = f"{settings.APP_URL}/api/v1/wallet/ccavenue/return"
+        cancel_url   = f"{settings.APP_URL}/api/v1/wallet/ccavenue/return"
+        
+        # CCAvenue Parameter string
+        # merchant_id, order_id, amount, currency, redirect_url, cancel_url, language
+        merchant_param = f"merchant_id={settings.CCAVENUE_MERCHANT_ID}"
+        order_param    = f"order_id={txnid}"
+        currency_param = "currency=INR"
+        amount_param   = f"amount={tx.amount:.2f}"
+        redirect_param = f"redirect_url={redirect_url}"
+        cancel_param   = f"cancel_url={cancel_url}"
+        language_param = "language=EN"
+        
+        merchant_data = f"{merchant_param}&{order_param}&{currency_param}&{amount_param}&{redirect_param}&{cancel_param}&{language_param}"
+        
+        enc_request = encrypt_ccavenue(merchant_data, settings.CCAVENUE_WORKING_KEY)
+        
+        return {
+            "gateway": "CCAVENUE",
+            "ccavenue_init": {
+                "encRequest": enc_request,
+                "access_code": settings.CCAVENUE_ACCESS_CODE,
+                "action": "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction"
             }
         }
     else:
@@ -631,3 +659,90 @@ async def verify_razorpay_payment(
     background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
     
     return {"status": "SUCCESS", "message": "Payment verified successfully"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# CCAvenue Return Handler
+# ─────────────────────────────────────────────────────────────────
+
+@router.post("/ccavenue/return", response_class=HTMLResponse)
+async def ccavenue_return_handler(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    form = await request.form()
+    enc_resp = form.get("encResp")
+    if not enc_resp:
+        raise HTTPException(status_code=400, detail="Missing encrypted response from CCAvenue")
+        
+    try:
+        decrypted_data = decrypt_ccavenue(enc_resp, settings.CCAVENUE_WORKING_KEY)
+        # Parse query string: order_id=txnid&order_status=Success&...
+        from urllib.parse import parse_qs
+        data = {k: v[0] for k, v in parse_qs(decrypted_data).items()}
+        
+        txnid  = data.get("order_id")
+        status = data.get("order_status") # Success, Failure, Aborted, Invalid
+        amount = float(data.get("amount", 0))
+        tracking_id = data.get("tracking_id", "")
+        payment_mode = data.get("payment_mode", "CCAVENUE")
+        
+        if not txnid:
+            raise ValueError("Missing txnid in decrypted response")
+            
+        tx = db.query(WalletTransaction).filter(
+            WalletTransaction.reference_id == txnid
+        ).with_for_update().first()
+        
+        if not tx:
+             raise ValueError("Transaction not found")
+             
+        if tx.status != "PENDING":
+             # Already processed
+             label = "Payment already processed!"
+             bg_color = "#6B7280"
+        else:
+            if status == "Success":
+                tx.status = "SUCCESS"
+                tx.payu_txn_id = tracking_id # Repurposing field
+                tx.payment_mode = payment_mode
+                
+                user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+                user.wallet_balance += tx.amount
+                db.add(user)
+                
+                add_user_notification(
+                    db, user.id,
+                    "Payment Confirmed ✅",
+                    f"₹{tx.amount:.0f} has been added to your ZexPlay wallet via CCAvenue.",
+                    "WALLET"
+                )
+                label = "Payment Successful!"
+                bg_color = "#16A34A"
+            else:
+                tx.status = "FAILED"
+                tx.failure_reason = status
+                add_user_notification(
+                    db, tx.user_id,
+                    "Recharge Failed ❌",
+                    f"Your CCAvenue payment failed. Status: {status}",
+                    "WALLET"
+                )
+                label = "Payment Failed!"
+                bg_color = "#EF4444"
+                
+            db.add(tx)
+            db.commit()
+            background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+
+    except Exception as e:
+        logger.error(f"CCAvenue decryption error: {e}")
+        label = "Error processing payment!"
+        bg_color = "#EF4444"
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><body style="background:#0D0E12; color:white; text-align:center; padding-top:50px; font-family:sans-serif;">
+    <h2 style="color:{html.escape(bg_color)};">{html.escape(label)}</h2>
+    <p>You can now close this screen and return to the app.</p>
+</body></html>""")

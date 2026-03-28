@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID:     str = ""
     RAZORPAY_KEY_SECRET: str = ""
 
+    # ── CCAvenue ──────────────────────────────────────────────────────────────
+    CCAVENUE_MERCHANT_ID: str = ""
+    CCAVENUE_ACCESS_CODE: str = ""
+    CCAVENUE_WORKING_KEY: str = ""
+
     class Config:
         env_file = ".env"
         case_sensitive = True
@@ -101,6 +106,14 @@ class Settings(BaseSettings):
             print(
                 "[CONFIG WARNING] Razorpay Key ID or Secret not set. "
                 "Razorpay payments will fail.",
+                file=sys.stderr
+            )
+
+        # ── CCAvenue Soft Warning ─────────────────────────────────────────────
+        if not self.CCAVENUE_MERCHANT_ID or not self.CCAVENUE_ACCESS_CODE or not self.CCAVENUE_WORKING_KEY:
+            print(
+                "[CONFIG WARNING] CCAvenue Merchant ID, Access Code, or Working Key not set. "
+                "CCAvenue payments will fail.",
                 file=sys.stderr
             )
 

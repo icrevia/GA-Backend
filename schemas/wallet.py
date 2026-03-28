@@ -11,7 +11,7 @@ class AddMoneyRequest(BaseModel):
 
 class PayUInitResponse(BaseModel):
     txnid: str
-    amount: Decimal
+    amount: float
     productinfo: str
     firstname: str
     email: str
@@ -24,8 +24,8 @@ class PayUInitResponse(BaseModel):
 
 class RazorpayInitResponse(BaseModel):
     order_id: str
-    amount: int  # in paise
-    currency: str = "INR"
+    amount: int
+    currency: str
     key_id: str
     description: str
     prefill_name: str
@@ -33,10 +33,16 @@ class RazorpayInitResponse(BaseModel):
     prefill_contact: str
     txnid: str
 
+class CCAvenueInitResponse(BaseModel):
+    encRequest: str
+    access_code: str
+    action: str
+
 class PaymentInitResponse(BaseModel):
-    gateway: str  # "PAYU" or "RAZORPAY"
+    gateway: str
     payu_init: Optional[PayUInitResponse] = None
     razorpay_init: Optional[RazorpayInitResponse] = None
+    ccavenue_init: Optional[CCAvenueInitResponse] = None
 
 
 class WithdrawalRequest(BaseModel):
