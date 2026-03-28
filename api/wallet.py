@@ -797,7 +797,7 @@ def get_ccavenue_payment_options(current_user: User = Depends(get_current_user))
         "enc_request": enc_request,
         "access_code": settings.CCAVENUE_ACCESS_CODE,
         "command": "getPaymentOptions",
-        "response_type": "JSON"
+        "request_type": "JSON"
     }
     
     try:
