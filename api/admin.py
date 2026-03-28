@@ -369,9 +369,9 @@ def get_admin_stats(
     return {
         "total_users": total_users,
         "total_tournaments": total_tournaments,
-        "total_revenue_pool": total_revenue_pool,
-        "total_prizes_distributed": float(total_prizes),
-        "estimated_platform_revenue": estimated_revenue,
+        "total_revenue_pool": round(float(total_revenue_pool), 2),
+        "total_prizes_distributed": round(float(total_prizes), 2),
+        "estimated_platform_revenue": round(estimated_revenue, 2),
         "pending_withdrawals_count": pending_withdrawals,
         "daily_revenue": chart_data
     }
@@ -570,17 +570,16 @@ def adjust_user_funds(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    # Cap single adjustment to prevent extreme accidental mas crediting, 
-    # but set high enough to allow fixing broken test balances.
-    if abs(amount) > 1_000_000_000_000_000_000_000: # 10^21
-        raise HTTPException(status_code=400, detail="Single adjustment limit exceeded (Safety Cap)")
+    # Cap single adjustment to prevent extreme accidental mass crediting.
+    # Updated: Reduced to 100 Crore (100,000,000) to keep dashboard layout stable.
+    if abs(amount) > 100_000_000:
+        raise HTTPException(status_code=400, detail="Single adjustment limit exceeded (Safety Cap: 10 Crore)")
 
     user = db.query(User).filter(User.id == user_id).with_for_update().first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     # FIXED: Convert float to Decimal before arithmetic — wallet_balance is Numeric(12,2)
-    # Using str(amount) avoids float binary precision issues (e.g. 0.1 + 0.2 != 0.3)
     decimal_amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     new_balance = (user.wallet_balance or Decimal(0)) + decimal_amount
@@ -603,7 +602,7 @@ def adjust_user_funds(
         f"Admin adjustment: admin={current_user.username} user={user_id} "
         f"amount={decimal_amount} reason={reason[:100]}"
     )
-    return {"message": f"Balance updated. New balance: \u20b9{float(user.wallet_balance):.2f}"}
+    return {"message": f"Balance updated. New balance: ₹{float(user.wallet_balance):.2f}"}
 
 
 # ─────────────────────────────────────────────────────────────────
