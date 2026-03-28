@@ -789,8 +789,8 @@ def get_ccavenue_payment_options(current_user: User = Depends(get_current_user))
     url = "https://api.ccavenue.com/apis/servlet/DoWebTrans"
     
     # Payload for fetching payment options
-    # command=getPaymentOptions&access_code=...&currency=INR
-    plain_params = f"command=getPaymentOptions&access_code={settings.CCAVENUE_ACCESS_CODE}&currency=INR"
+    # command=getPaymentOptions&merchant_id=...&access_code=...&currency=INR
+    plain_params = f"command=getPaymentOptions&merchant_id={settings.CCAVENUE_MERCHANT_ID}&access_code={settings.CCAVENUE_ACCESS_CODE}&currency=INR"
     enc_request = encrypt_ccavenue(plain_params, settings.CCAVENUE_WORKING_KEY)
     
     payload = {
@@ -808,6 +808,7 @@ def get_ccavenue_payment_options(current_user: User = Depends(get_current_user))
         import re
         if not re.fullmatch(r"^[0-9a-fA-F]+$", resp_text):
             logger.error(f"CCAvenue API returned non-hex response: {resp_text}")
+            # Raising the literal error from CCAvenue so the user can see it (e.g., "Invalid Request" or "IP Not Whitelisted")
             raise HTTPException(status_code=400, detail=f"Gateway Error: {resp_text}")
 
         decrypted_resp = decrypt_ccavenue(resp_text, settings.CCAVENUE_WORKING_KEY)
