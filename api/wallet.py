@@ -189,13 +189,29 @@ def payu_redirect(
 
     seamless_fields = ""
     if vpa:
-        safe_vpa = html.escape(str(vpa))
-        seamless_fields = f"""
-            <input type="hidden" name="pg" value="UPI" />
-            <input type="hidden" name="bankcode" value="UPI-VPA" />
-            <input type="hidden" name="vpa" value="{safe_vpa}" />
-            <input type="hidden" name="api_version" value="1" />
-        """
+        vpa_upper = vpa.upper()
+        if vpa_upper == "GPAY":
+            seamless_fields = """
+                <input type="hidden" name="pg" value="UPI" />
+                <input type="hidden" name="bankcode" value="TEZ" />
+            """
+        elif vpa_upper == "PHONEPE":
+            seamless_fields = """
+                <input type="hidden" name="pg" value="UPI" />
+                <input type="hidden" name="bankcode" value="PHONEPE" />
+            """
+        elif vpa_upper == "PAYTM":
+            seamless_fields = """
+                <input type="hidden" name="pg" value="UPI" />
+                <input type="hidden" name="bankcode" value="PAYTM" />
+            """
+        else: # Real VPA Address
+            safe_vpa = html.escape(str(vpa))
+            seamless_fields = f"""
+                <input type="hidden" name="pg" value="UPI" />
+                <input type="hidden" name="bankcode" value="UPI-VPA" />
+                <input type="hidden" name="vpa" value="{safe_vpa}" />
+            """
 
     html_content = f"""<!DOCTYPE html>
 <html>
