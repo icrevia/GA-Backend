@@ -25,6 +25,8 @@ class User(Base):
     wallet_balance  = Column(Numeric(precision=12, scale=2), default=0.00)
 
     is_active       = Column(Boolean, default=True)
+    referral_code   = Column(String, unique=True, index=True, nullable=True)
+    referred_by_id  = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     # Token versioning for instant JWT revocation.
     # Increment this (user.token_version += 1) to immediately invalidate

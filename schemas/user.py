@@ -10,6 +10,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     phone_number: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
     password: str = Field(..., min_length=6, max_length=128)
+    referral_code: Optional[str] = None
 
     @field_validator("username")
     @classmethod
