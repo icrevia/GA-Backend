@@ -163,12 +163,6 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is disabled. Please contact support.",
-        )
-
     logger.info(f"Successful login: user_id={user.id}")
 
     token_version = getattr(user, "token_version", 0) or 0
