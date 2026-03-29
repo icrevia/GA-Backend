@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 import uuid
 import html
 import logging
+import hashlib
 
 
 from api.deps import get_db, get_current_user, get_current_active_admin
@@ -228,12 +229,16 @@ def init_add_money(
             billing_country = "billing_country=India"
             billing_tel = f"billing_tel={current_user.phone_number or '9999999999'}"
             billing_email = f"billing_email={current_user.email}"
+            merchant_param1 = f"merchant_param1={current_user.id}"
+            merchant_param2 = f"merchant_param2={tx.id}"
+            merchant_param3 = "merchant_param3=ADD_MONEY"
 
             merchant_data = (
                 f"{merchant_param}&{order_param}&{currency_param}&{amount_param}&"
                 f"{redirect_param}&{cancel_param}&{language_param}&{billing_name}&"
                 f"{billing_address}&{billing_city}&{billing_state}&{billing_zip}&"
-                f"{billing_country}&{billing_tel}&{billing_email}"
+                f"{billing_country}&{billing_tel}&{billing_email}&"
+                f"{merchant_param1}&{merchant_param2}&{merchant_param3}"
             )
 
             enc_request = encrypt_ccavenue(merchant_data, settings.CCAVENUE_WORKING_KEY)
@@ -877,6 +882,8 @@ async def ccavenue_return_handler(
     enc_resp = form.get("encResp")
     if not enc_resp:
         raise HTTPException(status_code=400, detail="Missing encrypted response from CCAvenue")
+
+    callback_digest = hashlib.sha256(str(enc_resp).encode("utf-8")).hexdigest()
         
     tx = None
     try:
@@ -894,6 +901,8 @@ async def ccavenue_return_handler(
         payment_mode = (data.get("payment_mode") or "CCAVENUE").strip().upper()
         currency = (data.get("currency") or "").strip().upper()
         merchant_id = (data.get("merchant_id") or "").strip()
+        merchant_param1 = (data.get("merchant_param1") or "").strip()
+        merchant_param2 = (data.get("merchant_param2") or "").strip()
 
         if not txnid:
             raise ValueError("Missing txnid in decrypted response")
@@ -910,6 +919,7 @@ async def ccavenue_return_handler(
         # Persist gateway trace fields regardless of success/failure outcome.
         tx.gateway_order_id = txnid
         tx.payment_mode = payment_mode or "CCAVENUE"
+        tx.gateway_signature = callback_digest
         if tracking_id:
             tx.gateway_payment_id = tracking_id
         if bank_ref_no:
@@ -919,6 +929,8 @@ async def ccavenue_return_handler(
 
         if tx.status != "PENDING":
             # Already processed
+            db.add(tx)
+            db.commit()
             label = "Payment already processed!"
             bg_color = "#6B7280"
         else:
@@ -938,13 +950,16 @@ async def ccavenue_return_handler(
                     validation_error = "CCAVENUE_CURRENCY_MISMATCH"
                 elif merchant_id != settings.CCAVENUE_MERCHANT_ID:
                     validation_error = "CCAVENUE_MERCHANT_MISMATCH"
+                elif merchant_param1 and merchant_param1 != str(tx.user_id):
+                    validation_error = "CCAVENUE_USER_BIND_MISMATCH"
+                elif merchant_param2 and merchant_param2 != str(tx.id):
+                    validation_error = "CCAVENUE_TX_BIND_MISMATCH"
                 else:
-                    existing_success = db.query(WalletTransaction).filter(
+                    existing_conflict = db.query(WalletTransaction).filter(
                         WalletTransaction.gateway_payment_id == tracking_id,
-                        WalletTransaction.status == "SUCCESS",
                         WalletTransaction.id != tx.id,
                     ).first()
-                    if existing_success:
+                    if existing_conflict:
                         validation_error = "CCAVENUE_DUPLICATE_TRACKING_ID"
 
                 if validation_error:
