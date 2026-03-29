@@ -103,7 +103,15 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ─────────────────────────────────────────────
 # CORS — explicit origins only, never wildcard
 # ─────────────────────────────────────────────
-ALLOWED_ORIGINS = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
+def _normalize_origin(origin: str) -> str:
+    return origin.strip().rstrip("/")
+
+
+ALLOWED_ORIGINS = []
+for raw_origin in settings.ALLOWED_ORIGINS.split(","):
+    normalized = _normalize_origin(raw_origin)
+    if normalized and normalized not in ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS.append(normalized)
 
 app.add_middleware(
     CORSMiddleware,
