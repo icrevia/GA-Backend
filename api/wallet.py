@@ -158,7 +158,7 @@ def init_add_money(
                 "ccavenue_init": {
                     "encRequest": enc_request,
                     "access_code": settings.CCAVENUE_ACCESS_CODE,
-                    "action": "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction",
+                    "action": f"{settings.CCAVENUE_WEB_BASE_URL.rstrip('/')}/transaction/transaction.do?command=initiateTransaction",
                     "order_id": txnid
                 }
             }
@@ -885,7 +885,7 @@ def get_ccavenue_rsa(order_id: str, current_user: User = Depends(get_current_use
     Fetch the dynamic RSA Public Key from CCAvenue for transaction encryption.
     """
     import requests
-    url = "https://secure.ccavenue.com/transaction/getRSAKey"
+    url = f"{settings.CCAVENUE_WEB_BASE_URL.rstrip('/')}/transaction/getRSAKey"
     params = {
         "access_code": settings.CCAVENUE_ACCESS_CODE,
         "order_id": order_id
@@ -932,7 +932,7 @@ def get_ccavenue_payment_options(current_user: User = Depends(get_current_user))
     Fetch available payment options (Cards, UPI, NetBanking) as JSON from CCAvenue.
     """
     import requests
-    url = "https://api.ccavenue.com/apis/servlet/DoWebTrans"
+    url = f"{settings.CCAVENUE_API_BASE_URL.rstrip('/')}/apis/servlet/DoWebTrans"
     
     # Simplified encrypted payload (command and access_code are in the outer payload)
     plain_params = f"currency=INR"

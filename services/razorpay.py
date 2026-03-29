@@ -7,12 +7,17 @@ from core.config import settings
 
 logger = logging.getLogger("zexplay.razorpay")
 
+
+def _rzp_url(path: str) -> str:
+    base = settings.RAZORPAY_API_BASE_URL.rstrip("/")
+    return f"{base}{path}"
+
 def create_razorpay_order(amount: float, receipt: str) -> dict:
     """
     Create an order on Razorpay.
     Amount should be in Rupees (converted to Paise internally).
     """
-    url = "https://api.razorpay.com/v1/orders"
+    url = _rzp_url("/v1/orders")
     
     # Razorpay expects amount in paise (1 INR = 100 paise)
     amount_paise = int(amount * 100)
@@ -45,7 +50,7 @@ def get_razorpay_order(order_id: str) -> dict | None:
     """Fetch a Razorpay order by id."""
     try:
         response = requests.get(
-            f"https://api.razorpay.com/v1/orders/{order_id}",
+            _rzp_url(f"/v1/orders/{order_id}"),
             auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET),
             timeout=15,
         )
@@ -62,7 +67,7 @@ def get_razorpay_payment(payment_id: str) -> dict | None:
     """Fetch a Razorpay payment by id."""
     try:
         response = requests.get(
-            f"https://api.razorpay.com/v1/payments/{payment_id}",
+            _rzp_url(f"/v1/payments/{payment_id}"),
             auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET),
             timeout=15,
         )

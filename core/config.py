@@ -1,7 +1,8 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 from pydantic import model_validator
 import sys
 import logging
+import os
 
 logger = logging.getLogger("zexplay.config")
 
@@ -9,19 +10,18 @@ logger = logging.getLogger("zexplay.config")
 class Settings(BaseSettings):
     PROJECT_NAME: str = "ZexPlay"
     API_V1_STR:   str = "/api/v1"
+    ENVIRONMENT:  str = "development"
     DEBUG:        bool = False
 
     # ── Security ──────────────────────────────────────────────────────────────
     # Generate: python -c "import secrets; print(secrets.token_hex(32))"
-    SECRET_KEY: str = "CHANGE_ME"
+    SECRET_KEY: str = ""
     ALGORITHM:  str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080 # 7 days (60 * 24 * 7)
 
     # ── App URL ───────────────────────────────────────────────────────────────
-    # Set this in Railway environment variables.
-    # Railway also provides RAILWAY_PUBLIC_DOMAIN automatically — we fall back to it.
-    APP_URL:             str = ""
-    RAILWAY_PUBLIC_DOMAIN: str = ""  # Injected automatically by Railway
+    # In production, set this explicitly from Railway Variables.
+    APP_URL: str = ""
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated list of origins: "https://admin.zexplay.com, http://localhost:3000"
@@ -33,35 +33,57 @@ class Settings(BaseSettings):
     # ── PayU ──────────────────────────────────────────────────────────────────
     PAYU_MERCHANT_KEY:  str = ""
     PAYU_MERCHANT_SALT: str = ""
-    PAYU_BASE_URL:      str = "https://secure.payu.in"
+    PAYU_BASE_URL:      str = ""
     PAYU_MERCHANT_VPA:  str = ""
     
     # ── Razorpay ──────────────────────────────────────────────────────────────
     RAZORPAY_KEY_ID:     str = ""
     RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_API_BASE_URL: str = ""
 
     # ── CCAvenue ──────────────────────────────────────────────────────────────
     CCAVENUE_MERCHANT_ID: str = ""
     CCAVENUE_ACCESS_CODE: str = ""
     CCAVENUE_WORKING_KEY: str = ""
+    CCAVENUE_WEB_BASE_URL: str = ""
+    CCAVENUE_API_BASE_URL: str = ""
 
     class Config:
         env_file = ".env"
         case_sensitive = True
         extra = "ignore"  # Ignore unknown Railway-injected env vars
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # In production, read only process env vars (Railway Variables section).
+        # Local development can still use .env for convenience.
+        env_name = os.getenv("ENVIRONMENT", "development").lower()
+        if env_name in {"production", "prod"}:
+            return (init_settings, env_settings, file_secret_settings)
+        return (init_settings, env_settings, dotenv_settings, file_secret_settings)
+
     @model_validator(mode="after")
     def resolve_and_validate(self) -> "Settings":
-        # ── Resolve APP_URL from Railway's auto-injected domain if not set directly ──
-        if not self.APP_URL and self.RAILWAY_PUBLIC_DOMAIN:
-            object.__setattr__(
-                self, "APP_URL",
-                f"https://{self.RAILWAY_PUBLIC_DOMAIN}"
-            )
+        env_name = self.ENVIRONMENT.lower()
+        is_production = env_name in {"production", "prod"}
 
-        # ── ALLOWED_ORIGINS defaults to APP_URL if not overridden ─────────────
-        if not self.ALLOWED_ORIGINS and self.APP_URL:
-            object.__setattr__(self, "ALLOWED_ORIGINS", self.APP_URL)
+        # Local-only defaults to reduce setup friction.
+        if not is_production:
+            if not self.PAYU_BASE_URL:
+                object.__setattr__(self, "PAYU_BASE_URL", "https://secure.payu.in")
+            if not self.RAZORPAY_API_BASE_URL:
+                object.__setattr__(self, "RAZORPAY_API_BASE_URL", "https://api.razorpay.com")
+            if not self.CCAVENUE_WEB_BASE_URL:
+                object.__setattr__(self, "CCAVENUE_WEB_BASE_URL", "https://secure.ccavenue.com")
+            if not self.CCAVENUE_API_BASE_URL:
+                object.__setattr__(self, "CCAVENUE_API_BASE_URL", "https://api.ccavenue.com")
 
         # ── HARD FAIL: Only crash if SECRET_KEY is still the placeholder ──────
         # Everything else gets a warning — we don't want to take prod offline.
@@ -70,14 +92,31 @@ class Settings(BaseSettings):
             "",
             "CHANGE_ME_GENERATE_WITH_secrets_token_hex_32",
             "ZexPlay_Super_Secure_JWT_Key_2026_@",
+            "your-super-secret-key-change-this",
         }
-        if self.SECRET_KEY in placeholder_keys:
+        if self.SECRET_KEY in placeholder_keys or (is_production and len(self.SECRET_KEY) < 32):
             print(
-                "[CONFIG FATAL] SECRET_KEY is not set or is using the default placeholder.\n"
+                "[CONFIG FATAL] SECRET_KEY is missing/weak.\n"
                 "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\"",
                 file=sys.stderr
             )
             raise ValueError("SECRET_KEY must be set to a strong random value in production.")
+
+        if is_production:
+            required_fields = {
+                "APP_URL": self.APP_URL,
+                "ALLOWED_ORIGINS": self.ALLOWED_ORIGINS,
+                "DATABASE_URL": self.DATABASE_URL,
+                "PAYU_BASE_URL": self.PAYU_BASE_URL,
+                "RAZORPAY_API_BASE_URL": self.RAZORPAY_API_BASE_URL,
+                "CCAVENUE_WEB_BASE_URL": self.CCAVENUE_WEB_BASE_URL,
+                "CCAVENUE_API_BASE_URL": self.CCAVENUE_API_BASE_URL,
+            }
+            missing = [key for key, value in required_fields.items() if not value]
+            if missing:
+                raise ValueError(
+                    "Missing required production environment variables: " + ", ".join(missing)
+                )
 
         # ── SOFT WARNINGS: Log but don't crash ────────────────────────────────
         if not self.APP_URL:
