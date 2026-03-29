@@ -32,4 +32,4 @@ COPY . .
 EXPOSE 8000
 
 # Start the app (adjust if your entrypoint is different)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
