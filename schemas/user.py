@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from typing import Optional
 import re
 
@@ -49,3 +49,19 @@ class UserUpdate(BaseModel):
     bgmi_id: Optional[str] = Field(None, max_length=50)
     valorant_id: Optional[str] = Field(None, max_length=50)
     freefire_id: Optional[str] = Field(None, max_length=50)
+
+
+class SecureContactUpdate(BaseModel):
+    password: str = Field(..., min_length=6, max_length=128)
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = Field(None, pattern=r"^\+?[0-9]{10,15}$")
+
+    @model_validator(mode="after")
+    def validate_target_fields(self):
+        if self.email is None and self.phone_number is None:
+            raise ValueError("Provide at least one field: email or phone_number")
+        return self
+
+
+class PasswordChangeRequest(BaseModel):
+    new_password: str = Field(..., min_length=6, max_length=128)
