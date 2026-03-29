@@ -16,8 +16,6 @@ class User(Base):
     upi_id          = Column(String, nullable=True)
     profile_pic     = Column(String, nullable=True)
 
-    # Path to stored face image for 2FA face verification
-    face_image_path = Column(String, nullable=True)
 
     # Game IDs
     bgmi_id         = Column(String, nullable=True)

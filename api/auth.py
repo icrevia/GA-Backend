@@ -8,11 +8,8 @@ from core.config import settings
 from core.security import hash_password, verify_password, create_access_token
 from models.user import User
 from schemas.user import UserCreate, UserResponse, LoginRequest
-from schemas.user import FaceVerifyRequest, FaceVerifyResponse
 from schemas.token import Token
 from typing import Any
-from fastapi import UploadFile, File, Form
-from services.face_verify import save_face_image, get_face_encoding, compare_faces
 import hashlib
 import logging
 from services.login_security import (
