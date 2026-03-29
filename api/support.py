@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy import and_, func
 from pydantic import BaseModel, Field
 from typing import List, Tuple
@@ -123,6 +123,10 @@ class AdminReplyRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
 
 
+class AttendSessionRequest(BaseModel):
+    session_id: int
+
+
 class SendMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
 
@@ -232,6 +236,41 @@ def _get_or_create_user_support_session(db: Session, user_id: int) -> Tuple[Chat
     return session, [session]
 
 
+def _set_user_support_attendance(
+    db: Session,
+    user_id: int,
+    admin_id: int | None,
+    requires_admin: bool | None = None,
+) -> None:
+    updates: dict = {
+        ChatSession.attended_by_admin_id: admin_id,
+        ChatSession.attended_at: now_ist() if admin_id is not None else None,
+    }
+    if requires_admin is not None:
+        updates[ChatSession.requires_admin] = requires_admin
+
+    db.query(ChatSession).filter(ChatSession.user_id == user_id).update(
+        updates,
+        synchronize_session=False,
+    )
+
+
+def _get_attending_admin_for_user(db: Session, user_id: int) -> User | None:
+    attending_admin_id = (
+        db.query(ChatSession.attended_by_admin_id)
+        .filter(
+            ChatSession.user_id == user_id,
+            ChatSession.attended_by_admin_id.isnot(None),
+        )
+        .order_by(ChatSession.attended_at.desc(), ChatSession.id.desc())
+        .first()
+    )
+    if not attending_admin_id or not attending_admin_id[0]:
+        return None
+
+    return db.query(User).filter(User.id == int(attending_admin_id[0])).first()
+
+
 # ─────────────────────────────────────────────────────────────────
 # WebSocket — FIXED: requires JWT token, verifies ownership
 # ─────────────────────────────────────────────────────────────────
@@ -331,18 +370,25 @@ def get_sessions(
         .subquery()
     )
 
+    chat_user = aliased(User)
+    attending_admin = aliased(User)
+
     rows = (
         db.query(
             ChatSession.id.label("session_id"),
             ChatSession.user_id.label("user_id"),
             ChatSession.created_at.label("created_at"),
             ChatSession.requires_admin.label("requires_admin"),
-            User.username.label("username"),
-            User.email.label("email"),
+            ChatSession.attended_by_admin_id.label("attended_by_admin_id"),
+            ChatSession.attended_at.label("attended_at"),
+            chat_user.username.label("username"),
+            chat_user.email.label("email"),
+            attending_admin.username.label("attended_by_admin_name"),
             latest_message_sq.c.content.label("last_message"),
             latest_message_sq.c.timestamp.label("last_timestamp"),
         )
-        .join(User, User.id == ChatSession.user_id)
+        .join(chat_user, chat_user.id == ChatSession.user_id)
+        .outerjoin(attending_admin, attending_admin.id == ChatSession.attended_by_admin_id)
         .outerjoin(
             latest_message_sq,
             and_(
@@ -371,6 +417,10 @@ def get_sessions(
                 if (row.last_timestamp or row.created_at) else None
             ),
             "requires_admin": bool(row.requires_admin),
+            "is_attended": bool(row.attended_by_admin_id),
+            "attended_at": row.attended_at.isoformat() if row.attended_at else None,
+            "attended_by_admin_id": row.attended_by_admin_id,
+            "attended_by_admin_name": row.attended_by_admin_name,
             "unread": 0,
         }
         for row in rows
@@ -383,6 +433,7 @@ def get_my_chat(
     current_user: User = Depends(get_user_for_support)
 ):
     session, all_sessions = _get_or_create_user_support_session(db, current_user.id)
+    attending_admin = _get_attending_admin_for_user(db, current_user.id)
     session_ids = [s.id for s in all_sessions]
 
     messages = db.query(ChatMessage).filter(
@@ -392,6 +443,9 @@ def get_my_chat(
     return {
         "session_id": session.id,
         "requires_admin": any(bool(s.requires_admin) for s in all_sessions),
+        "is_attended": attending_admin is not None,
+        "attended_by_admin_id": attending_admin.id if attending_admin else None,
+        "attended_by_admin_name": attending_admin.username if attending_admin else None,
         "messages": [
             {
                 "id":        m.id,
@@ -447,6 +501,7 @@ async def send_message(
         "type":       "chat_message",
         "id":         new_msg.id,
         "session_id": session.id,
+        "user_id":    session.user_id,
         "content":    new_msg.content,
         "is_admin":   new_msg.is_admin,
         "timestamp":  now_ist().isoformat()
@@ -467,7 +522,12 @@ async def send_message(
     )
 
     if should_escalate:
-        session.requires_admin = True
+        _set_user_support_attendance(
+            db,
+            user_id=session.user_id,
+            admin_id=None,
+            requires_admin=True,
+        )
 
     db.add(bot_msg)
     db.commit()
@@ -477,6 +537,7 @@ async def send_message(
         "type": "chat_message",
         "id": bot_msg.id,
         "session_id": session.id,
+        "user_id": session.user_id,
         "content": bot_msg.content,
         "is_admin": True,
         "timestamp": now_ist().isoformat(),
@@ -532,6 +593,7 @@ async def log_call(
         "type":       "chat_message",
         "id":         new_msg.id,
         "session_id": session.id,
+        "user_id":    target_user_id,
         "content":    content,
         "is_admin":   new_msg.is_admin,
         "timestamp":  now_ist().isoformat()
@@ -543,6 +605,75 @@ async def log_call(
         await manager.broadcast_to_admins(msg_data)
 
     return {"status": "success"}
+
+
+@router.post("/admin/attend")
+async def admin_attend_session(
+    request: AttendSessionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    session = db.query(ChatSession).filter(ChatSession.id == request.session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    existing_attender = _get_attending_admin_for_user(db, session.user_id)
+    if existing_attender and existing_attender.id != current_user.id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This chat is currently attended by Agent {existing_attender.username}.",
+        )
+
+    primary_session, _ = _get_or_create_user_support_session(db, session.user_id)
+
+    _set_user_support_attendance(
+        db,
+        user_id=session.user_id,
+        admin_id=current_user.id,
+        requires_admin=False,
+    )
+
+    join_message = ChatMessage(
+        session_id=primary_session.id,
+        sender_id=current_user.id,
+        content=f"Agent {current_user.username} has joined this chat. Please talk to him.",
+        is_admin=True,
+    )
+    db.add(join_message)
+    db.commit()
+    db.refresh(join_message)
+
+    join_chat_payload = {
+        "type": "chat_message",
+        "id": join_message.id,
+        "session_id": primary_session.id,
+        "user_id": session.user_id,
+        "content": join_message.content,
+        "is_admin": True,
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.send_personal_message(join_chat_payload, session.user_id)
+    await manager.broadcast_to_admins(join_chat_payload)
+
+    attend_event = {
+        "type": "support_attended",
+        "session_id": primary_session.id,
+        "user_id": session.user_id,
+        "attended_by_admin_id": current_user.id,
+        "attended_by_admin_name": current_user.username,
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.broadcast_to_admins(attend_event)
+
+    return {
+        "status": "success",
+        "session_id": primary_session.id,
+        "attended_by_admin_id": current_user.id,
+        "attended_by_admin_name": current_user.username,
+    }
 
 
 @router.post("/admin/reply")
@@ -565,6 +696,14 @@ async def admin_reply(
         raise HTTPException(status_code=404, detail="Session not found")
 
     primary_session, _ = _get_or_create_user_support_session(db, session.user_id)
+    attending_admin = _get_attending_admin_for_user(db, session.user_id)
+    if not attending_admin:
+        raise HTTPException(status_code=409, detail="Click Attend Now before replying to this chat.")
+    if attending_admin.id != current_user.id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This chat is currently attended by Agent {attending_admin.username}.",
+        )
 
     new_msg = ChatMessage(
         session_id=primary_session.id,
@@ -572,9 +711,11 @@ async def admin_reply(
         content=clean_message,
         is_admin=True
     )
-    db.query(ChatSession).filter(ChatSession.user_id == session.user_id).update(
-        {ChatSession.requires_admin: False},
-        synchronize_session=False,
+    _set_user_support_attendance(
+        db,
+        user_id=session.user_id,
+        admin_id=current_user.id,
+        requires_admin=False,
     )
     db.add(new_msg)
     db.commit()
@@ -583,6 +724,7 @@ async def admin_reply(
         "type":       "chat_message",
         "id":         new_msg.id,
         "session_id": primary_session.id,
+        "user_id":    session.user_id,
         "content":    new_msg.content,
         "is_admin":   True,
         "timestamp":  now_ist().isoformat()

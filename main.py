@@ -164,6 +164,12 @@ def startup_event():
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS requires_admin BOOLEAN DEFAULT FALSE"
             ))
             conn.execute(text(
+                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_by_admin_id INTEGER"
+            ))
+            conn.execute(text(
+                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_at TIMESTAMP"
+            ))
+            conn.execute(text(
                 "UPDATE chat_sessions SET requires_admin = FALSE WHERE requires_admin IS NULL"
             ))
             conn.commit()

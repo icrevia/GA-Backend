@@ -8,6 +8,8 @@ class ChatSession(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"))
+    attended_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    attended_at = Column(DateTime, nullable=True)
     status = Column(String, default="ACTIVE")
     requires_admin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
