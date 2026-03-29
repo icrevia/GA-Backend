@@ -10,6 +10,7 @@ from models.user import User
 from schemas.user import UserCreate, UserResponse, LoginRequest
 from schemas.token import Token
 from typing import Any
+import hashlib
 import logging
 from services.login_security import (
     extract_client_ip,
@@ -54,6 +55,51 @@ def _mask_identifier(value: str) -> str:
 def _safe_user_agent(request: Request) -> str:
     ua = (request.headers.get("user-agent") or "-").replace("\n", " ").strip()
     return ua[:180]
+
+
+def _safe_header(request: Request, header_name: str, max_len: int = 180) -> str:
+    value = (request.headers.get(header_name) or "").replace("\n", " ").strip()
+    if not value:
+        return "-"
+    return value[:max_len]
+
+
+def _build_request_context(request: Request, client_ip: str) -> dict[str, object]:
+    user_agent = _safe_user_agent(request)
+    accept_language = _safe_header(request, "accept-language", 120)
+    platform = _safe_header(request, "sec-ch-ua-platform", 80)
+    browser_hint = _safe_header(request, "sec-ch-ua", 120)
+    origin = _safe_header(request, "origin", 140)
+    referer = _safe_header(request, "referer", 180)
+    forwarded_for = _safe_header(request, "x-forwarded-for", 140)
+    real_ip = _safe_header(request, "x-real-ip", 80)
+    cf_connecting_ip = _safe_header(request, "cf-connecting-ip", 80)
+
+    fingerprint_source = "|".join([client_ip, user_agent, accept_language, platform, browser_hint])
+    device_fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:12]
+
+    context: dict[str, object] = {
+        "ip": client_ip,
+        "user_agent": user_agent,
+        "device_fingerprint": device_fingerprint,
+    }
+
+    optional_headers = {
+        "accept_language": accept_language,
+        "platform": platform,
+        "browser_hint": browser_hint,
+        "origin": origin,
+        "referer": referer,
+        "forwarded_for": forwarded_for,
+        "real_ip": real_ip,
+        "cf_connecting_ip": cf_connecting_ip,
+    }
+
+    for key, value in optional_headers.items():
+        if value != "-":
+            context[key] = value
+
+    return context
 
 
 class SignupResponse(Token):
@@ -173,6 +219,7 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
 @limiter.limit("10/minute")  # Rate limit: 10 login attempts per minute per IP
 def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
     client_ip = extract_client_ip(request)
+    request_context = _build_request_context(request, client_ip)
     raw_identifier = login_data.email.strip()
 
     # Normalize identifier (could be email or phone)
@@ -186,10 +233,9 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         send_security_alert_async(
             event="LOGIN_BLOCKED_IP_HIT",
             details={
-                "ip": client_ip,
+                **request_context,
                 "retry_after_seconds": retry_after_seconds,
                 "identifier": _mask_identifier(raw_identifier),
-                "user_agent": _safe_user_agent(request),
             },
         )
         raise HTTPException(
@@ -211,12 +257,11 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         send_security_alert_async(
             event="LOGIN_FAILED_UNKNOWN_IDENTIFIER",
             details={
-                "ip": client_ip,
+                **request_context,
                 "attempts_in_window": attempts,
                 "identifier": _mask_identifier(raw_identifier),
                 "blocked_now": blocked_now,
                 "block_seconds": blocked_for_seconds,
-                "user_agent": _safe_user_agent(request),
             },
         )
 
@@ -224,7 +269,7 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
             send_security_alert_async(
                 event="LOGIN_IP_BLOCKED",
                 details={
-                    "ip": client_ip,
+                    **request_context,
                     "reason": "too_many_failed_logins",
                     "block_seconds": blocked_for_seconds,
                 },
@@ -242,13 +287,13 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         send_security_alert_async(
             event="LOGIN_FAILED_BAD_PASSWORD",
             details={
-                "ip": client_ip,
+                **request_context,
                 "attempts_in_window": attempts,
                 "blocked_now": blocked_now,
                 "block_seconds": blocked_for_seconds,
                 "user_id": user.id,
                 "username": user.username,
-                "user_agent": _safe_user_agent(request),
+                "identifier": _mask_identifier(raw_identifier),
             },
         )
 
@@ -256,7 +301,7 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
             send_security_alert_async(
                 event="LOGIN_IP_BLOCKED",
                 details={
-                    "ip": client_ip,
+                    **request_context,
                     "reason": "too_many_failed_logins",
                     "block_seconds": blocked_for_seconds,
                     "last_user_id": user.id,
@@ -274,12 +319,11 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     send_security_alert_async(
         event="LOGIN_SUCCESS",
         details={
-            "ip": client_ip,
+            **request_context,
             "user_id": user.id,
             "username": user.username,
             "email": _mask_identifier(user.email),
             "role": user.role,
-            "user_agent": _safe_user_agent(request),
         },
     )
 

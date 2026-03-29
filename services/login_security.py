@@ -1,5 +1,6 @@
 from collections import deque
 from datetime import datetime, timedelta, timezone
+import ipaddress
 from threading import Lock
 
 from fastapi import Request
@@ -13,15 +14,36 @@ _LOCK = Lock()
 
 
 def extract_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+    # Prefer trusted proxy/CDN headers in priority order, then fallback.
+    candidates = [
+        request.headers.get("cf-connecting-ip"),
+        request.headers.get("true-client-ip"),
+        request.headers.get("x-real-ip"),
+        request.headers.get("x-forwarded-for"),
+        request.headers.get("x-client-ip"),
+        request.headers.get("fastly-client-ip"),
+    ]
 
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
+    for candidate in candidates:
+        if not candidate:
+            continue
 
-    return request.client.host if request.client else "unknown"
+        raw_ip = candidate.split(",")[0].strip()
+        if not raw_ip:
+            continue
+
+        try:
+            ipaddress.ip_address(raw_ip)
+            return raw_ip
+        except ValueError:
+            continue
+
+    if request.client and request.client.host:
+        host = request.client.host.strip()
+        if host:
+            return host
+
+    return "unknown"
 
 
 def _prune_old_attempts(ip: str, now: datetime) -> deque[datetime]:

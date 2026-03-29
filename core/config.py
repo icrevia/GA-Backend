@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_ALERT_CHAT_ID: str = ""
     SECURITY_ALERT_TIMEOUT_SECONDS: float = 3.0
+    ENABLE_IP_GEO_LOOKUP: bool = True
+    IP_GEO_LOOKUP_TIMEOUT_SECONDS: float = 2.0
 
     # ── App URL ───────────────────────────────────────────────────────────────
     # In production, set this explicitly from Railway Variables.
@@ -181,6 +183,13 @@ class Settings(BaseSettings):
                 file=sys.stderr
             )
             object.__setattr__(self, "SECURITY_ALERTS_ENABLED", False)
+
+        if self.IP_GEO_LOOKUP_TIMEOUT_SECONDS <= 0:
+            print(
+                "[CONFIG WARNING] IP_GEO_LOOKUP_TIMEOUT_SECONDS must be positive. Falling back to 2.0 seconds.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "IP_GEO_LOOKUP_TIMEOUT_SECONDS", 2.0)
 
         return self
 
