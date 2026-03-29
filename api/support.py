@@ -127,6 +127,10 @@ class AttendSessionRequest(BaseModel):
     session_id: int
 
 
+class EndSessionRequest(BaseModel):
+    session_id: int
+
+
 class SendMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
 
@@ -511,6 +515,23 @@ async def send_message(
     if current_user.role == "ADMIN":
         return {"status": "success", "escalated_to_admin": False}
 
+    # When a human agent is actively attending this user, pause bot auto-replies.
+    attending_admin = _get_attending_admin_for_user(db, session.user_id)
+    if attending_admin:
+        _set_user_support_attendance(
+            db,
+            user_id=session.user_id,
+            admin_id=attending_admin.id,
+            requires_admin=False,
+        )
+        return {
+            "status": "success",
+            "escalated_to_admin": False,
+            "bot_reason": "human_attending",
+            "attended_by_admin_id": attending_admin.id,
+            "attended_by_admin_name": attending_admin.username,
+        }
+
     bot_reply, should_escalate, escalation_reason = _build_support_bot_reply(clean_message)
     bot_sender_id = _resolve_bot_sender_id(db, current_user.id)
 
@@ -671,8 +692,93 @@ async def admin_attend_session(
     return {
         "status": "success",
         "session_id": primary_session.id,
+        "user_id": session.user_id,
         "attended_by_admin_id": current_user.id,
         "attended_by_admin_name": current_user.username,
+    }
+
+
+@router.post("/admin/end")
+async def admin_end_session(
+    request: EndSessionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    session = db.query(ChatSession).filter(ChatSession.id == request.session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    primary_session, _ = _get_or_create_user_support_session(db, session.user_id)
+    attending_admin = _get_attending_admin_for_user(db, session.user_id)
+
+    if attending_admin and attending_admin.id != current_user.id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This chat is currently attended by Agent {attending_admin.username}.",
+        )
+
+    if not attending_admin:
+        return {
+            "status": "success",
+            "session_id": primary_session.id,
+            "user_id": session.user_id,
+            "ended_by_admin_id": None,
+            "ended_by_admin_name": None,
+            "already_ended": True,
+        }
+
+    _set_user_support_attendance(
+        db,
+        user_id=session.user_id,
+        admin_id=None,
+        requires_admin=False,
+    )
+
+    leave_message = ChatMessage(
+        session_id=primary_session.id,
+        sender_id=current_user.id,
+        content=(
+            f"Agent {current_user.username} has ended this live support session. "
+            "AI assistant is active again. Human support ke liye 'human' type kare."
+        ),
+        is_admin=True,
+    )
+    db.add(leave_message)
+    db.commit()
+    db.refresh(leave_message)
+
+    leave_chat_payload = {
+        "type": "chat_message",
+        "id": leave_message.id,
+        "session_id": primary_session.id,
+        "user_id": session.user_id,
+        "content": leave_message.content,
+        "is_admin": True,
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.send_personal_message(leave_chat_payload, session.user_id)
+    await manager.broadcast_to_admins(leave_chat_payload)
+
+    end_event = {
+        "type": "support_unattended",
+        "session_id": primary_session.id,
+        "user_id": session.user_id,
+        "ended_by_admin_id": current_user.id,
+        "ended_by_admin_name": current_user.username,
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.broadcast_to_admins(end_event)
+
+    return {
+        "status": "success",
+        "session_id": primary_session.id,
+        "user_id": session.user_id,
+        "ended_by_admin_id": current_user.id,
+        "ended_by_admin_name": current_user.username,
+        "already_ended": False,
     }
 
 
