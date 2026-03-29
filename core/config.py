@@ -19,6 +19,19 @@ class Settings(BaseSettings):
     ALGORITHM:  str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080 # 7 days (60 * 24 * 7)
 
+    # ── Login security controls ──────────────────────────────────────────────
+    ENABLE_LOGIN_IP_BLOCK: bool = True
+    LOGIN_FAILURE_WINDOW_SECONDS: int = 900
+    LOGIN_FAILURE_BLOCK_THRESHOLD: int = 8
+    LOGIN_FAILURE_BLOCK_SECONDS: int = 1800
+
+    # ── Telegram security alerts ─────────────────────────────────────────────
+    SECURITY_ALERTS_ENABLED: bool = False
+    SECURITY_ALERT_ON_SUCCESS_LOGIN: bool = True
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_ALERT_CHAT_ID: str = ""
+    SECURITY_ALERT_TIMEOUT_SECONDS: float = 3.0
+
     # ── App URL ───────────────────────────────────────────────────────────────
     # In production, set this explicitly from Railway Variables.
     APP_URL: str = ""
@@ -160,6 +173,14 @@ class Settings(BaseSettings):
                 "CCAvenue payments will fail.",
                 file=sys.stderr
             )
+
+        if self.SECURITY_ALERTS_ENABLED and (not self.TELEGRAM_BOT_TOKEN or not self.TELEGRAM_ALERT_CHAT_ID):
+            print(
+                "[CONFIG WARNING] SECURITY_ALERTS_ENABLED is true but TELEGRAM_BOT_TOKEN/"
+                "TELEGRAM_ALERT_CHAT_ID is missing. Disabling Telegram security alerts.",
+                file=sys.stderr
+            )
+            object.__setattr__(self, "SECURITY_ALERTS_ENABLED", False)
 
         return self
 

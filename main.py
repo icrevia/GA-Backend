@@ -6,6 +6,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 from core.config import settings
+from services.login_security import extract_client_ip, is_ip_blocked
 import os
 import uuid
 import logging
@@ -73,6 +74,26 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 # ─────────────────────────────────────────────
+# Temporary IP block middleware
+# Blocks API requests from IPs that exceeded failed-login threshold
+# ─────────────────────────────────────────────
+class LoginIpBlockMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if settings.ENABLE_LOGIN_IP_BLOCK and request.url.path.startswith(settings.API_V1_STR):
+            client_ip = extract_client_ip(request)
+            blocked, retry_after_seconds = is_ip_blocked(client_ip)
+            if blocked:
+                return Response(
+                    content='{"detail": "This IP is temporarily blocked due to repeated failed login attempts. Please try again later."}',
+                    status_code=429,
+                    media_type="application/json",
+                    headers={"Retry-After": str(retry_after_seconds)},
+                )
+
+        return await call_next(request)
+
+
+# ─────────────────────────────────────────────
 # Request ID & timing middleware
 # ─────────────────────────────────────────────
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -92,6 +113,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(LoginIpBlockMiddleware)
 
 # ─────────────────────────────────────────────
 # Static Files

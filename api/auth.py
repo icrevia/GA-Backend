@@ -11,11 +11,49 @@ from schemas.user import UserCreate, UserResponse, LoginRequest
 from schemas.token import Token
 from typing import Any
 import logging
+from services.login_security import (
+    extract_client_ip,
+    is_ip_blocked,
+    record_failed_login,
+    clear_failed_logins,
+)
+from services.telegram_alerts import send_security_alert_async
 
 logger = logging.getLogger("zexplay.auth")
 limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter()
+
+
+def _mask_identifier(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return "-"
+
+    if "@" in raw:
+        local, domain = raw.split("@", 1)
+        if not local:
+            return f"***@{domain}"
+        if len(local) == 1:
+            local_masked = "*"
+        elif len(local) == 2:
+            local_masked = f"{local[0]}*"
+        else:
+            local_masked = f"{local[0]}{'*' * (len(local) - 2)}{local[-1]}"
+        return f"{local_masked}@{domain}"
+
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) >= 6:
+        return f"***{digits[-4:]}"
+
+    if len(raw) <= 3:
+        return "***"
+    return f"{raw[0]}***{raw[-1]}"
+
+
+def _safe_user_agent(request: Request) -> str:
+    ua = (request.headers.get("user-agent") or "-").replace("\n", " ").strip()
+    return ua[:180]
 
 
 class SignupResponse(Token):
@@ -134,21 +172,64 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
 @router.post("/login", response_model=SignupResponse)
 @limiter.limit("10/minute")  # Rate limit: 10 login attempts per minute per IP
 def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
+    client_ip = extract_client_ip(request)
+    raw_identifier = login_data.email.strip()
+
     # Normalize identifier (could be email or phone)
-    identifier = login_data.email.strip().lower()
+    identifier = raw_identifier.lower()
     if identifier.isdigit() and len(identifier) == 10:
         identifier = f"+91{identifier}"
+
+    blocked, retry_after_seconds = is_ip_blocked(client_ip)
+    if blocked:
+        logger.warning("Blocked login attempt from ip=%s", client_ip)
+        send_security_alert_async(
+            event="LOGIN_BLOCKED_IP_HIT",
+            details={
+                "ip": client_ip,
+                "retry_after_seconds": retry_after_seconds,
+                "identifier": _mask_identifier(raw_identifier),
+                "user_agent": _safe_user_agent(request),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many failed login attempts from this IP. Try again in {retry_after_seconds} seconds.",
+        )
 
     user = db.query(User).filter(
         or_(
             User.email == identifier,
-            User.username == login_data.email.strip(),
+            User.username == raw_identifier,
             User.phone_number == identifier
         )
     ).first()
 
     if not user:
-        logger.warning(f"Login attempt for unknown identifier: {login_data.email[:30]}")
+        attempts, blocked_now, blocked_for_seconds = record_failed_login(client_ip)
+        logger.warning("Login attempt for unknown identifier from ip=%s", client_ip)
+        send_security_alert_async(
+            event="LOGIN_FAILED_UNKNOWN_IDENTIFIER",
+            details={
+                "ip": client_ip,
+                "attempts_in_window": attempts,
+                "identifier": _mask_identifier(raw_identifier),
+                "blocked_now": blocked_now,
+                "block_seconds": blocked_for_seconds,
+                "user_agent": _safe_user_agent(request),
+            },
+        )
+
+        if blocked_now:
+            send_security_alert_async(
+                event="LOGIN_IP_BLOCKED",
+                details={
+                    "ip": client_ip,
+                    "reason": "too_many_failed_logins",
+                    "block_seconds": blocked_for_seconds,
+                },
+            )
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -156,14 +237,51 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         )
 
     if not verify_password(login_data.password, user.hashed_password):
-        logger.warning(f"Failed login attempt for user_id={user.id}")
+        attempts, blocked_now, blocked_for_seconds = record_failed_login(client_ip)
+        logger.warning("Failed login attempt for user_id=%s from ip=%s", user.id, client_ip)
+        send_security_alert_async(
+            event="LOGIN_FAILED_BAD_PASSWORD",
+            details={
+                "ip": client_ip,
+                "attempts_in_window": attempts,
+                "blocked_now": blocked_now,
+                "block_seconds": blocked_for_seconds,
+                "user_id": user.id,
+                "username": user.username,
+                "user_agent": _safe_user_agent(request),
+            },
+        )
+
+        if blocked_now:
+            send_security_alert_async(
+                event="LOGIN_IP_BLOCKED",
+                details={
+                    "ip": client_ip,
+                    "reason": "too_many_failed_logins",
+                    "block_seconds": blocked_for_seconds,
+                    "last_user_id": user.id,
+                },
+            )
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    clear_failed_logins(client_ip)
     logger.info(f"Successful login: user_id={user.id}")
+    send_security_alert_async(
+        event="LOGIN_SUCCESS",
+        details={
+            "ip": client_ip,
+            "user_id": user.id,
+            "username": user.username,
+            "email": _mask_identifier(user.email),
+            "role": user.role,
+            "user_agent": _safe_user_agent(request),
+        },
+    )
 
     token_version = getattr(user, "token_version", 0) or 0
     return {
