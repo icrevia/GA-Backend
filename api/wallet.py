@@ -41,6 +41,72 @@ def _payu_furl() -> str:
     return f"{settings.APP_URL}/api/v1/wallet/payu/failure"
 
 
+def _first_non_empty(*values: str | None) -> str:
+    for value in values:
+        if value is None:
+            continue
+        cleaned = str(value).strip()
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _extract_payu_fields(form_data) -> tuple[str, str, str, str, str]:
+    """Extract PayU identifiers across known field variants."""
+    mihpayid = _first_non_empty(
+        form_data.get("mihpayid"),
+        form_data.get("Mihpayid"),
+    )
+    bank_ref_num = _first_non_empty(
+        form_data.get("bank_ref_num"),
+        form_data.get("bank_ref_no"),
+        form_data.get("bank_ref"),
+        form_data.get("utr"),
+        form_data.get("utr_no"),
+    )
+    mode = _first_non_empty(
+        form_data.get("mode"),
+        form_data.get("Mode"),
+    )
+    status = _first_non_empty(form_data.get("status"))
+    recv_hash = _first_non_empty(form_data.get("hash"))
+    return mihpayid, bank_ref_num, mode, status, recv_hash
+
+
+def _merge_payu_gateway_details(
+    tx: WalletTransaction,
+    *,
+    txnid: str,
+    mihpayid: str,
+    bank_ref_num: str,
+    mode: str,
+    recv_hash: str,
+) -> bool:
+    changed = False
+
+    gateway_payment_id = _first_non_empty(mihpayid, bank_ref_num)
+    payu_utr_or_txn = _first_non_empty(bank_ref_num, mihpayid)
+    normalized_mode = _first_non_empty(mode, "PAYU").upper()
+
+    if txnid and tx.gateway_order_id != txnid:
+        tx.gateway_order_id = txnid
+        changed = True
+    if normalized_mode and tx.payment_mode != normalized_mode:
+        tx.payment_mode = normalized_mode
+        changed = True
+    if gateway_payment_id and tx.gateway_payment_id != gateway_payment_id:
+        tx.gateway_payment_id = gateway_payment_id
+        changed = True
+    if payu_utr_or_txn and tx.payu_txn_id != payu_utr_or_txn:
+        tx.payu_txn_id = payu_utr_or_txn
+        changed = True
+    if recv_hash and tx.gateway_signature != recv_hash:
+        tx.gateway_signature = recv_hash
+        changed = True
+
+    return changed
+
+
 # ─────────────────────────────────────────────────────────────────
 # Wallet balance & history
 # ─────────────────────────────────────────────────────────────────
@@ -353,21 +419,16 @@ async def payu_webhook(
 ):
     form = await request.form()
 
-    txnid         = form.get("txnid")
+    txnid         = _first_non_empty(form.get("txnid"))
     amount        = float(form.get("amount", 0))
     productinfo   = form.get("productinfo")
     firstname     = form.get("firstname")
     email         = form.get("email")
-    status        = form.get("status")
-    received_hash = form.get("hash")
-    mihpayid      = form.get("mihpayid", "")
-    mode          = form.get("mode", "")
+    mihpayid, bank_ref_num, mode, status, received_hash = _extract_payu_fields(form)
     field9        = form.get("field9", "")
 
-    is_valid = verify_payu_hash(txnid, amount, productinfo, firstname, email, status, received_hash)
-    if not is_valid:
-        logger.warning(f"Webhook hash validation failed for txnid={txnid} (PayU)")
-        raise HTTPException(status_code=400, detail="Invalid hash")
+    if not txnid:
+        raise HTTPException(status_code=400, detail="Missing transaction id")
 
     tx = db.query(WalletTransaction).filter(
         WalletTransaction.reference_id == txnid
@@ -377,6 +438,37 @@ async def payu_webhook(
         logger.error(f"Transaction not found in webhook: txnid={txnid}")
         raise HTTPException(status_code=404, detail="Transaction not found")
 
+    metadata_changed = _merge_payu_gateway_details(
+        tx,
+        txnid=txnid,
+        mihpayid=mihpayid,
+        bank_ref_num=bank_ref_num,
+        mode=mode,
+        recv_hash=received_hash,
+    )
+
+    if tx.status != "PENDING":
+        if metadata_changed:
+            db.add(tx)
+            db.commit()
+        return {"message": "Transaction already processed"}
+
+    if not received_hash or not status:
+        tx.status = "FAILED"
+        tx.failure_reason = "PAYU_CALLBACK_INCOMPLETE"
+        db.add(tx)
+        db.commit()
+        raise HTTPException(status_code=400, detail="Incomplete callback payload")
+
+    is_valid = verify_payu_hash(txnid, amount, productinfo, firstname, email, status, received_hash)
+    if not is_valid:
+        tx.status = "FAILED"
+        tx.failure_reason = "PAYU_HASH_VALIDATION_FAILED"
+        db.add(tx)
+        db.commit()
+        logger.warning(f"Webhook hash validation failed for txnid={txnid} (PayU)")
+        raise HTTPException(status_code=400, detail="Invalid hash")
+
     # SECURITY: Verify that the amount matched!
     if abs(float(tx.amount) - amount) > 0.01:
         logger.critical(f"AMOUNT MISMATCH for txnid={txnid}: db={tx.amount} gateway={amount}")
@@ -385,12 +477,6 @@ async def payu_webhook(
         db.add(tx)
         db.commit()
         raise HTTPException(status_code=400, detail="Amount mismatch")
-
-    if tx.status != "PENDING":
-        return {"message": "Transaction already processed"}
-
-    tx.payu_txn_id  = mihpayid
-    tx.payment_mode = mode
 
     if status == "success":
         tx.status = "SUCCESS"
@@ -435,58 +521,69 @@ async def payu_return_handler(
     db: Session = Depends(get_db)
 ):
     form = await request.form()
-    txnid    = form.get("txnid")
-    status   = form.get("status")
-    mihpayid = form.get("mihpayid", "")
-    mode     = form.get("mode", "")
+    txnid    = _first_non_empty(form.get("txnid"))
+    mihpayid, bank_ref_num, mode, status, recv_hash = _extract_payu_fields(form)
     field9   = form.get("field9", "")
 
+    final_status = (status or "").lower()
+
     if txnid:
+        tx = db.query(WalletTransaction).filter(
+            WalletTransaction.reference_id == txnid
+        ).with_for_update().first()
+
+        if tx:
+            _merge_payu_gateway_details(
+                tx,
+                txnid=txnid,
+                mihpayid=mihpayid,
+                bank_ref_num=bank_ref_num,
+                mode=mode,
+                recv_hash=recv_hash,
+            )
+
         if status == "success" and not request.url.path.endswith("failure"):
             amount      = float(form.get("amount", 0))
             productinfo = form.get("productinfo")
             firstname   = form.get("firstname")
             email       = form.get("email")
-            recv_hash   = form.get("hash")
 
-            if verify_payu_hash(txnid, amount, productinfo, firstname, email, status, recv_hash):
-                tx = db.query(WalletTransaction).filter(
-                    WalletTransaction.reference_id == txnid
-                ).with_for_update().first()
-
-                if tx and tx.status == "PENDING":
+            if tx and tx.status == "PENDING":
+                if not recv_hash or not status:
+                    tx.status = "FAILED"
+                    tx.failure_reason = "PAYU_CALLBACK_INCOMPLETE"
+                elif verify_payu_hash(txnid, amount, productinfo, firstname, email, status, recv_hash):
                     # SECURITY: Verify amount in return handler too
                     if abs(float(tx.amount) - amount) > 0.01:
                         logger.critical(f"RET_AMOUNT_MISMATCH for txnid={txnid}: db={tx.amount} gateway={amount}")
                         tx.status = "FAILED"
                         tx.failure_reason = "FRAUD_ATTEMPT:RET_AMOUNT_MISMATCH"
-                        db.add(tx)
-                        db.commit()
+                        final_status = "failed"
                     else:
-                        tx.status       = "SUCCESS"
-                        tx.payu_txn_id  = mihpayid
-                        tx.payment_mode = mode
+                        tx.status = "SUCCESS"
                         user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
                         user.wallet_balance += tx.amount
-                        db.add(tx)
                         db.add(user)
-                        db.commit()
-                        background_tasks.add_task(
-                            ws_manager.broadcast_to_admins, {"type": "finance_update"}
-                        )
                         add_user_notification(
                             db, user.id,
                             "Payment Confirmed ✅",
                             f"₹{tx.amount:.0f} has been added to your ZexPlay wallet.",
                             "WALLET"
                         )
+                        final_status = "success"
+                else:
+                    tx.status = "FAILED"
+                    tx.failure_reason = "PAYU_HASH_VALIDATION_FAILED"
+                    final_status = "failed"
+
+                db.add(tx)
+                db.commit()
+                background_tasks.add_task(
+                    ws_manager.broadcast_to_admins, {"type": "finance_update"}
+                )
         else:
-            tx = db.query(WalletTransaction).filter(
-                WalletTransaction.reference_id == txnid
-            ).first()
             if tx and tx.status == "PENDING":
                 tx.status         = "FAILED"
-                tx.payu_txn_id    = mihpayid
                 tx.failure_reason = field9 or status or "USER_CANCELLED"
                 db.add(tx)
                 db.commit()
@@ -500,8 +597,11 @@ async def payu_return_handler(
                     ws_manager.broadcast_to_admins, {"type": "finance_update"}
                 )
 
-    bg_color = "#16A34A" if status == "success" else "#EF4444"
-    label    = "Payment Successful!" if status == "success" else "Payment Failed!"
+    if final_status not in {"success", "failed"}:
+        final_status = "success" if status == "success" else "failed"
+
+    bg_color = "#16A34A" if final_status == "success" else "#EF4444"
+    label    = "Payment Successful!" if final_status == "success" else "Payment Failed!"
     return HTMLResponse(f"""<!DOCTYPE html>
 <html><body style="background:#0D0E12; color:white; text-align:center; padding-top:50px;">
     <h2 style="color:{html.escape(bg_color)};">{html.escape(label)}</h2>
@@ -767,6 +867,7 @@ async def ccavenue_return_handler(
         status_upper = status.upper()
         amount_raw = data.get("amount")
         tracking_id = (data.get("tracking_id") or "").strip()
+        bank_ref_no = (data.get("bank_ref_no") or data.get("bank_ref_num") or "").strip()
         payment_mode = (data.get("payment_mode") or "CCAVENUE").strip().upper()
         currency = (data.get("currency") or "").strip().upper()
         merchant_id = (data.get("merchant_id") or "").strip()
@@ -782,6 +883,16 @@ async def ccavenue_return_handler(
             raise ValueError("Transaction not found")
         if tx.transaction_type != "ADD_MONEY":
             raise ValueError("Invalid transaction type for callback")
+
+        # Persist gateway trace fields regardless of success/failure outcome.
+        tx.gateway_order_id = txnid
+        tx.payment_mode = payment_mode or "CCAVENUE"
+        if tracking_id:
+            tx.gateway_payment_id = tracking_id
+        if bank_ref_no:
+            tx.payu_txn_id = bank_ref_no
+        elif tracking_id and not tx.payu_txn_id:
+            tx.payu_txn_id = tracking_id
 
         if tx.status != "PENDING":
             # Already processed
@@ -826,10 +937,8 @@ async def ccavenue_return_handler(
                     bg_color = "#EF4444"
                 else:
                     tx.status = "SUCCESS"
-                    tx.payu_txn_id = tracking_id  # Legacy field retained for compatibility
-                    tx.payment_mode = payment_mode
-                    tx.gateway_order_id = txnid
-                    tx.gateway_payment_id = tracking_id
+                    if tracking_id and not tx.payu_txn_id:
+                        tx.payu_txn_id = tracking_id  # Legacy field retained for compatibility
 
                     user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
                     user.wallet_balance += tx.amount
