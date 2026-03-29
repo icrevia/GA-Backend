@@ -107,6 +107,26 @@ def _merge_payu_gateway_details(
     return changed
 
 
+def _extract_razorpay_utr(gateway_payment: dict) -> str:
+    """Best-effort extraction of UTR/reference from Razorpay payment payload."""
+    acquirer_data = gateway_payment.get("acquirer_data")
+    if not isinstance(acquirer_data, dict):
+        acquirer_data = {}
+
+    return _first_non_empty(
+        gateway_payment.get("utr"),
+        gateway_payment.get("rrn"),
+        gateway_payment.get("upi_transaction_id"),
+        acquirer_data.get("utr"),
+        acquirer_data.get("rrn"),
+        acquirer_data.get("upi_transaction_id"),
+        acquirer_data.get("bank_transaction_id"),
+        acquirer_data.get("transaction_id"),
+        acquirer_data.get("reference"),
+        acquirer_data.get("reference16"),
+    )
+
+
 # ─────────────────────────────────────────────────────────────────
 # Wallet balance & history
 # ─────────────────────────────────────────────────────────────────
@@ -813,10 +833,13 @@ async def verify_razorpay_payment(
     if gateway_payment.get("status") not in {"captured", "authorized"}:
         raise HTTPException(status_code=400, detail="Payment is not captured/authorized")
 
+    razorpay_utr = _extract_razorpay_utr(gateway_payment)
+
     # Update transaction
     tx.status = "SUCCESS"
-    tx.payu_txn_id = payment_id # Legacy field retained for compatibility
+    tx.payu_txn_id = razorpay_utr or None
     tx.payment_mode = "RAZORPAY"
+    tx.gateway_order_id = order_id
     tx.gateway_payment_id = payment_id
     tx.gateway_signature = signature
     

@@ -782,6 +782,7 @@ def list_all_transactions(
             "status":         tx.status,
             "reference_id":   tx.reference_id,
             "payu_txn_id":    getattr(tx, 'payu_txn_id', None),
+            "gateway_utr":    getattr(tx, 'payu_txn_id', None) if tx.transaction_type == "ADD_MONEY" else None,
             "payment_mode":   getattr(tx, 'payment_mode', None),
             "failure_reason": getattr(tx, 'failure_reason', None),
             "gateway_order_id": getattr(tx, 'gateway_order_id', None),
