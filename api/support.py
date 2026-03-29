@@ -37,6 +37,32 @@ SUPPORT_BOT_ESCALATION_KEYWORDS = (
     "complaint",
 )
 
+SUPPORT_BOT_GREETING_KEYWORDS = (
+    "hi",
+    "hii",
+    "hello",
+    "hey",
+    "namaste",
+    "namaskar",
+)
+
+SUPPORT_BOT_HELP_KEYWORDS = (
+    "help",
+    "madad",
+    "support",
+    "issue",
+    "problem",
+)
+
+SUPPORT_BOT_MENU_RESPONSE = (
+    "Hi! Main aapki help kar sakta hoon. Please issue type ke saath details bheje:\n"
+    "1) Add money/payment not credited: amount + UTR\n"
+    "2) Withdrawal pending: amount + request time\n"
+    "3) Tournament join/match issue: tournament name + screenshot/error text\n"
+    "4) Login/OTP issue: exact error message\n"
+    "Direct human support ke liye type kare: human"
+)
+
 SUPPORT_BOT_INTENTS = (
     {
         "intent": "wallet_add",
@@ -132,11 +158,19 @@ def _check_ip_rate_limit(client_ip: str) -> bool:
 
 
 def _contains_any_keyword(text: str, keywords: tuple[str, ...]) -> bool:
-    return any(keyword in text for keyword in keywords)
+    words = set(text.replace(",", " ").replace(".", " ").split())
+    for keyword in keywords:
+        if " " in keyword:
+            if keyword in text:
+                return True
+        elif keyword in words:
+            return True
+    return False
 
 
 def _build_support_bot_reply(message: str) -> Tuple[str, bool, str]:
     normalized = " ".join(message.lower().split())
+    words = [part for part in normalized.replace(",", " ").replace(".", " ").split() if part]
 
     if _contains_any_keyword(normalized, SUPPORT_BOT_ESCALATION_KEYWORDS):
         return (
@@ -145,12 +179,19 @@ def _build_support_bot_reply(message: str) -> Tuple[str, bool, str]:
             "user_requested_human",
         )
 
+    # Greeting and very short openers should get a guided menu, not escalation.
+    if _contains_any_keyword(normalized, SUPPORT_BOT_GREETING_KEYWORDS) or (len(words) <= 2 and len(normalized) <= 12):
+        return (SUPPORT_BOT_MENU_RESPONSE, False, "greeting_or_short_message")
+
+    if _contains_any_keyword(normalized, SUPPORT_BOT_HELP_KEYWORDS):
+        return (SUPPORT_BOT_MENU_RESPONSE, False, "help_menu")
+
     for intent_data in SUPPORT_BOT_INTENTS:
         if _contains_any_keyword(normalized, intent_data["keywords"]):
             return (intent_data["response"], False, intent_data["intent"])
 
     return (
-        "I could not confidently understand this issue. I have alerted our human support team, and they will reply shortly.",
+        "I have alerted our human support team. Faster resolution ke liye please issue type, amount/UTR (if payment), and error/screenshot text share kare.",
         True,
         "bot_not_confident",
     )
