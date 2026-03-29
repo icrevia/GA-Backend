@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status, Query
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from core.database import get_db
@@ -12,20 +12,15 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login
 def get_current_user(
     db: Session = Depends(get_db),
     token: str | None = Depends(oauth2_scheme),
-    query_token: str | None = Query(None, alias="token")
 ) -> User:
-    # Use header token if available, else try query parameter
-    actual_token = token if token else query_token
-    
-    if not actual_token:
-        # Fallback to a custom 401 if NO token at all is provided
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated. Please provide a token in the Authorization header or ?token query parameter.",
+            detail="Not authenticated. Provide a Bearer token in the Authorization header.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    payload = decode_access_token(actual_token)
+    payload = decode_access_token(token)
 
     user_id: str = payload.get("sub")
     if user_id is None:
@@ -56,14 +51,12 @@ def get_current_user(
 def get_user_for_support(
     db: Session = Depends(get_db),
     token: str | None = Depends(oauth2_scheme),
-    query_token: str | None = Query(None, alias="token")
 ) -> User:
     """Special dependency for support — allows users to connect even if restricted/banned."""
-    actual_token = token if token else query_token
-    if not actual_token:
+    if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    payload = decode_access_token(actual_token)
+    payload = decode_access_token(token)
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")

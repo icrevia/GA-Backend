@@ -1,10 +1,13 @@
-from sqlalchemy import Column, Integer, ForeignKey, DateTime, String
+from sqlalchemy import Column, Integer, ForeignKey, DateTime, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from core.database import Base
 
 class TournamentParticipant(Base):
     __tablename__ = "tournament_participants"
+    __table_args__ = (
+        UniqueConstraint("tournament_id", "user_id", name="uq_tournament_participant_user"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=False, index=True)
@@ -26,6 +29,3 @@ class TournamentParticipant(Base):
     @property
     def avatar_url(self):
         return self.user.avatar_url
-    
-    # Ensures a user can only join a tournament once
-    # Unique constraint should be added in Alembic or __table_args__

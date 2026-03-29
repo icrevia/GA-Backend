@@ -69,6 +69,7 @@ class Settings(BaseSettings):
             "CHANGE_ME",
             "",
             "CHANGE_ME_GENERATE_WITH_secrets_token_hex_32",
+            "ZexPlay_Super_Secure_JWT_Key_2026_@",
         }
         if self.SECRET_KEY in placeholder_keys:
             print(
@@ -93,13 +94,17 @@ class Settings(BaseSettings):
             )
 
         if not self.ALLOWED_ORIGINS:
-            # Last resort: allow all — not ideal, but keeps the app alive
-            object.__setattr__(self, "ALLOWED_ORIGINS", "*")
-            print(
-                "[CONFIG WARNING] ALLOWED_ORIGINS not set. Defaulting to '*' (insecure). "
-                "Set ALLOWED_ORIGINS in Railway environment variables.",
-                file=sys.stderr
-            )
+            if self.DEBUG:
+                object.__setattr__(self, "ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+                print(
+                    "[CONFIG WARNING] ALLOWED_ORIGINS not set. Using local debug defaults.",
+                    file=sys.stderr
+                )
+            else:
+                raise ValueError(
+                    "ALLOWED_ORIGINS must be explicitly configured in production. "
+                    "Refusing to start with implicit wildcard behavior."
+                )
         
         # ── Razorpay Soft Warning ─────────────────────────────────────────────
         if not self.RAZORPAY_KEY_ID or not self.RAZORPAY_KEY_SECRET:

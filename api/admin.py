@@ -381,6 +381,46 @@ def get_admin_stats(
 # Withdrawal management
 # ─────────────────────────────────────────────────────────────────
 
+def _refund_withdrawal_if_needed(
+    db: Session,
+    tx: WalletTransaction,
+    admin_username: str,
+    reason: str,
+) -> Decimal:
+    """Refund a pending withdrawal exactly once and write an immutable refund ledger entry."""
+    if tx.transaction_type != "WITHDRAWAL":
+        return Decimal("0.00")
+
+    refund_reference = f"REFUND_WD_{tx.id}"
+    existing_refund = db.query(WalletTransaction).filter(
+        WalletTransaction.reference_id == refund_reference
+    ).first()
+    if existing_refund:
+        return Decimal("0.00")
+
+    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found for refund")
+
+    refund_amount = abs(Decimal(tx.amount or Decimal("0.00")))
+    if refund_amount <= Decimal("0.00"):
+        return Decimal("0.00")
+
+    user.wallet_balance = (user.wallet_balance or Decimal("0.00")) + refund_amount
+    refund_tx = WalletTransaction(
+        user_id=tx.user_id,
+        amount=refund_amount,
+        transaction_type="WITHDRAWAL_REFUND",
+        status="SUCCESS",
+        reference_id=refund_reference,
+        payment_mode="SYSTEM_REFUND",
+        failure_reason=f"SOURCE_WITHDRAWAL:{tx.id};REASON:{reason};ADMIN:{admin_username}",
+    )
+    db.add(user)
+    db.add(refund_tx)
+    tx.failure_reason = f"{reason}|REFUNDED:{refund_reference}"
+    return refund_amount
+
 @router.get("/withdrawals")
 def list_pending_withdrawals(
     db: Session = Depends(get_db),
@@ -456,11 +496,14 @@ def reject_withdrawal(
 
     tx.status = "FAILED"
 
-    # Refund the user
-    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-    user.wallet_balance -= tx.amount  # tx.amount is negative for withdrawals, so this adds it back
+    refunded = _refund_withdrawal_if_needed(
+        db,
+        tx,
+        current_user.username,
+        "REJECTED_BY_ADMIN",
+    )
+
     db.add(tx)
-    db.add(user)
     db.commit()
 
     # NOTIFY USER
@@ -473,7 +516,10 @@ def reject_withdrawal(
         )
     except Exception: pass
 
-    logger.info(f"Withdrawal {transaction_id} rejected by admin={current_user.username}")
+    logger.info(
+        f"Withdrawal {transaction_id} rejected by admin={current_user.username}; "
+        f"refund={float(refunded):.2f}"
+    )
     return {"message": "Withdrawal rejected and refunded"}
 
 
@@ -784,41 +830,13 @@ def manual_credit_transaction(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    tx = db.query(WalletTransaction).filter(
-        WalletTransaction.id == transaction_id
-    ).with_for_update().first()
-    if not tx:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    if tx.transaction_type != "ADD_MONEY":
-        raise HTTPException(status_code=400, detail="Can only manually credit ADD_MONEY transactions")
-    if tx.status == "SUCCESS":
-        raise HTTPException(status_code=400, detail="Transaction already credited")
-    if tx.status == "FAILED":
-        raise HTTPException(status_code=400, detail="Transaction is FAILED. Use adjust-funds instead.")
-
-    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    tx.status         = "SUCCESS"
-    tx.failure_reason = None
-    if not getattr(tx, 'payu_txn_id', None) or not tx.payu_txn_id:
-        tx.payu_txn_id = f"ADMIN_CREDITED_BY_{current_user.username}"
-
-    user.wallet_balance = (user.wallet_balance or Decimal(0)) + tx.amount
-    db.add(tx)
-    db.add(user)
-    db.commit()
-
-    add_user_notification(
-        db, user.id,
-        "Payment Manually Credited ✅",
-        f"₹{float(tx.amount):.0f} has been manually added to your wallet by support. Sorry for the delay!",
-        "WALLET"
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Manual credit is disabled for payment transactions. "
+            "Use verified gateway callbacks or /users/{user_id}/adjust-funds with audit reason."
+        ),
     )
-
-    logger.info(f"Manual credit: admin={current_user.username} tx={transaction_id} user={user.id} amount={tx.amount}")
-    return {"message": f"Successfully credited ₹{float(tx.amount)} to {user.username}. New balance: ₹{float(user.wallet_balance):.2f}"}
 
 
 @router.post("/transactions/{transaction_id}/mark-failed")
@@ -838,7 +856,18 @@ def mark_transaction_failed(
         raise HTTPException(status_code=400, detail="Only ADD_MONEY or WITHDRAWAL can be marked failed")
 
     tx.status         = "FAILED"
-    tx.failure_reason = f"MARKED_FAILED_BY_ADMIN:{current_user.username}"
+
+    refunded = Decimal("0.00")
+    if tx.transaction_type == "WITHDRAWAL":
+        refunded = _refund_withdrawal_if_needed(
+            db,
+            tx,
+            current_user.username,
+            "MARKED_FAILED_BY_ADMIN",
+        )
+    else:
+        tx.failure_reason = f"MARKED_FAILED_BY_ADMIN:{current_user.username}"
+
     db.add(tx)
     db.commit()
 
@@ -852,7 +881,10 @@ def mark_transaction_failed(
         )
     except Exception: pass
 
-    logger.info(f"Transaction {transaction_id} marked FAILED by admin={current_user.username}")
+    logger.info(
+        f"Transaction {transaction_id} marked FAILED by admin={current_user.username}; "
+        f"refund={float(refunded):.2f}"
+    )
     return {"message": f"Transaction #{transaction_id} marked as FAILED."}
 
 
@@ -889,13 +921,43 @@ def reject_all_pending_transactions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    """Mark all currently PENDING transactions as FAILED."""
-    affected = db.query(WalletTransaction).filter(
-        WalletTransaction.status == "PENDING"
-    ).update({"status": "FAILED", "failure_reason": "REJECTED_BY_ADMIN_BULK"})
+    """Mark all currently PENDING ADD_MONEY/WITHDRAWAL transactions as FAILED with safe refunds."""
+    pending = db.query(WalletTransaction).filter(
+        WalletTransaction.status == "PENDING",
+        WalletTransaction.transaction_type.in_(("ADD_MONEY", "WITHDRAWAL")),
+    ).with_for_update().all()
+
+    affected = 0
+    refund_count = 0
+    refund_total = Decimal("0.00")
+
+    for tx in pending:
+        tx.status = "FAILED"
+        if tx.transaction_type == "WITHDRAWAL":
+            refunded = _refund_withdrawal_if_needed(
+                db,
+                tx,
+                current_user.username,
+                "REJECTED_BY_ADMIN_BULK",
+            )
+            if refunded > Decimal("0.00"):
+                refund_count += 1
+                refund_total += refunded
+        else:
+            tx.failure_reason = f"REJECTED_BY_ADMIN_BULK:{current_user.username}"
+        db.add(tx)
+        affected += 1
+
     db.commit()
-    logger.info(f"Admin {current_user.username} rejected all pending transactions. Affected: {affected}")
-    return {"message": f"Successfully rejected {affected} pending transactions"}
+    logger.info(
+        f"Admin {current_user.username} rejected pending transactions. "
+        f"Affected={affected}, refunded_withdrawals={refund_count}, refund_total={float(refund_total):.2f}"
+    )
+    return {
+        "message": f"Successfully rejected {affected} pending transactions",
+        "refunded_withdrawals": refund_count,
+        "refund_total": float(refund_total),
+    }
 
 
 @router.post("/transactions/clear-history")
@@ -903,8 +965,11 @@ def clear_transaction_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    """PERMANENTLY DELETE all wallet transactions. Use with extreme caution!"""
-    deleted_count = db.query(WalletTransaction).delete()
-    db.commit()
-    logger.info(f"Admin {current_user.username} PERMANENTLY CLEARED ALL TRANSACTION HISTORY. Deleted: {deleted_count}")
-    return {"message": f"History cleared. Deleted {deleted_count} records."}
+    """Ledger immutability guard: transaction history cannot be deleted."""
+    logger.warning(
+        f"Blocked clear-history attempt by admin={current_user.username}; endpoint is immutable by policy"
+    )
+    raise HTTPException(
+        status_code=403,
+        detail="Transaction history is immutable and cannot be cleared.",
+    )

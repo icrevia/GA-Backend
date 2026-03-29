@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from sqlalchemy import and_, func
+from pydantic import BaseModel, Field
 from typing import List
 from core.database import get_db
 from api.deps import get_current_user, get_user_for_support
@@ -8,10 +9,20 @@ from models.support import ChatSession, ChatMessage
 from models.user import User
 from core.websockets import manager
 from datetime import datetime, timezone, timedelta
+from collections import deque
+from threading import Lock
 import logging
 
 logger = logging.getLogger("zexplay.support")
 IST = timezone(timedelta(hours=5, minutes=30))
+MAX_SUPPORT_MESSAGE_LENGTH = 1000
+SUPPORT_RATE_LIMIT_WINDOW_SECONDS = 60
+SUPPORT_RATE_LIMIT_PER_MIN_USER = 20
+SUPPORT_RATE_LIMIT_PER_MIN_ADMIN = 60
+SUPPORT_RATE_LIMIT_PER_MIN_IP = 120
+
+_SUPPORT_IP_BUCKETS: dict[str, deque[datetime]] = {}
+_SUPPORT_IP_BUCKETS_LOCK = Lock()
 
 
 def now_ist() -> datetime:
@@ -27,11 +38,41 @@ router = APIRouter()
 
 class AdminReplyRequest(BaseModel):
     session_id: int
-    message: str
+    message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
 
 
 class SendMessageRequest(BaseModel):
-    message: str   # FIXED: body instead of query param (no longer logged in access logs)
+    message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
+
+
+def _extract_client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+
+    return request.client.host if request.client else "unknown"
+
+
+def _check_ip_rate_limit(client_ip: str) -> bool:
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(seconds=SUPPORT_RATE_LIMIT_WINDOW_SECONDS)
+
+    with _SUPPORT_IP_BUCKETS_LOCK:
+        bucket = _SUPPORT_IP_BUCKETS.setdefault(client_ip, deque())
+
+        while bucket and bucket[0] < window_start:
+            bucket.popleft()
+
+        if len(bucket) >= SUPPORT_RATE_LIMIT_PER_MIN_IP:
+            return False
+
+        bucket.append(now)
+
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -110,28 +151,58 @@ def get_sessions(
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    sessions = db.query(ChatSession).join(User).all()
-    result = []
-    for s in sessions:
-        last_msg = db.query(ChatMessage).filter(
-            ChatMessage.session_id == s.id
-        ).order_by(ChatMessage.timestamp.desc()).first()
+    latest_message_sq = (
+        db.query(
+            ChatMessage.session_id.label("session_id"),
+            ChatMessage.content.label("content"),
+            ChatMessage.timestamp.label("timestamp"),
+            func.row_number().over(
+                partition_by=ChatMessage.session_id,
+                order_by=(ChatMessage.timestamp.desc(), ChatMessage.id.desc())
+            ).label("rn"),
+        )
+        .subquery()
+    )
 
-        result.append({
-            "id":             s.id,
-            "user_id":        s.user_id,
-            "user": {
-                "username": s.user.username,
-                "email":    s.user.email
-            },
-            "last_message":   last_msg.content if last_msg else "No messages yet",
-            "last_timestamp": (
-                (last_msg.timestamp if last_msg else s.created_at).isoformat()
-                if (last_msg or s.created_at) else None
+    rows = (
+        db.query(
+            ChatSession.id.label("session_id"),
+            ChatSession.user_id.label("user_id"),
+            ChatSession.created_at.label("created_at"),
+            User.username.label("username"),
+            User.email.label("email"),
+            latest_message_sq.c.content.label("last_message"),
+            latest_message_sq.c.timestamp.label("last_timestamp"),
+        )
+        .join(User, User.id == ChatSession.user_id)
+        .outerjoin(
+            latest_message_sq,
+            and_(
+                latest_message_sq.c.session_id == ChatSession.id,
+                latest_message_sq.c.rn == 1,
             ),
-            "unread": 0
-        })
-    return result
+        )
+        .order_by(func.coalesce(latest_message_sq.c.timestamp, ChatSession.created_at).desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": row.session_id,
+            "user_id": row.user_id,
+            "user": {
+                "username": row.username,
+                "email": row.email,
+            },
+            "last_message": row.last_message or "No messages yet",
+            "last_timestamp": (
+                (row.last_timestamp or row.created_at).isoformat()
+                if (row.last_timestamp or row.created_at) else None
+            ),
+            "unread": 0,
+        }
+        for row in rows
+    ]
 
 
 @router.get("/my-chat")
@@ -168,11 +239,28 @@ def get_my_chat(
 @router.post("/send")
 async def send_message(
     body: SendMessageRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_user_for_support)
 ):
-    if not body.message or not body.message.strip():
+    clean_message = body.message.strip()
+    if not clean_message:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+    if len(clean_message) > MAX_SUPPORT_MESSAGE_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Message is too long (max {MAX_SUPPORT_MESSAGE_LENGTH} characters)")
+
+    window_start = datetime.now(timezone.utc) - timedelta(seconds=SUPPORT_RATE_LIMIT_WINDOW_SECONDS)
+    max_allowed = SUPPORT_RATE_LIMIT_PER_MIN_ADMIN if current_user.role == "ADMIN" else SUPPORT_RATE_LIMIT_PER_MIN_USER
+    recent_count = db.query(ChatMessage).filter(
+        ChatMessage.sender_id == current_user.id,
+        ChatMessage.timestamp >= window_start,
+    ).count()
+    if recent_count >= max_allowed:
+        raise HTTPException(status_code=429, detail="Too many messages. Please slow down.")
+
+    client_ip = _extract_client_ip(request)
+    if not _check_ip_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="Too many requests from this network. Please slow down.")
 
     session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id).first()
     if not session:
@@ -184,7 +272,7 @@ async def send_message(
     new_msg = ChatMessage(
         session_id=session.id,
         sender_id=current_user.id,
-        content=body.message.strip(),
+        content=clean_message,
         is_admin=(current_user.role == "ADMIN")
     )
     db.add(new_msg)
@@ -257,6 +345,12 @@ async def admin_reply(
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    clean_message = request.message.strip()
+    if not clean_message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    if len(clean_message) > MAX_SUPPORT_MESSAGE_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Message is too long (max {MAX_SUPPORT_MESSAGE_LENGTH} characters)")
+
     session = db.query(ChatSession).filter(ChatSession.id == request.session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -264,7 +358,7 @@ async def admin_reply(
     new_msg = ChatMessage(
         session_id=request.session_id,
         sender_id=current_user.id,
-        content=request.message,
+        content=clean_message,
         is_admin=True
     )
     db.add(new_msg)

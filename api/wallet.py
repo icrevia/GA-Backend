@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, Background
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import List
+from decimal import Decimal, InvalidOperation
 import uuid
 import html
-import logging
 import logging
 
 
@@ -13,7 +13,12 @@ from models.user import User
 from models.wallet import WalletTransaction
 from schemas.wallet import AddMoneyRequest, PayUInitResponse, RazorpayInitResponse, PaymentInitResponse, WithdrawalRequest, WalletTransactionResponse, WalletBalanceResponse
 from services.payu import generate_payu_hash, verify_payu_hash
-from services.razorpay import create_razorpay_order, verify_razorpay_signature
+from services.razorpay import (
+    create_razorpay_order,
+    verify_razorpay_signature,
+    get_razorpay_order,
+    get_razorpay_payment,
+)
 from services.ccavenue import encrypt_ccavenue, decrypt_ccavenue
 from core.config import settings
 from models.config import SystemConfig
@@ -84,6 +89,137 @@ def init_add_money(
         reference_id=txnid
     )
     db.add(tx)
+    db.flush()
+
+    # ─────────────────────────────────────────────────────────────────
+    # Determine Active Gateway
+    # ─────────────────────────────────────────────────────────────────
+    gateway_config = db.query(SystemConfig).filter(SystemConfig.config_key == "active_payment_gateway").first()
+    active_gateway = (gateway_config.config_value if gateway_config else "PAYU").upper()
+
+    if active_gateway not in {"PAYU", "RAZORPAY", "CCAVENUE"}:
+        active_gateway = "PAYU"
+
+    try:
+        if active_gateway == "RAZORPAY":
+            order = create_razorpay_order(tx.amount, txnid)
+            if not order:
+                raise RuntimeError("RAZORPAY_ORDER_CREATE_FAILED")
+
+            # Persist authoritative gateway order id server-side for verify binding.
+            tx.gateway_order_id = order.get("id")
+            tx.payment_mode = "RAZORPAY"
+            response_payload = {
+                "gateway": "RAZORPAY",
+                "razorpay_init": {
+                    "order_id": order["id"],
+                    "amount": order["amount"],  # already in paise
+                    "currency": "INR",
+                    "key_id": settings.RAZORPAY_KEY_ID,
+                    "description": productinfo,
+                    "prefill_name": current_user.username,
+                    "prefill_email": current_user.email,
+                    "prefill_contact": current_user.phone_number or "9999999999",
+                    "txnid": txnid
+                }
+            }
+        elif active_gateway == "CCAVENUE":
+            # Ensure amount has exactly 2 decimal places (Strict CCAvenue requirement)
+            amount_val = f"{Decimal(str(req.amount)):.2f}"
+
+            merchant_param = f"merchant_id={settings.CCAVENUE_MERCHANT_ID}"
+            order_param = f"order_id={txnid}"
+            currency_param = "currency=INR"
+            amount_param = f"amount={amount_val}"
+            redirect_param = f"redirect_url={settings.APP_URL}/api/v1/wallet/ccavenue/return"
+            cancel_param = f"cancel_url={settings.APP_URL}/api/v1/wallet/ccavenue/return"
+            language_param = "language=EN"
+            billing_name = f"billing_name={current_user.username}"
+            billing_address = "billing_address=Not Provided"
+            billing_city = "billing_city=Mumbai"
+            billing_state = "billing_state=Maharashtra"
+            billing_zip = "billing_zip=400001"
+            billing_country = "billing_country=India"
+            billing_tel = f"billing_tel={current_user.phone_number or '9999999999'}"
+            billing_email = f"billing_email={current_user.email}"
+
+            merchant_data = (
+                f"{merchant_param}&{order_param}&{currency_param}&{amount_param}&"
+                f"{redirect_param}&{cancel_param}&{language_param}&{billing_name}&"
+                f"{billing_address}&{billing_city}&{billing_state}&{billing_zip}&"
+                f"{billing_country}&{billing_tel}&{billing_email}"
+            )
+
+            enc_request = encrypt_ccavenue(merchant_data, settings.CCAVENUE_WORKING_KEY)
+            tx.payment_mode = "CCAVENUE"
+            tx.gateway_order_id = txnid
+            response_payload = {
+                "gateway": "CCAVENUE",
+                "ccavenue_init": {
+                    "encRequest": enc_request,
+                    "access_code": settings.CCAVENUE_ACCESS_CODE,
+                    "action": "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction",
+                    "order_id": txnid
+                }
+            }
+        else:
+            # Fallback to PAYU
+            payu_hash = generate_payu_hash(
+                txnid=txnid,
+                amount=req.amount,
+                productinfo=productinfo,
+                firstname=current_user.username,
+                email=current_user.email
+            )
+            tx.payment_mode = "PAYU"
+            response_payload = {
+                "gateway": "PAYU",
+                "payu_init": {
+                    "txnid": txnid,
+                    "amount": req.amount,
+                    "productinfo": productinfo,
+                    "firstname": current_user.username,
+                    "email": current_user.email,
+                    "phone": current_user.phone_number or "9999999999",
+                    "surl": _payu_surl(),
+                    "furl": _payu_furl(),
+                    "hash": payu_hash,
+                    "key": settings.PAYU_MERCHANT_KEY,
+                    "action": f"{settings.PAYU_BASE_URL}/_payment"
+                }
+            }
+    except Exception as exc:
+        db.rollback()
+        failure_reason = f"{active_gateway}_INIT_FAILED"
+        if isinstance(exc, RuntimeError) and str(exc):
+            failure_reason = str(exc)
+
+        failed_tx = WalletTransaction(
+            user_id=current_user.id,
+            amount=req.amount,
+            transaction_type="ADD_MONEY",
+            status="FAILED",
+            reference_id=txnid,
+            payment_mode=active_gateway,
+            failure_reason=failure_reason,
+        )
+        db.add(failed_tx)
+        db.commit()
+
+        add_user_notification(
+            db,
+            current_user.id,
+            "Recharge Failed ❌",
+            "We could not initialize your payment. Please try again.",
+            "WALLET"
+        )
+        logger.error("Add-money init failed for user=%s gateway=%s reason=%s", current_user.id, active_gateway, failure_reason)
+
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=502, detail="Failed to initialize payment gateway")
+
+    db.add(tx)
     db.commit()
 
     add_user_notification(
@@ -94,91 +230,7 @@ def init_add_money(
         "WALLET"
     )
 
-    # ─────────────────────────────────────────────────────────────────
-    # Determine Active Gateway
-    # ─────────────────────────────────────────────────────────────────
-    gateway_config = db.query(SystemConfig).filter(SystemConfig.config_key == "active_payment_gateway").first()
-    active_gateway = (gateway_config.config_value if gateway_config else "PAYU").upper()
-
-    if active_gateway == "RAZORPAY":
-        order = create_razorpay_order(tx.amount, txnid)
-        if not order:
-             raise HTTPException(status_code=500, detail="Failed to create Razorpay order")
-        
-        # Razorpay specific data
-        return {
-            "gateway": "RAZORPAY",
-            "razorpay_init": {
-                "order_id": order["id"],
-                "amount": order["amount"], # already in paise
-                "currency": "INR",
-                "key_id": settings.RAZORPAY_KEY_ID,
-                "description": productinfo,
-                "prefill_name": current_user.username,
-                "prefill_email": current_user.email,
-                "prefill_contact": current_user.phone_number or "9999999999",
-                "txnid": txnid
-            }
-        }
-    elif active_gateway == "CCAVENUE":
-        # Ensure amount has exactly 2 decimal places (Strict CCAvenue requirement)
-        amount_val = f"{float(req.amount):.2f}"
-        
-        merchant_param = f"merchant_id={settings.CCAVENUE_MERCHANT_ID}"
-        order_param = f"order_id={txnid}"
-        currency_param = "currency=INR"
-        amount_param = f"amount={amount_val}"
-        redirect_param = f"redirect_url={settings.APP_URL}/api/v1/wallet/ccavenue/return"
-        cancel_param = f"cancel_url={settings.APP_URL}/api/v1/wallet/ccavenue/return"
-        language_param = "language=EN"
-        billing_name = f"billing_name={current_user.username}"
-        billing_address = "billing_address=Not Provided"
-        billing_city    = "billing_city=Mumbai"
-        billing_state   = "billing_state=Maharashtra"
-        billing_zip     = "billing_zip=400001"
-        billing_country = "billing_country=India"
-        billing_tel     = f"billing_tel={current_user.phone_number or '9999999999'}"
-        billing_email   = f"billing_email={current_user.email}"
-        
-        merchant_data = f"{merchant_param}&{order_param}&{currency_param}&{amount_param}&{redirect_param}&{cancel_param}&{language_param}&{billing_name}&{billing_address}&{billing_city}&{billing_state}&{billing_zip}&{billing_country}&{billing_tel}&{billing_email}"
-        
-        enc_request = encrypt_ccavenue(merchant_data, settings.CCAVENUE_WORKING_KEY)
-        
-        return {
-            "gateway": "CCAVENUE",
-            "ccavenue_init": {
-                "encRequest": enc_request,
-                "access_code": settings.CCAVENUE_ACCESS_CODE,
-                "action": "https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction",
-                "order_id": txnid
-            }
-        }
-    else:
-        # Fallback to PAYU
-        payu_hash = generate_payu_hash(
-            txnid=txnid,
-            amount=req.amount,
-            productinfo=productinfo,
-            firstname=current_user.username,
-            email=current_user.email
-        )
-
-        return {
-            "gateway": "PAYU",
-            "payu_init": {
-                "txnid": txnid,
-                "amount": req.amount,
-                "productinfo": productinfo,
-                "firstname": current_user.username,
-                "email": current_user.email,
-                "phone": current_user.phone_number or "9999999999",
-                "surl": _payu_surl(),
-                "furl": _payu_furl(),
-                "hash": payu_hash,
-                "key": settings.PAYU_MERCHANT_KEY,
-                "action": f"{settings.PAYU_BASE_URL}/_payment"
-            }
-        }
+    return response_payload
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -613,39 +665,60 @@ async def verify_razorpay_payment(
     if not all([order_id, payment_id, signature]):
         raise HTTPException(status_code=400, detail="Missing Razorpay details")
 
-    # The txnid was passed as 'receipt' during order creation.
-    # Razorpay order response includes the receipt.
-    # We should search for our transaction using the reference_id (txnid).
-    # However, since we don't have the order_id in our DB yet (we could have stored it but didn't per plan),
-    # we'll use a slightly different approach: the client sends the txnid back OR we search by reference_id.
-    
-    # Ideally, we should have stored order_id in WalletTransaction. 
-    # Let's check WalletTransaction model to see if we can add a column.
-    
-    # For now, let's assume the user sends the txnid as well.
-    txnid = data.get("txnid")
-    if not txnid:
-         raise HTTPException(status_code=400, detail="txnid is required for verification")
-
     is_valid = verify_razorpay_signature(order_id, payment_id, signature)
     if not is_valid:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
+    # Prevent duplicate processing of the same gateway payment id.
+    existing_success = db.query(WalletTransaction).filter(
+        WalletTransaction.gateway_payment_id == payment_id,
+        WalletTransaction.status == "SUCCESS"
+    ).first()
+    if existing_success:
+        return {"status": "SUCCESS", "message": "Payment already processed"}
+
     tx = db.query(WalletTransaction).filter(
-        WalletTransaction.reference_id == txnid,
-        WalletTransaction.user_id == current_user.id
+        WalletTransaction.gateway_order_id == order_id,
+        WalletTransaction.user_id == current_user.id,
+        WalletTransaction.transaction_type == "ADD_MONEY"
     ).with_for_update().first()
 
     if not tx:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise HTTPException(status_code=404, detail="Matching transaction not found for this order")
 
     if tx.status != "PENDING":
         return {"status": tx.status, "message": "Transaction already processed"}
 
+    # Authoritative checks from Razorpay API to block client-side tampering.
+    gateway_order = get_razorpay_order(order_id)
+    gateway_payment = get_razorpay_payment(payment_id)
+    if not gateway_order or not gateway_payment:
+        raise HTTPException(status_code=502, detail="Unable to verify payment with gateway")
+
+    expected_amount_paise = int(Decimal(str(tx.amount)) * Decimal("100"))
+
+    if gateway_order.get("receipt") != tx.reference_id:
+        raise HTTPException(status_code=400, detail="Order receipt mismatch")
+    if gateway_order.get("amount") != expected_amount_paise:
+        raise HTTPException(status_code=400, detail="Order amount mismatch")
+    if gateway_order.get("currency") != "INR":
+        raise HTTPException(status_code=400, detail="Unsupported order currency")
+
+    if gateway_payment.get("order_id") != order_id:
+        raise HTTPException(status_code=400, detail="Payment-order mismatch")
+    if gateway_payment.get("amount") != expected_amount_paise:
+        raise HTTPException(status_code=400, detail="Payment amount mismatch")
+    if gateway_payment.get("currency") != "INR":
+        raise HTTPException(status_code=400, detail="Unsupported payment currency")
+    if gateway_payment.get("status") not in {"captured", "authorized"}:
+        raise HTTPException(status_code=400, detail="Payment is not captured/authorized")
+
     # Update transaction
     tx.status = "SUCCESS"
-    tx.payu_txn_id = payment_id # Repurposing existing column for "payment_id"
+    tx.payu_txn_id = payment_id # Legacy field retained for compatibility
     tx.payment_mode = "RAZORPAY"
+    tx.gateway_payment_id = payment_id
+    tx.gateway_signature = signature
     
     # Update balance
     user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
@@ -682,53 +755,97 @@ async def ccavenue_return_handler(
     if not enc_resp:
         raise HTTPException(status_code=400, detail="Missing encrypted response from CCAvenue")
         
+    tx = None
     try:
         decrypted_data = decrypt_ccavenue(enc_resp, settings.CCAVENUE_WORKING_KEY)
         # Parse query string: order_id=txnid&order_status=Success&...
         from urllib.parse import parse_qs
         data = {k: v[0] for k, v in parse_qs(decrypted_data).items()}
-        
-        txnid  = data.get("order_id")
-        status = data.get("order_status") # Success, Failure, Aborted, Invalid
-        amount = float(data.get("amount", 0))
-        tracking_id = data.get("tracking_id", "")
-        payment_mode = data.get("payment_mode", "CCAVENUE")
-        
+
+        txnid = (data.get("order_id") or "").strip()
+        status = (data.get("order_status") or "").strip()  # Success, Failure, Aborted, Invalid
+        status_upper = status.upper()
+        amount_raw = data.get("amount")
+        tracking_id = (data.get("tracking_id") or "").strip()
+        payment_mode = (data.get("payment_mode") or "CCAVENUE").strip().upper()
+        currency = (data.get("currency") or "").strip().upper()
+        merchant_id = (data.get("merchant_id") or "").strip()
+
         if not txnid:
             raise ValueError("Missing txnid in decrypted response")
-            
+
         tx = db.query(WalletTransaction).filter(
             WalletTransaction.reference_id == txnid
         ).with_for_update().first()
-        
+
         if not tx:
-             raise ValueError("Transaction not found")
-             
+            raise ValueError("Transaction not found")
+        if tx.transaction_type != "ADD_MONEY":
+            raise ValueError("Invalid transaction type for callback")
+
         if tx.status != "PENDING":
-             # Already processed
-             label = "Payment already processed!"
-             bg_color = "#6B7280"
+            # Already processed
+            label = "Payment already processed!"
+            bg_color = "#6B7280"
         else:
-            if status == "Success":
-                tx.status = "SUCCESS"
-                tx.payu_txn_id = tracking_id # Repurposing field
-                tx.payment_mode = payment_mode
-                
-                user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-                user.wallet_balance += tx.amount
-                db.add(user)
-                
-                add_user_notification(
-                    db, user.id,
-                    "Payment Confirmed ✅",
-                    f"₹{tx.amount:.0f} has been added to your ZexPlay wallet via CCAvenue.",
-                    "WALLET"
-                )
-                label = "Payment Successful!"
-                bg_color = "#16A34A"
+            if status_upper == "SUCCESS":
+                expected_amount = Decimal(str(tx.amount)).quantize(Decimal("0.01"))
+                try:
+                    callback_amount = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
+                except (InvalidOperation, TypeError):
+                    callback_amount = Decimal("-1")
+
+                validation_error = None
+                if not tracking_id:
+                    validation_error = "CCAVENUE_TRACKING_ID_MISSING"
+                elif callback_amount != expected_amount:
+                    validation_error = "CCAVENUE_AMOUNT_MISMATCH"
+                elif currency != "INR":
+                    validation_error = "CCAVENUE_CURRENCY_MISMATCH"
+                elif merchant_id != settings.CCAVENUE_MERCHANT_ID:
+                    validation_error = "CCAVENUE_MERCHANT_MISMATCH"
+                else:
+                    existing_success = db.query(WalletTransaction).filter(
+                        WalletTransaction.gateway_payment_id == tracking_id,
+                        WalletTransaction.status == "SUCCESS",
+                        WalletTransaction.id != tx.id,
+                    ).first()
+                    if existing_success:
+                        validation_error = "CCAVENUE_DUPLICATE_TRACKING_ID"
+
+                if validation_error:
+                    tx.status = "FAILED"
+                    tx.failure_reason = validation_error
+                    add_user_notification(
+                        db, tx.user_id,
+                        "Recharge Failed ❌",
+                        "Your CCAvenue callback validation failed. Please contact support if amount was deducted.",
+                        "WALLET"
+                    )
+                    label = "Payment Validation Failed!"
+                    bg_color = "#EF4444"
+                else:
+                    tx.status = "SUCCESS"
+                    tx.payu_txn_id = tracking_id  # Legacy field retained for compatibility
+                    tx.payment_mode = payment_mode
+                    tx.gateway_order_id = txnid
+                    tx.gateway_payment_id = tracking_id
+
+                    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+                    user.wallet_balance += tx.amount
+                    db.add(user)
+
+                    add_user_notification(
+                        db, user.id,
+                        "Payment Confirmed ✅",
+                        f"₹{tx.amount:.0f} has been added to your ZexPlay wallet via CCAvenue.",
+                        "WALLET"
+                    )
+                    label = "Payment Successful!"
+                    bg_color = "#16A34A"
             else:
                 tx.status = "FAILED"
-                tx.failure_reason = status
+                tx.failure_reason = status_upper or "CCAVENUE_FAILED"
                 add_user_notification(
                     db, tx.user_id,
                     "Recharge Failed ❌",
@@ -744,6 +861,11 @@ async def ccavenue_return_handler(
 
     except Exception as e:
         logger.error(f"CCAvenue decryption error: {e}")
+        if tx and tx.status == "PENDING":
+            tx.status = "FAILED"
+            tx.failure_reason = "CCAVENUE_CALLBACK_ERROR"
+            db.add(tx)
+            db.commit()
         label = "Error processing payment!"
         bg_color = "#EF4444"
 

@@ -150,8 +150,8 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     if not user:
         logger.warning(f"Login attempt for unknown identifier: {login_data.email[:30]}")
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found. Please sign up or check your identifier.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -159,7 +159,7 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         logger.warning(f"Failed login attempt for user_id={user.id}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect password. Please try again.",
+            detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

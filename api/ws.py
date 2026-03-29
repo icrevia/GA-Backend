@@ -1,15 +1,43 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from jose import jwt, JWTError
 import json
 import logging
 
 from core.websockets import manager, CALL_SIGNAL_TYPES
-from core.config import settings
+from core.security import decode_access_token
 from core.database import SessionLocal
 from models.user import User
 
 logger = logging.getLogger("zexplay.ws")
 router = APIRouter()
+
+
+def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, str | None]:
+    """
+    Extract auth token from websocket handshake without using query parameters.
+    Supports:
+    - Authorization: Bearer <jwt>
+    - Sec-WebSocket-Protocol: zexplay.v1, token.<jwt>
+    """
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        return token or None, None
+
+    raw_protocols = websocket.headers.get("sec-websocket-protocol", "")
+    protocols = [p.strip() for p in raw_protocols.split(",") if p.strip()]
+
+    selected_protocol = None
+    for proto in protocols:
+        if proto.lower() == "zexplay.v1":
+            selected_protocol = proto
+            break
+
+    for proto in protocols:
+        if proto.lower().startswith("token."):
+            token = proto[len("token."):].strip()
+            return token or None, selected_protocol
+
+    return None, selected_protocol
 
 
 async def get_user_from_token(token: str):
@@ -19,7 +47,7 @@ async def get_user_from_token(token: str):
         return None, False
 
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = decode_access_token(token)
         user_id = payload.get("sub")
         if user_id is None:
             logger.warning("WS Auth: No 'sub' in token payload")
@@ -35,6 +63,13 @@ async def get_user_from_token(token: str):
             if not user.is_active:
                 logger.warning(f"WS Auth: user_id={uid} is banned")
                 return None, False
+
+            token_version = payload.get("tv", 0)
+            db_token_version = getattr(user, "token_version", 0) or 0
+            if int(token_version) != int(db_token_version):
+                logger.warning(f"WS Auth: user_id={uid} token version mismatch")
+                return None, False
+
             is_admin = (user.role == "ADMIN")
             return uid, is_admin
         except Exception as e:
@@ -42,15 +77,17 @@ async def get_user_from_token(token: str):
             return uid, False
         finally:
             db.close()
-    except JWTError as e:
+    except Exception as e:
         logger.warning(f"WS Auth Token Decode Error: {e}")
         return None, False
 
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str = ""):
+async def websocket_endpoint(websocket: WebSocket):
+    token, selected_protocol = _extract_ws_token_and_protocol(websocket)
+
     # Accept first to avoid ASGI proxy rejections, then verify token
-    await websocket.accept()
+    await websocket.accept(subprotocol=selected_protocol)
 
     user_id, is_admin = await get_user_from_token(token)
     if not user_id:

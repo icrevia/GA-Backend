@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
+from sqlalchemy.exc import IntegrityError
 from typing import List
 
 from api.deps import get_db, get_current_user, get_current_active_admin
@@ -20,12 +21,33 @@ from services.notifications import add_user_notification
 router = APIRouter()
 
 
+def _build_joined_count_map(db: Session, tournament_ids: List[int]) -> dict[int, int]:
+    if not tournament_ids:
+        return {}
+
+    rows = (
+        db.query(
+            TournamentParticipant.tournament_id,
+            func.count(TournamentParticipant.id),
+        )
+        .filter(TournamentParticipant.tournament_id.in_(tournament_ids))
+        .group_by(TournamentParticipant.tournament_id)
+        .all()
+    )
+    return {tid: count for tid, count in rows}
+
+
+def _attach_joined_counts(tournaments: List[Tournament], db: Session) -> List[Tournament]:
+    count_map = _build_joined_count_map(db, [t.id for t in tournaments])
+    for tournament in tournaments:
+        tournament.joined_count = count_map.get(tournament.id, 0)  # type: ignore[attr-defined]
+    return tournaments
+
+
 def _with_count(tournament: Tournament, db: Session) -> Tournament:
     """Attach joined_count so clients can show slot fill progress."""
-    count = db.query(TournamentParticipant).filter(
-        TournamentParticipant.tournament_id == tournament.id
-    ).count()
-    tournament.joined_count = count  # type: ignore[attr-defined]
+    count_map = _build_joined_count_map(db, [tournament.id])
+    tournament.joined_count = count_map.get(tournament.id, 0)  # type: ignore[attr-defined]
     return tournament
 
 
@@ -34,7 +56,7 @@ def get_upcoming_tournaments(db: Session = Depends(get_db)):
     tournaments = db.query(Tournament).filter(
         or_(Tournament.status == "UPCOMING", Tournament.status == "LIVE")
     ).order_by(Tournament.match_time.asc()).all()
-    return [_with_count(t, db) for t in tournaments]
+    return _attach_joined_counts(tournaments, db)
 
 
 @router.post("/", response_model=TournamentResponse)
@@ -140,7 +162,11 @@ def join_tournament(
         game_uid=request.game_uid
     )
     db.add(participant)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Already joined this arena")
 
     try:
         add_user_notification(
@@ -169,6 +195,9 @@ def get_my_tournaments(
     ).all()
     tournament_ids = [p.tournament_id for p in participants]
 
+    if not tournament_ids:
+        return []
+
     tournaments = db.query(Tournament).filter(Tournament.id.in_(tournament_ids)).all()
 
     for t in tournaments:
@@ -176,7 +205,7 @@ def get_my_tournaments(
             t.room_id       = None
             t.room_password = None
 
-    return [_with_count(t, db) for t in tournaments]
+    return _attach_joined_counts(tournaments, db)
 
 
 @router.get("/{tournament_id}", response_model=TournamentResponse)

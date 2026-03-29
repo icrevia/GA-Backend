@@ -29,7 +29,8 @@ def create_razorpay_order(amount: float, receipt: str) -> dict:
             url,
             auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET),
             data=json.dumps(payload),
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
+            timeout=15,
         )
         response.raise_for_status()
         return response.json()
@@ -37,6 +38,40 @@ def create_razorpay_order(amount: float, receipt: str) -> dict:
         logger.error(f"Failed to create Razorpay order: {e}")
         if hasattr(e, 'response') and e.response is not None:
              logger.error(f"Response: {e.response.text}")
+        return None
+
+
+def get_razorpay_order(order_id: str) -> dict | None:
+    """Fetch a Razorpay order by id."""
+    try:
+        response = requests.get(
+            f"https://api.razorpay.com/v1/orders/{order_id}",
+            auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET),
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch Razorpay order {order_id}: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response: {e.response.text}")
+        return None
+
+
+def get_razorpay_payment(payment_id: str) -> dict | None:
+    """Fetch a Razorpay payment by id."""
+    try:
+        response = requests.get(
+            f"https://api.razorpay.com/v1/payments/{payment_id}",
+            auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET),
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch Razorpay payment {payment_id}: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response: {e.response.text}")
         return None
 
 def verify_razorpay_signature(order_id: str, payment_id: str, signature: str) -> bool:
