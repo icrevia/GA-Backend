@@ -988,14 +988,43 @@ def reject_all_pending_transactions(
 
 @router.post("/transactions/clear-history")
 def clear_transaction_history(
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    """Ledger immutability guard: transaction history cannot be deleted."""
+    """Hard clear transaction ledger after refunding pending withdrawals safely."""
+    pending_withdrawals = db.query(WalletTransaction).filter(
+        WalletTransaction.status == "PENDING",
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+    ).with_for_update().all()
+
+    refunded_count = 0
+    refunded_total = Decimal("0.00")
+
+    for tx in pending_withdrawals:
+        refunded = _refund_withdrawal_if_needed(
+            db,
+            tx,
+            current_user.username,
+            "CLEAR_HISTORY",
+        )
+        if refunded > Decimal("0.00"):
+            refunded_count += 1
+            refunded_total += refunded
+
+    deleted_count = db.query(WalletTransaction).delete(synchronize_session=False)
+    db.commit()
+
     logger.warning(
-        f"Blocked clear-history attempt by admin={current_user.username}; endpoint is immutable by policy"
+        f"Admin {current_user.username} cleared transaction history. "
+        f"deleted={deleted_count}, refunded_withdrawals={refunded_count}, "
+        f"refund_total={float(refunded_total):.2f}"
     )
-    raise HTTPException(
-        status_code=403,
-        detail="Transaction history is immutable and cannot be cleared.",
-    )
+
+    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+    return {
+        "message": f"Cleared {deleted_count} ledger entries",
+        "deleted": deleted_count,
+        "refunded_withdrawals": refunded_count,
+        "refund_total": float(refunded_total),
+    }
