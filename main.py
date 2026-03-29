@@ -160,6 +160,12 @@ def startup_event():
             conn.execute(text(
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_signature VARCHAR(512)"
             ))
+            conn.execute(text(
+                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS requires_admin BOOLEAN DEFAULT FALSE"
+            ))
+            conn.execute(text(
+                "UPDATE chat_sessions SET requires_admin = FALSE WHERE requires_admin IS NULL"
+            ))
             conn.commit()
             logger.info("DB migration: referral_code and referred_by_id columns ensured")
         except Exception as e:

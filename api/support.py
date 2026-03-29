@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSock
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Tuple
 from core.database import get_db
 from api.deps import get_current_user, get_user_for_support
 from models.support import ChatSession, ChatMessage
@@ -23,6 +23,62 @@ SUPPORT_RATE_LIMIT_PER_MIN_IP = 120
 
 _SUPPORT_IP_BUCKETS: dict[str, deque[datetime]] = {}
 _SUPPORT_IP_BUCKETS_LOCK = Lock()
+
+SUPPORT_BOT_ESCALATION_KEYWORDS = (
+    "human",
+    "agent",
+    "admin",
+    "representative",
+    "not solved",
+    "not helpful",
+    "didnt help",
+    "didn't help",
+    "escalate",
+    "complaint",
+)
+
+SUPPORT_BOT_INTENTS = (
+    {
+        "intent": "wallet_add",
+        "keywords": ("add money", "deposit", "payment", "upi", "utr", "transaction", "credited"),
+        "response": (
+            "I can help with add-money issues. Please share the amount, transaction time, and UTR/transaction ID. "
+            "If money is deducted but not credited, I will keep this chat ready for priority admin review."
+        ),
+    },
+    {
+        "intent": "withdrawal",
+        "keywords": ("withdraw", "withdrawal", "cashout", "payout"),
+        "response": (
+            "For withdrawal checks, please share amount and request time. "
+            "If it is pending longer than usual, an admin will review this session first."
+        ),
+    },
+    {
+        "intent": "tournament",
+        "keywords": ("tournament", "join", "match", "entry fee", "room id"),
+        "response": (
+            "For tournament issues, please share tournament name and screenshot/error text. "
+            "Quick checks: stable internet, latest app version, and sufficient wallet balance."
+        ),
+    },
+    {
+        "intent": "login",
+        "keywords": ("login", "otp", "password", "signin", "sign in", "account locked"),
+        "response": (
+            "For login problems, please retry OTP after 60 seconds and confirm network is stable. "
+            "If still blocked, share your registered email/phone format (masked) and exact error message."
+        ),
+    },
+    {
+        "intent": "referral",
+        "keywords": ("referral", "invite", "code", "bonus"),
+        "response": (
+            "Referral rewards are added after eligible completion criteria. "
+            "Please share referral code and referred username so support can verify quickly."
+        ),
+    },
+)
 
 
 def now_ist() -> datetime:
@@ -73,6 +129,43 @@ def _check_ip_rate_limit(client_ip: str) -> bool:
         bucket.append(now)
 
     return True
+
+
+def _contains_any_keyword(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _build_support_bot_reply(message: str) -> Tuple[str, bool, str]:
+    normalized = " ".join(message.lower().split())
+
+    if _contains_any_keyword(normalized, SUPPORT_BOT_ESCALATION_KEYWORDS):
+        return (
+            "I am connecting you with a human support specialist right now. Please stay online.",
+            True,
+            "user_requested_human",
+        )
+
+    for intent_data in SUPPORT_BOT_INTENTS:
+        if _contains_any_keyword(normalized, intent_data["keywords"]):
+            return (intent_data["response"], False, intent_data["intent"])
+
+    return (
+        "I could not confidently understand this issue. I have alerted our human support team, and they will reply shortly.",
+        True,
+        "bot_not_confident",
+    )
+
+
+def _resolve_bot_sender_id(db: Session, fallback_user_id: int) -> int:
+    admin_user = (
+        db.query(User.id)
+        .filter(User.role == "ADMIN", User.is_active.is_(True))
+        .order_by(User.id.asc())
+        .first()
+    )
+    if admin_user and admin_user[0]:
+        return int(admin_user[0])
+    return fallback_user_id
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -169,6 +262,7 @@ def get_sessions(
             ChatSession.id.label("session_id"),
             ChatSession.user_id.label("user_id"),
             ChatSession.created_at.label("created_at"),
+            ChatSession.requires_admin.label("requires_admin"),
             User.username.label("username"),
             User.email.label("email"),
             latest_message_sq.c.content.label("last_message"),
@@ -182,7 +276,10 @@ def get_sessions(
                 latest_message_sq.c.rn == 1,
             ),
         )
-        .order_by(func.coalesce(latest_message_sq.c.timestamp, ChatSession.created_at).desc())
+        .order_by(
+            func.coalesce(ChatSession.requires_admin, False).desc(),
+            func.coalesce(latest_message_sq.c.timestamp, ChatSession.created_at).desc(),
+        )
         .all()
     )
 
@@ -199,6 +296,7 @@ def get_sessions(
                 (row.last_timestamp or row.created_at).isoformat()
                 if (row.last_timestamp or row.created_at) else None
             ),
+            "requires_admin": bool(row.requires_admin),
             "unread": 0,
         }
         for row in rows
@@ -223,6 +321,7 @@ def get_my_chat(
 
     return {
         "session_id": session.id,
+        "requires_admin": bool(session.requires_admin),
         "messages": [
             {
                 "id":        m.id,
@@ -277,6 +376,7 @@ async def send_message(
     )
     db.add(new_msg)
     db.commit()
+    db.refresh(new_msg)
 
     msg_data = {
         "type":       "chat_message",
@@ -287,7 +387,56 @@ async def send_message(
         "timestamp":  now_ist().isoformat()
     }
     await manager.broadcast(msg_data)
-    return {"status": "success"}
+
+    if current_user.role == "ADMIN":
+        return {"status": "success", "escalated_to_admin": False}
+
+    bot_reply, should_escalate, escalation_reason = _build_support_bot_reply(clean_message)
+    bot_sender_id = _resolve_bot_sender_id(db, current_user.id)
+
+    bot_msg = ChatMessage(
+        session_id=session.id,
+        sender_id=bot_sender_id,
+        content=bot_reply,
+        is_admin=True,
+    )
+
+    if should_escalate:
+        session.requires_admin = True
+
+    db.add(bot_msg)
+    db.commit()
+    db.refresh(bot_msg)
+
+    bot_data = {
+        "type": "chat_message",
+        "id": bot_msg.id,
+        "session_id": session.id,
+        "content": bot_msg.content,
+        "is_admin": True,
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.send_personal_message(bot_data, session.user_id)
+    await manager.broadcast_to_admins(bot_data)
+
+    if should_escalate:
+        escalation_event = {
+            "type": "support_escalation",
+            "session_id": session.id,
+            "user_id": session.user_id,
+            "from_user_id": session.user_id,
+            "from_user_name": current_user.username,
+            "message_preview": clean_message[:180],
+            "reason": escalation_reason,
+            "timestamp": now_ist().isoformat(),
+        }
+        await manager.broadcast_to_admins(escalation_event)
+
+    return {
+        "status": "success",
+        "escalated_to_admin": should_escalate,
+        "bot_reason": escalation_reason,
+    }
 
 
 @router.post("/log-call")
@@ -361,6 +510,7 @@ async def admin_reply(
         content=clean_message,
         is_admin=True
     )
+    session.requires_admin = False
     db.add(new_msg)
     db.commit()
 
