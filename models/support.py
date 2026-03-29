@@ -14,7 +14,8 @@ class ChatSession(Base):
     requires_admin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    user = relationship("User")
+    # Explicit FK avoids ambiguity now that chat_sessions also references users via attended_by_admin_id.
+    user = relationship("User", foreign_keys=[user_id])
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
 
 class ChatMessage(Base):
