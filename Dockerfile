@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     libboost-all-dev \
     libssl-dev \
     libffi-dev \
-    libatlas-base-dev \
+    # libatlas-base-dev removed (not available in Debian trixie) \
     libsm6 \
     libxext6 \
     libxrender-dev \
