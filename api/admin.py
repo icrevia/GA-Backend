@@ -16,6 +16,7 @@ from models.wallet import WalletTransaction
 from models.config import SystemConfig
 from models.notification import Notification
 from models.participant import TournamentParticipant
+from models.support import ChatSession, ChatMessage
 from services.notifications import add_user_notification
 from core.websockets import manager as ws_manager
 
@@ -606,6 +607,84 @@ def update_user_status(
     status_str = "Active" if status.is_active else "Banned"
     logger.info(f"User {user_id} set to {status_str} by admin={current_user.username}")
     return {"message": f"User {user.username} is now {status_str}"}
+
+
+@router.delete("/users/{user_id}")
+def delete_user_account(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own admin account")
+
+    user = db.query(User).filter(User.id == user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.role == "ADMIN":
+        raise HTTPException(status_code=400, detail="Admin accounts cannot be deleted from this action")
+
+    try:
+        session_ids = [row[0] for row in db.query(ChatSession.id).filter(ChatSession.user_id == user_id).all()]
+
+        deleted_chat_messages = 0
+        if session_ids:
+            deleted_chat_messages += db.query(ChatMessage).filter(
+                ChatMessage.session_id.in_(session_ids)
+            ).delete(synchronize_session=False)
+        deleted_chat_messages += db.query(ChatMessage).filter(
+            ChatMessage.sender_id == user_id
+        ).delete(synchronize_session=False)
+
+        deleted_chat_sessions = db.query(ChatSession).filter(
+            ChatSession.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        deleted_notifications = db.query(Notification).filter(
+            Notification.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        deleted_participants = db.query(TournamentParticipant).filter(
+            TournamentParticipant.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        deleted_transactions = db.query(WalletTransaction).filter(
+            WalletTransaction.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        referred_updates = db.query(User).filter(
+            User.referred_by_id == user_id
+        ).update({"referred_by_id": None}, synchronize_session=False)
+
+        deleted_username = user.username
+        deleted_email = user.email
+        db.delete(user)
+        db.commit()
+
+        logger.warning(
+            f"User deleted by admin={current_user.username}: user_id={user_id}, "
+            f"username={deleted_username}, email={deleted_email}, "
+            f"deleted_transactions={deleted_transactions}, deleted_participants={deleted_participants}, "
+            f"deleted_notifications={deleted_notifications}, deleted_chat_sessions={deleted_chat_sessions}, "
+            f"deleted_chat_messages={deleted_chat_messages}, referred_updates={referred_updates}"
+        )
+
+        return {
+            "message": f"User #{user_id} deleted successfully",
+            "deleted_transactions": deleted_transactions,
+            "deleted_participants": deleted_participants,
+            "deleted_notifications": deleted_notifications,
+            "deleted_chat_sessions": deleted_chat_sessions,
+            "deleted_chat_messages": deleted_chat_messages,
+            "referred_updates": referred_updates,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete user")
 
 
 @router.post("/users/{user_id}/adjust-funds")
