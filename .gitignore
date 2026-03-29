@@ -7,6 +7,11 @@ venv/
 
 # Database
 *.sqlite3
+*.db
+
+# Generated verification artifacts
+verification/*_traces.json
+verification/*_proof.json
 
 # OS
 .DS_Store
