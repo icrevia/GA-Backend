@@ -209,6 +209,29 @@ def _resolve_bot_sender_id(db: Session, fallback_user_id: int) -> int:
     return fallback_user_id
 
 
+def _get_or_create_user_support_session(db: Session, user_id: int) -> Tuple[ChatSession, List[ChatSession]]:
+    """Returns a stable primary session plus all sessions for a user.
+
+    Some users may have duplicate sessions created over time (network races/reinstalls).
+    We keep writing to a deterministic primary session and read history from all sessions.
+    """
+    sessions = (
+        db.query(ChatSession)
+        .filter(ChatSession.user_id == user_id)
+        .order_by(ChatSession.created_at.asc(), ChatSession.id.asc())
+        .all()
+    )
+
+    if sessions:
+        return sessions[0], sessions
+
+    session = ChatSession(user_id=user_id)
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session, [session]
+
+
 # ─────────────────────────────────────────────────────────────────
 # WebSocket — FIXED: requires JWT token, verifies ownership
 # ─────────────────────────────────────────────────────────────────
@@ -262,9 +285,19 @@ def get_session_messages(
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    user_session_ids = [
+        sid for (sid,) in db.query(ChatSession.id).filter(ChatSession.user_id == session.user_id).all()
+    ]
+    if not user_session_ids:
+        user_session_ids = [session_id]
+
     messages = db.query(ChatMessage).filter(
-        ChatMessage.session_id == session_id
-    ).order_by(ChatMessage.timestamp.asc()).all()
+        ChatMessage.session_id.in_(user_session_ids)
+    ).order_by(ChatMessage.timestamp.asc(), ChatMessage.id.asc()).all()
 
     return [
         {
@@ -349,20 +382,16 @@ def get_my_chat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_user_for_support)
 ):
-    session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id).first()
-    if not session:
-        session = ChatSession(user_id=current_user.id)
-        db.add(session)
-        db.commit()
-        db.refresh(session)
+    session, all_sessions = _get_or_create_user_support_session(db, current_user.id)
+    session_ids = [s.id for s in all_sessions]
 
     messages = db.query(ChatMessage).filter(
-        ChatMessage.session_id == session.id
-    ).order_by(ChatMessage.timestamp.asc()).all()
+        ChatMessage.session_id.in_(session_ids)
+    ).order_by(ChatMessage.timestamp.asc(), ChatMessage.id.asc()).all()
 
     return {
         "session_id": session.id,
-        "requires_admin": bool(session.requires_admin),
+        "requires_admin": any(bool(s.requires_admin) for s in all_sessions),
         "messages": [
             {
                 "id":        m.id,
@@ -402,12 +431,7 @@ async def send_message(
     if not _check_ip_rate_limit(client_ip):
         raise HTTPException(status_code=429, detail="Too many requests from this network. Please slow down.")
 
-    session = db.query(ChatSession).filter(ChatSession.user_id == current_user.id).first()
-    if not session:
-        session = ChatSession(user_id=current_user.id)
-        db.add(session)
-        db.commit()
-        db.refresh(session)
+    session, _ = _get_or_create_user_support_session(db, current_user.id)
 
     new_msg = ChatMessage(
         session_id=session.id,
@@ -489,12 +513,7 @@ async def log_call(
     current_user: User = Depends(get_user_for_support)
 ):
     target_user_id = user_id if (current_user.role == "ADMIN" and user_id) else current_user.id
-    session = db.query(ChatSession).filter(ChatSession.user_id == target_user_id).first()
-    if not session:
-        session = ChatSession(user_id=target_user_id)
-        db.add(session)
-        db.commit()
-        db.refresh(session)
+    session, _ = _get_or_create_user_support_session(db, target_user_id)
 
     content = f"[CALL_LOG:{type}]"
     if duration:
@@ -545,20 +564,25 @@ async def admin_reply(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    primary_session, _ = _get_or_create_user_support_session(db, session.user_id)
+
     new_msg = ChatMessage(
-        session_id=request.session_id,
+        session_id=primary_session.id,
         sender_id=current_user.id,
         content=clean_message,
         is_admin=True
     )
-    session.requires_admin = False
+    db.query(ChatSession).filter(ChatSession.user_id == session.user_id).update(
+        {ChatSession.requires_admin: False},
+        synchronize_session=False,
+    )
     db.add(new_msg)
     db.commit()
 
     msg_data = {
         "type":       "chat_message",
         "id":         new_msg.id,
-        "session_id": request.session_id,
+        "session_id": primary_session.id,
         "content":    new_msg.content,
         "is_admin":   True,
         "timestamp":  now_ist().isoformat()
