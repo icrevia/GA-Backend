@@ -154,6 +154,13 @@ def startup_event():
     logger.info("ZexPlay API starting up...")
     logger.info(f"DEBUG mode: {settings.DEBUG}")
     logger.info(f"Allowed origins: {ALLOWED_ORIGINS}")
+    logger.info(
+        "Security alerts: enabled=%s success_login_alert=%s chat_id_set=%s token_set=%s",
+        settings.SECURITY_ALERTS_ENABLED,
+        settings.SECURITY_ALERT_ON_SUCCESS_LOGIN,
+        bool(settings.TELEGRAM_ALERT_CHAT_ID),
+        bool(settings.TELEGRAM_BOT_TOKEN),
+    )
 
     # One-time safe column migrations for new fields added to existing production DB.
     # Uses IF NOT EXISTS so it's a no-op after first run.
