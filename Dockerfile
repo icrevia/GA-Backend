@@ -31,5 +31,6 @@ COPY . .
 # Expose port (change if your app uses a different port)
 EXPOSE 8000
 
-# Start the app (adjust if your entrypoint is different)
-CMD sh -c 'echo "PORT=$PORT"; uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}'
+# Use ENTRYPOINT [] to ensure CMD runs in a shell for env expansion
+ENTRYPOINT []
+CMD sh -c "uvicorn main:app --host 0.0.0.0 --port=${PORT:-8000}"
