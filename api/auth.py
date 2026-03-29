@@ -8,8 +8,11 @@ from core.config import settings
 from core.security import hash_password, verify_password, create_access_token
 from models.user import User
 from schemas.user import UserCreate, UserResponse, LoginRequest
+from schemas.user import FaceVerifyRequest, FaceVerifyResponse
 from schemas.token import Token
 from typing import Any
+from fastapi import UploadFile, File, Form
+from services.face_verify import save_face_image, get_face_encoding, compare_faces
 import hashlib
 import logging
 from services.login_security import (
@@ -327,6 +330,11 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         },
     )
 
+    # If user has face_image_path, require 2FA face verify (do not return token)
+    if user.face_image_path:
+        return {"user": user}
+
+    # If no face enrolled, allow legacy login
     token_version = getattr(user, "token_version", 0) or 0
     return {
         "access_token": create_access_token({"sub": str(user.id), "tv": token_version}),
@@ -334,3 +342,43 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         "role": user.role,
         "user": user
     }
+
+
+# Face verification 2FA endpoint
+@router.post("/face-verify", response_model=FaceVerifyResponse)
+async def face_verify(
+    user_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return FaceVerifyResponse(success=False, similarity=0.0, message="User not found", user_id=user_id)
+
+    # Enroll if no face image exists
+    if not user.face_image_path:
+        path = save_face_image(user_id, file)
+        user.face_image_path = path
+        db.commit()
+        return FaceVerifyResponse(success=True, similarity=1.0, message="Face enrolled. Try login again.", user_id=user_id)
+
+    # Compare uploaded face with stored face
+    try:
+        known_encoding = get_face_encoding(user.face_image_path)
+        file.file.seek(0)
+        temp_path = save_face_image(f"{user_id}_temp", file)
+        unknown_encoding = get_face_encoding(temp_path)
+    except Exception as e:
+        return FaceVerifyResponse(success=False, similarity=0.0, message=f"Face encoding error: {e}", user_id=user_id)
+
+    if known_encoding is None or unknown_encoding is None:
+        return FaceVerifyResponse(success=False, similarity=0.0, message="No face detected.", user_id=user_id)
+
+    similarity = compare_faces(known_encoding, unknown_encoding)
+    if similarity > 0.55:
+        # Success: issue token
+        token_version = getattr(user, "token_version", 0) or 0
+        token = create_access_token({"sub": str(user.id), "tv": token_version})
+        return FaceVerifyResponse(success=True, similarity=similarity, message="Face verified.", user_id=user_id, token=token)
+    else:
+        return FaceVerifyResponse(success=False, similarity=similarity, message="Face does not match.", user_id=user_id)

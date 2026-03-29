@@ -37,6 +37,9 @@ class UserResponse(BaseModel):
     freefire_id: Optional[str] = None
     is_active: bool = True
 
+    # Path to stored face image (if enrolled)
+    face_image_path: Optional[str] = None
+
     class Config:
         from_attributes = True
 
@@ -65,3 +68,21 @@ class SecureContactUpdate(BaseModel):
 
 class PasswordChangeRequest(BaseModel):
     new_password: str = Field(..., min_length=6, max_length=128)
+
+
+# Face 2FA schemas
+from fastapi import UploadFile
+from typing import Any
+
+class FaceEnrollRequest(BaseModel):
+    user_id: int
+
+class FaceVerifyRequest(BaseModel):
+    user_id: int
+
+class FaceVerifyResponse(BaseModel):
+    success: bool
+    similarity: float
+    message: str
+    user_id: int
+    token: Optional[str] = None
