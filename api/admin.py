@@ -853,16 +853,53 @@ def get_finance_stats(
 @router.post("/transactions/{transaction_id}/manual-credit")
 def manual_credit_transaction(
     transaction_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            "Manual credit is disabled for payment transactions. "
-            "Use verified gateway callbacks or /users/{user_id}/adjust-funds with audit reason."
-        ),
+    tx = db.query(WalletTransaction).filter(
+        WalletTransaction.id == transaction_id
+    ).with_for_update().first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if tx.transaction_type != "ADD_MONEY":
+        raise HTTPException(status_code=400, detail="Manual approve is allowed only for ADD_MONEY transactions")
+    if tx.status != "PENDING":
+        raise HTTPException(status_code=400, detail=f"Transaction is already {tx.status}")
+
+    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    credit_amount = Decimal(tx.amount or Decimal("0.00"))
+    if credit_amount <= Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Invalid add-money amount")
+
+    user.wallet_balance = (user.wallet_balance or Decimal("0.00")) + credit_amount
+    tx.status = "SUCCESS"
+    tx.payment_mode = tx.payment_mode or "MANUAL_APPROVE"
+    tx.failure_reason = None
+
+    db.add(tx)
+    db.add(user)
+    db.commit()
+
+    try:
+        add_user_notification(
+            db, tx.user_id,
+            "Payment Confirmed ✅",
+            f"₹{float(credit_amount):.0f} has been added to your ZexPlay wallet.",
+            "WALLET"
+        )
+    except Exception:
+        pass
+
+    logger.warning(
+        f"Manual credit approved by admin={current_user.username} for tx={transaction_id} "
+        f"user={tx.user_id} amount={float(credit_amount):.2f}"
     )
+    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+    return {"message": f"Transaction #{transaction_id} approved and credited."}
 
 
 @router.post("/transactions/{transaction_id}/mark-failed")
