@@ -733,21 +733,29 @@ def list_all_transactions(
 
     # FIXED: Bulk-load all needed users in one query (eliminates N+1)
     user_ids = list({tx.user_id for tx in txs})
-    users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
+    users = {}
+    if user_ids:
+        users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
 
     res = []
     for tx in txs:
         u        = users.get(tx.user_id)
         username = u.username if u else "Unknown"
         email    = u.email    if u else ""
+        phone    = u.phone_number if u else None
+        upi_id   = u.upi_id if u else None
 
         if search:
             search_lower = search.lower()
             if not any([
                 search_lower in username.lower(),
                 search_lower in email.lower(),
+                search_lower in (phone or "").lower(),
+                search_lower in (upi_id or "").lower(),
                 search_lower in (tx.reference_id or "").lower(),
                 search_lower in (tx.payu_txn_id or "").lower(),
+                search_lower in (getattr(tx, 'gateway_order_id', None) or "").lower(),
+                search_lower in (getattr(tx, 'gateway_payment_id', None) or "").lower(),
                 search_lower in str(tx.user_id),
             ]):
                 continue
@@ -757,6 +765,18 @@ def list_all_transactions(
             "user_id":        tx.user_id,
             "username":       username,
             "email":          email,
+            "phone_number":   phone,
+            "user_upi_id":    upi_id,
+            "user_role":      u.role if u else None,
+            "user_profile_pic": u.profile_pic if u else None,
+            "user_is_active": u.is_active if u else None,
+            "user_wallet_balance": float(u.wallet_balance) if (u and u.wallet_balance is not None) else None,
+            "user_referral_code": u.referral_code if u else None,
+            "bgmi_id":        u.bgmi_id if u else None,
+            "freefire_id":    u.freefire_id if u else None,
+            "valorant_id":    u.valorant_id if u else None,
+            "user_created_at": u.created_at if u else None,
+            "user_updated_at": u.updated_at if u else None,
             "amount":         float(tx.amount),
             "type":           tx.transaction_type,
             "status":         tx.status,
@@ -764,7 +784,12 @@ def list_all_transactions(
             "payu_txn_id":    getattr(tx, 'payu_txn_id', None),
             "payment_mode":   getattr(tx, 'payment_mode', None),
             "failure_reason": getattr(tx, 'failure_reason', None),
+            "gateway_order_id": getattr(tx, 'gateway_order_id', None),
+            "gateway_payment_id": getattr(tx, 'gateway_payment_id', None),
+            "gateway_signature": getattr(tx, 'gateway_signature', None),
+            "withdrawal_upi_id": getattr(tx, 'payu_txn_id', None) if tx.transaction_type == "WITHDRAWAL" else None,
             "created_at":     tx.created_at,
+            "updated_at":     tx.updated_at,
         })
         if len(res) >= limit:
             break
