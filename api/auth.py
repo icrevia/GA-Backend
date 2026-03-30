@@ -68,6 +68,30 @@ def _safe_text(value: str, max_len: int) -> str:
     return (value or "").replace("\n", " ").strip()[:max_len]
 
 
+def _is_admin_panel_request(request: Request) -> bool:
+    explicit_source = (request.headers.get("x-login-source") or "").strip().lower()
+    if explicit_source == "admin-web":
+        return True
+
+    origin = (request.headers.get("origin") or "").strip().lower().rstrip("/")
+    referer = (request.headers.get("referer") or "").strip().lower().rstrip("/")
+    if not origin and not referer:
+        return False
+
+    for raw_origin in settings.ALLOWED_ORIGINS.split(","):
+        allowed = raw_origin.strip().lower().rstrip("/")
+        if not allowed:
+            continue
+        if allowed in origin or allowed in referer:
+            return True
+
+    # Local admin panel fallback.
+    if "localhost:3000" in origin or "localhost:3000" in referer:
+        return True
+
+    return False
+
+
 def _build_browser_geo_context(login_data: LoginRequest) -> dict[str, object]:
     context: dict[str, object] = {}
 
@@ -259,6 +283,7 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
 @limiter.limit("10/minute")  # Rate limit: 10 login attempts per minute per IP
 def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
     client_ip = extract_client_ip(request)
+    is_admin_panel_login = _is_admin_panel_request(request)
     request_context = _build_request_context(request, client_ip, login_data)
     raw_identifier = login_data.email.strip()
 
@@ -270,14 +295,15 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     blocked, retry_after_seconds = is_ip_blocked(client_ip)
     if blocked:
         logger.warning("Blocked login attempt from ip=%s", client_ip)
-        send_security_alert_async(
-            event="LOGIN_BLOCKED_IP_HIT",
-            details={
-                **request_context,
-                "retry_after_seconds": retry_after_seconds,
-                "identifier": _mask_identifier(raw_identifier),
-            },
-        )
+        if is_admin_panel_login:
+            send_security_alert_async(
+                event="LOGIN_BLOCKED_IP_HIT",
+                details={
+                    **request_context,
+                    "retry_after_seconds": retry_after_seconds,
+                    "identifier": _mask_identifier(raw_identifier),
+                },
+            )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Too many failed login attempts from this IP. Try again in {retry_after_seconds} seconds.",
@@ -294,18 +320,19 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     if not user:
         attempts, blocked_now, blocked_for_seconds = record_failed_login(client_ip)
         logger.warning("Login attempt for unknown identifier from ip=%s", client_ip)
-        send_security_alert_async(
-            event="LOGIN_FAILED_UNKNOWN_IDENTIFIER",
-            details={
-                **request_context,
-                "attempts_in_window": attempts,
-                "identifier": _mask_identifier(raw_identifier),
-                "blocked_now": blocked_now,
-                "block_seconds": blocked_for_seconds,
-            },
-        )
+        if is_admin_panel_login:
+            send_security_alert_async(
+                event="LOGIN_FAILED_UNKNOWN_IDENTIFIER",
+                details={
+                    **request_context,
+                    "attempts_in_window": attempts,
+                    "identifier": _mask_identifier(raw_identifier),
+                    "blocked_now": blocked_now,
+                    "block_seconds": blocked_for_seconds,
+                },
+            )
 
-        if blocked_now:
+        if blocked_now and is_admin_panel_login:
             send_security_alert_async(
                 event="LOGIN_IP_BLOCKED",
                 details={
@@ -323,21 +350,23 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
 
     if not verify_password(login_data.password, user.hashed_password):
         attempts, blocked_now, blocked_for_seconds = record_failed_login(client_ip)
+        should_alert = is_admin_panel_login and user.role == "ADMIN"
         logger.warning("Failed login attempt for user_id=%s from ip=%s", user.id, client_ip)
-        send_security_alert_async(
-            event="LOGIN_FAILED_BAD_PASSWORD",
-            details={
-                **request_context,
-                "attempts_in_window": attempts,
-                "blocked_now": blocked_now,
-                "block_seconds": blocked_for_seconds,
-                "user_id": user.id,
-                "username": user.username,
-                "identifier": _mask_identifier(raw_identifier),
-            },
-        )
+        if should_alert:
+            send_security_alert_async(
+                event="LOGIN_FAILED_BAD_PASSWORD",
+                details={
+                    **request_context,
+                    "attempts_in_window": attempts,
+                    "blocked_now": blocked_now,
+                    "block_seconds": blocked_for_seconds,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "identifier": _mask_identifier(raw_identifier),
+                },
+            )
 
-        if blocked_now:
+        if blocked_now and should_alert:
             send_security_alert_async(
                 event="LOGIN_IP_BLOCKED",
                 details={
@@ -356,17 +385,18 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
 
     if user.role == "ADMIN" and settings.ADMIN_BLOCK_LOGIN_ON_GEO_DENIED and _is_geo_permission_denied(login_data):
         logger.warning("Admin login blocked due to denied geolocation permission: user_id=%s ip=%s", user.id, client_ip)
-        send_security_alert_async(
-            event="ADMIN_LOGIN_BLOCKED_GEO_PERMISSION_DENIED",
-            details={
-                **request_context,
-                "user_id": user.id,
-                "username": user.username,
-                "email": _mask_identifier(user.email),
-                "role": user.role,
-                "reason": "browser_geolocation_permission_denied",
-            },
-        )
+        if is_admin_panel_login:
+            send_security_alert_async(
+                event="ADMIN_LOGIN_BLOCKED_GEO_PERMISSION_DENIED",
+                details={
+                    **request_context,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "email": _mask_identifier(user.email),
+                    "role": user.role,
+                    "reason": "browser_geolocation_permission_denied",
+                },
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin login blocked: location permission is required.",
@@ -374,16 +404,17 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
 
     clear_failed_logins(client_ip)
     logger.info(f"Successful login: user_id={user.id}")
-    send_security_alert_async(
-        event="LOGIN_SUCCESS",
-        details={
-            **request_context,
-            "user_id": user.id,
-            "username": user.username,
-            "email": _mask_identifier(user.email),
-            "role": user.role,
-        },
-    )
+    if is_admin_panel_login and user.role == "ADMIN":
+        send_security_alert_async(
+            event="LOGIN_SUCCESS",
+            details={
+                **request_context,
+                "user_id": user.id,
+                "username": user.username,
+                "email": _mask_identifier(user.email),
+                "role": user.role,
+            },
+        )
 
     token_version = getattr(user, "token_version", 0) or 0
     return {

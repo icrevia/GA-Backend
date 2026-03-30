@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     IP_GEO_LOOKUP_TIMEOUT_SECONDS: float = 2.0
     ADMIN_BLOCK_LOGIN_ON_GEO_DENIED: bool = True
 
+    # ── Developer page OTP gate ─────────────────────────────────────────────
+    DEVELOPER_OTP_ENABLED: bool = True
+    DEVELOPER_OTP_LENGTH: int = 6
+    DEVELOPER_OTP_TTL_SECONDS: int = 300
+    DEVELOPER_OTP_MAX_VERIFY_ATTEMPTS: int = 5
+    DEVELOPER_OTP_RESEND_COOLDOWN_SECONDS: int = 30
+    DEVELOPER_OTP_SESSION_TTL_SECONDS: int = 1800
+    DEVELOPER_OTP_TELEGRAM_CHAT_ID: str = ""
+
     # ── App URL ───────────────────────────────────────────────────────────────
     # In production, set this explicitly from Railway Variables.
     APP_URL: str = ""
@@ -191,6 +200,41 @@ class Settings(BaseSettings):
                 file=sys.stderr,
             )
             object.__setattr__(self, "IP_GEO_LOOKUP_TIMEOUT_SECONDS", 2.0)
+
+        if self.DEVELOPER_OTP_LENGTH < 4 or self.DEVELOPER_OTP_LENGTH > 8:
+            print(
+                "[CONFIG WARNING] DEVELOPER_OTP_LENGTH must be between 4 and 8. Falling back to 6.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DEVELOPER_OTP_LENGTH", 6)
+
+        if self.DEVELOPER_OTP_TTL_SECONDS <= 0:
+            print(
+                "[CONFIG WARNING] DEVELOPER_OTP_TTL_SECONDS must be positive. Falling back to 300.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DEVELOPER_OTP_TTL_SECONDS", 300)
+
+        if self.DEVELOPER_OTP_MAX_VERIFY_ATTEMPTS <= 0:
+            print(
+                "[CONFIG WARNING] DEVELOPER_OTP_MAX_VERIFY_ATTEMPTS must be positive. Falling back to 5.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DEVELOPER_OTP_MAX_VERIFY_ATTEMPTS", 5)
+
+        if self.DEVELOPER_OTP_RESEND_COOLDOWN_SECONDS < 0:
+            print(
+                "[CONFIG WARNING] DEVELOPER_OTP_RESEND_COOLDOWN_SECONDS cannot be negative. Falling back to 30.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DEVELOPER_OTP_RESEND_COOLDOWN_SECONDS", 30)
+
+        if self.DEVELOPER_OTP_SESSION_TTL_SECONDS <= 0:
+            print(
+                "[CONFIG WARNING] DEVELOPER_OTP_SESSION_TTL_SECONDS must be positive. Falling back to 1800.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DEVELOPER_OTP_SESSION_TTL_SECONDS", 1800)
 
         return self
 

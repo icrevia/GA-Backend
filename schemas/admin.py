@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Union, Any
 
 class SystemConfigResponse(BaseModel):
@@ -37,3 +37,27 @@ class TournamentCreateAdmin(BaseModel):
     match_time: str
     game_image_url: Optional[str] = None
     max_slots: Optional[int] = 100
+
+
+class DeveloperOtpRequestResponse(BaseModel):
+    otp_required: bool = True
+    message: str
+    expires_in_seconds: int = 0
+    resend_cooldown_seconds: int = 0
+
+
+class DeveloperOtpVerifyRequest(BaseModel):
+    otp: str = Field(..., min_length=4, max_length=8, pattern=r"^\d+$")
+
+
+class DeveloperOtpVerifyResponse(BaseModel):
+    verified: bool
+    developer_otp_token: Optional[str] = None
+    expires_in_seconds: int = 0
+    message: str
+
+
+class DeveloperOtpStatusResponse(BaseModel):
+    otp_required: bool
+    verified: bool
+    expires_in_seconds: int = 0

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from typing import List
@@ -7,9 +7,16 @@ import uuid
 import os
 import uuid
 import logging
+import hashlib
+import json
+import secrets
+from threading import Lock
 from datetime import datetime, timedelta
+from urllib.error import HTTPError
+from urllib import request as urllib_request
 
 from api.deps import get_db, get_current_active_admin
+from core.config import settings
 from models.user import User
 from models.tournament import Tournament
 from models.wallet import WalletTransaction
@@ -26,7 +33,11 @@ from schemas.admin import (
     UserStatusUpdate,
     TournamentRoomUpdate,
     TournamentConclude,
-    TournamentCreateAdmin
+    TournamentCreateAdmin,
+    DeveloperOtpRequestResponse,
+    DeveloperOtpVerifyRequest,
+    DeveloperOtpVerifyResponse,
+    DeveloperOtpStatusResponse,
 )
 from schemas.tournament import TournamentCreate, TournamentResponse
 
@@ -39,6 +50,254 @@ router = APIRouter()
 
 MAX_APK_SIZE_MB = 150
 MAX_APK_SIZE_BYTES = MAX_APK_SIZE_MB * 1024 * 1024
+
+_DEVELOPER_OTP_LOCK = Lock()
+_DEVELOPER_OTP_STATE: dict[int, dict[str, object]] = {}
+_DEVELOPER_OTP_SESSIONS: dict[str, tuple[int, datetime]] = {}
+
+
+def _developer_otp_chat_id() -> str:
+    configured = (settings.DEVELOPER_OTP_TELEGRAM_CHAT_ID or "").strip()
+    if configured:
+        return configured
+    return (settings.TELEGRAM_ALERT_CHAT_ID or "").strip()
+
+
+def _otp_digest(admin_id: int, otp: str) -> str:
+    payload = f"{settings.SECRET_KEY}|developer-otp|{admin_id}|{otp}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _generate_numeric_otp(length: int) -> str:
+    min_value = 10 ** (length - 1)
+    max_value = (10 ** length) - 1
+    return str(secrets.randbelow(max_value - min_value + 1) + min_value)
+
+
+def _cleanup_developer_otp_state(now: datetime) -> None:
+    for admin_id, state in list(_DEVELOPER_OTP_STATE.items()):
+        expires_at = state.get("expires_at")
+        if isinstance(expires_at, datetime) and expires_at <= now:
+            _DEVELOPER_OTP_STATE.pop(admin_id, None)
+
+    for token, (admin_id, expires_at) in list(_DEVELOPER_OTP_SESSIONS.items()):
+        if expires_at <= now:
+            _DEVELOPER_OTP_SESSIONS.pop(token, None)
+
+
+def _validate_developer_otp_session(admin_id: int, otp_session_token: str) -> tuple[bool, int]:
+    if not otp_session_token:
+        return False, 0
+
+    now = datetime.utcnow()
+    with _DEVELOPER_OTP_LOCK:
+        _cleanup_developer_otp_state(now)
+        record = _DEVELOPER_OTP_SESSIONS.get(otp_session_token)
+        if not record:
+            return False, 0
+
+        token_admin_id, expires_at = record
+        if token_admin_id != admin_id:
+            return False, 0
+
+        if expires_at <= now:
+            _DEVELOPER_OTP_SESSIONS.pop(otp_session_token, None)
+            return False, 0
+
+        remaining = int((expires_at - now).total_seconds())
+        return True, max(1, remaining)
+
+
+def _send_developer_otp_message(admin: User, request: Request, otp: str) -> None:
+    bot_token = (settings.TELEGRAM_BOT_TOKEN or "").strip()
+    chat_id = _developer_otp_chat_id()
+    if not bot_token or not chat_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Developer OTP delivery is not configured. Set TELEGRAM_BOT_TOKEN and DEVELOPER_OTP_TELEGRAM_CHAT_ID (or TELEGRAM_ALERT_CHAT_ID).",
+        )
+
+    client_ip = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip") or (request.client.host if request.client else "unknown")
+    client_ip = client_ip.split(",")[0].strip() if client_ip else "unknown"
+
+    now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
+    message = "\n".join([
+        "=== ZexPlay Developer OTP ===",
+        f"Admin ID: {admin.id}",
+        f"Username: {admin.username}",
+        f"OTP: {otp}",
+        f"Valid For (seconds): {settings.DEVELOPER_OTP_TTL_SECONDS}",
+        f"Requested At (UTC): {now_utc}",
+        f"Request IP: {client_ip}",
+        "Never share this code with anyone.",
+    ])[:4096]
+
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "disable_web_page_preview": True,
+    }
+
+    req = urllib_request.Request(
+        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib_request.urlopen(req, timeout=settings.SECURITY_ALERT_TIMEOUT_SECONDS) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+            parsed = json.loads(body) if body else {}
+            if resp.status >= 400 or (isinstance(parsed, dict) and parsed.get("ok") is False):
+                logger.warning("Developer OTP telegram send failed: status=%s body=%s", resp.status, body)
+                raise HTTPException(status_code=503, detail="Failed to deliver OTP. Please retry.")
+    except HTTPError as exc:
+        logger.warning("Developer OTP telegram HTTPError: status=%s", exc.code)
+        raise HTTPException(status_code=503, detail="Failed to deliver OTP. Please retry.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Developer OTP telegram error: %s", exc)
+        raise HTTPException(status_code=503, detail="Failed to deliver OTP. Please retry.")
+
+
+def require_developer_otp(
+    request: Request,
+    current_user: User = Depends(get_current_active_admin),
+) -> User:
+    if not settings.DEVELOPER_OTP_ENABLED:
+        return current_user
+
+    otp_session_token = (request.headers.get("x-developer-otp-token") or "").strip()
+    verified, _ = _validate_developer_otp_session(current_user.id, otp_session_token)
+    if not verified:
+        raise HTTPException(status_code=401, detail="Developer OTP verification required")
+
+    return current_user
+
+
+@router.post("/developer/otp/request", response_model=DeveloperOtpRequestResponse)
+def request_developer_otp(
+    request: Request,
+    current_user: User = Depends(get_current_active_admin),
+):
+    if not settings.DEVELOPER_OTP_ENABLED:
+        return DeveloperOtpRequestResponse(
+            otp_required=False,
+            message="Developer OTP is disabled",
+        )
+
+    now = datetime.utcnow()
+    with _DEVELOPER_OTP_LOCK:
+        _cleanup_developer_otp_state(now)
+        existing_state = _DEVELOPER_OTP_STATE.get(current_user.id)
+        if existing_state:
+            resend_after = existing_state.get("resend_after")
+            if isinstance(resend_after, datetime) and resend_after > now:
+                retry_after = int((resend_after - now).total_seconds())
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Please wait {max(1, retry_after)} seconds before requesting a new OTP",
+                )
+
+        otp = _generate_numeric_otp(settings.DEVELOPER_OTP_LENGTH)
+        expires_at = now + timedelta(seconds=settings.DEVELOPER_OTP_TTL_SECONDS)
+        resend_after = now + timedelta(seconds=settings.DEVELOPER_OTP_RESEND_COOLDOWN_SECONDS)
+        _DEVELOPER_OTP_STATE[current_user.id] = {
+            "otp_digest": _otp_digest(current_user.id, otp),
+            "expires_at": expires_at,
+            "attempts_left": settings.DEVELOPER_OTP_MAX_VERIFY_ATTEMPTS,
+            "resend_after": resend_after,
+        }
+
+    try:
+        _send_developer_otp_message(current_user, request, otp)
+    except HTTPException:
+        with _DEVELOPER_OTP_LOCK:
+            _DEVELOPER_OTP_STATE.pop(current_user.id, None)
+        raise
+
+    logger.info("Developer OTP requested by admin_id=%s", current_user.id)
+    return DeveloperOtpRequestResponse(
+        otp_required=True,
+        message="Developer OTP sent to Telegram",
+        expires_in_seconds=settings.DEVELOPER_OTP_TTL_SECONDS,
+        resend_cooldown_seconds=settings.DEVELOPER_OTP_RESEND_COOLDOWN_SECONDS,
+    )
+
+
+@router.post("/developer/otp/verify", response_model=DeveloperOtpVerifyResponse)
+def verify_developer_otp(
+    data: DeveloperOtpVerifyRequest,
+    current_user: User = Depends(get_current_active_admin),
+):
+    if not settings.DEVELOPER_OTP_ENABLED:
+        return DeveloperOtpVerifyResponse(
+            verified=True,
+            message="Developer OTP is disabled",
+        )
+
+    now = datetime.utcnow()
+    with _DEVELOPER_OTP_LOCK:
+        _cleanup_developer_otp_state(now)
+        state = _DEVELOPER_OTP_STATE.get(current_user.id)
+        if not state:
+            raise HTTPException(status_code=400, detail="OTP not requested or expired")
+
+        expires_at = state.get("expires_at")
+        if not isinstance(expires_at, datetime) or expires_at <= now:
+            _DEVELOPER_OTP_STATE.pop(current_user.id, None)
+            raise HTTPException(status_code=400, detail="OTP expired. Request a new OTP")
+
+        expected_digest = state.get("otp_digest")
+        if expected_digest != _otp_digest(current_user.id, data.otp):
+            attempts_left = int(state.get("attempts_left", 0)) - 1
+            if attempts_left <= 0:
+                _DEVELOPER_OTP_STATE.pop(current_user.id, None)
+                raise HTTPException(status_code=401, detail="Invalid OTP. No attempts left")
+
+            state["attempts_left"] = attempts_left
+            _DEVELOPER_OTP_STATE[current_user.id] = state
+            raise HTTPException(status_code=401, detail=f"Invalid OTP. Attempts left: {attempts_left}")
+
+        _DEVELOPER_OTP_STATE.pop(current_user.id, None)
+        for token, (admin_id, _) in list(_DEVELOPER_OTP_SESSIONS.items()):
+            if admin_id == current_user.id:
+                _DEVELOPER_OTP_SESSIONS.pop(token, None)
+
+        session_token = secrets.token_urlsafe(32)
+        session_expires_at = now + timedelta(seconds=settings.DEVELOPER_OTP_SESSION_TTL_SECONDS)
+        _DEVELOPER_OTP_SESSIONS[session_token] = (current_user.id, session_expires_at)
+
+    logger.info("Developer OTP verified for admin_id=%s", current_user.id)
+    return DeveloperOtpVerifyResponse(
+        verified=True,
+        developer_otp_token=session_token,
+        expires_in_seconds=settings.DEVELOPER_OTP_SESSION_TTL_SECONDS,
+        message="Developer access verified",
+    )
+
+
+@router.get("/developer/otp/status", response_model=DeveloperOtpStatusResponse)
+def developer_otp_status(
+    request: Request,
+    current_user: User = Depends(get_current_active_admin),
+):
+    if not settings.DEVELOPER_OTP_ENABLED:
+        return DeveloperOtpStatusResponse(
+            otp_required=False,
+            verified=True,
+            expires_in_seconds=0,
+        )
+
+    otp_session_token = (request.headers.get("x-developer-otp-token") or "").strip()
+    verified, ttl = _validate_developer_otp_session(current_user.id, otp_session_token)
+    return DeveloperOtpStatusResponse(
+        otp_required=True,
+        verified=verified,
+        expires_in_seconds=ttl,
+    )
 
 @router.post("/config/upload-apk")
 def upload_apk(
@@ -81,6 +340,14 @@ def upload_apk(
         raise HTTPException(status_code=500, detail="Failed to save file.")
 
     return {"url": f"/static/{safe_filename}", "filename": safe_filename}
+
+
+@router.post("/developer/config/upload-apk")
+def upload_apk_developer(
+    file: UploadFile = File(...),
+    admin: User = Depends(require_developer_otp),
+):
+    return upload_apk(file=file, admin=admin)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -742,6 +1009,14 @@ def get_system_configs(
     return db.query(SystemConfig).all()
 
 
+@router.get("/developer/config")
+def get_developer_system_configs(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_developer_otp),
+):
+    return get_system_configs(db=db, current_user=current_user)
+
+
 @router.put("/config")
 def update_system_config(
     data: SystemConfigUpdate,
@@ -757,6 +1032,15 @@ def update_system_config(
     db.commit()
     logger.info(f"Config updated: key={data.key} by admin={current_user.username}")
     return {"message": f"Config '{data.key}' updated"}
+
+
+@router.put("/developer/config")
+def update_developer_system_config(
+    data: SystemConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_developer_otp),
+):
+    return update_system_config(data=data, db=db, current_user=current_user)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -785,6 +1069,15 @@ def send_push_notification(
         f"Broadcast sent to {len(users)} users by admin={current_user.username}: '{data.title}'"
     )
     return {"message": f"Broadcast '{data.title}' sent to {len(users)} users"}
+
+
+@router.post("/developer/notifications/send")
+def send_developer_push_notification(
+    data: NotificationSendRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_developer_otp),
+):
+    return send_push_notification(data=data, db=db, current_user=current_user)
 
 
 # ─────────────────────────────────────────────────────────────────
