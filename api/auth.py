@@ -206,8 +206,7 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
              logger.warning(f"Invalid referral code used: {user_in.referral_code}")
              # We don't block signup, just log it. Or could raise 400.
 
-    referred_user_bonus = Decimal("20.00")
-    referrer_bonus = Decimal("50.00")
+    referrer_signup_bonus = Decimal("2.00")
 
     db_user = User(
         username=user_in.username,
@@ -217,35 +216,25 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
         role="USER",
         referral_code=ref_code,
         referred_by_id=referrer.id if referrer else None,
-        # Starting bonus for being referred (INR 20)
-        wallet_balance=referred_user_bonus if referrer else Decimal("0.00")
+        wallet_balance=Decimal("0.00")
     )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
 
-    # 3. Handle Referrer Payout ($50)
+    # 3. Handle Referrer instant signup payout (INR 2)
     if referrer:
         current_balance = Decimal(str(referrer.wallet_balance or 0))
-        referrer.wallet_balance = current_balance + referrer_bonus
+        referrer.wallet_balance = current_balance + referrer_signup_bonus
         
         from models.wallet import WalletTransaction
         # Record Referrer Transaction
         db.add(WalletTransaction(
             user_id=referrer.id,
-            amount=referrer_bonus,
+            amount=referrer_signup_bonus,
             transaction_type="REFERRAL_REWARD",
             status="SUCCESS",
-            reference_id=f"REF_EARN_{db_user.id}"
-        ))
-        
-        # Record New User Transaction
-        db.add(WalletTransaction(
-            user_id=db_user.id,
-            amount=referred_user_bonus,
-            transaction_type="WELCOME_BONUS",
-            status="SUCCESS",
-            reference_id=f"WELCOME_{db_user.id}"
+            reference_id=f"REF_SIGNUP_{db_user.id}"
         ))
         
         from services.notifications import add_user_notification
@@ -253,7 +242,10 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
             db,
             referrer.id,
             "Referral Reward! 💎",
-            f"Your friend {db_user.username} just joined. ₹50 added to your wallet!",
+            (
+                f"Your friend {db_user.username} joined using your code. "
+                f"₹2 instant bonus added. Mission progress grows after their ₹50+ recharge."
+            ),
             "WALLET"
         )
         db.commit()

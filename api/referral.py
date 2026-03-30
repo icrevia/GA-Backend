@@ -16,34 +16,24 @@ router = APIRouter()
 
 REFERRAL_MISSIONS: List[dict] = [
     {
-        "key": "FIRST_WIN",
-        "title": "First Win",
-        "description": "Invite 1 friend and unlock a quick bonus.",
+        "key": "RECHARGE_RUNNER",
+        "title": "Recharge Runner",
+        "description": "1 referred friend must complete a recharge of INR 50 or more.",
         "target_referrals": 1,
         "reward_amount": 25.0,
     },
     {
-        "key": "SQUAD_BUILDER",
-        "title": "Squad Builder",
-        "description": "Reach 3 successful referrals.",
+        "key": "SQUAD_STREAK",
+        "title": "Squad Streak",
+        "description": "3 referred friends each complete a recharge of INR 50 or more.",
         "target_referrals": 3,
-        "reward_amount": 100.0,
-    },
-    {
-        "key": "COMMUNITY_CAPTAIN",
-        "title": "Community Captain",
-        "description": "Invite 5 friends to complete this mission.",
-        "target_referrals": 5,
-        "reward_amount": 250.0,
-    },
-    {
-        "key": "REFERRAL_LEGEND",
-        "title": "Referral Legend",
-        "description": "Hit 10 referrals for the biggest reward.",
-        "target_referrals": 10,
-        "reward_amount": 600.0,
+        "reward_amount": 50.0,
     },
 ]
+
+
+REFERRAL_BASE_SIGNUP_REWARD = Decimal("2.00")
+REFERRAL_QUALIFYING_RECHARGE = Decimal("50.00")
 
 
 MISSION_BY_KEY = {mission["key"]: mission for mission in REFERRAL_MISSIONS}
@@ -74,12 +64,16 @@ class ReferredUser(BaseModel):
     user_id: int
     username: str
     joined_at: str | None
+    qualified_for_missions: bool
 
 
 class ReferralStats(BaseModel):
     referral_code: str
     total_referrals: int
+    qualified_referrals: int
     total_earned: float
+    base_referral_reward: float
+    qualifying_recharge_amount: float
     claimable_rewards_total: float
     missions: List[ReferralMission]
     next_milestone: NextMilestone | None
@@ -96,6 +90,22 @@ class MissionClaimResponse(BaseModel):
 
 def _count_referrals(db: Session, user_id: int) -> int:
     return db.query(User).filter(User.referred_by_id == user_id).count()
+
+
+def _get_qualified_referral_user_ids(db: Session, user_id: int) -> set[int]:
+    qualifying_rows = (
+        db.query(User.id)
+        .join(WalletTransaction, WalletTransaction.user_id == User.id)
+        .filter(
+            User.referred_by_id == user_id,
+            WalletTransaction.transaction_type == "ADD_MONEY",
+            WalletTransaction.status == "SUCCESS",
+            WalletTransaction.amount >= REFERRAL_QUALIFYING_RECHARGE,
+        )
+        .distinct()
+        .all()
+    )
+    return {int(uid) for (uid,) in qualifying_rows}
 
 
 def _extract_claimed_mission_keys(db: Session, user_id: int) -> set[str]:
@@ -149,6 +159,9 @@ def _ensure_referral_code(current_user: User, db: Session) -> str:
 def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
     referral_code = _ensure_referral_code(current_user, db)
     total_referrals = _count_referrals(db, current_user.id)
+    qualified_referral_ids = _get_qualified_referral_user_ids(db, current_user.id)
+    qualified_referrals = len(qualified_referral_ids)
+
     earned_rows = db.query(WalletTransaction.amount).filter(
         WalletTransaction.user_id == current_user.id,
         WalletTransaction.transaction_type.in_(["REFERRAL_REWARD", "REFERRAL_MISSION_REWARD"]),
@@ -165,6 +178,7 @@ def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
             user_id=row.id,
             username=row.username,
             joined_at=row.created_at.isoformat() if row.created_at else None,
+            qualified_for_missions=row.id in qualified_referral_ids,
         )
         for row in recent_referral_rows
     ]
@@ -179,8 +193,8 @@ def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
         key = mission["key"]
         target = int(mission["target_referrals"])
         reward = float(mission["reward_amount"])
-        progress = min(total_referrals, target)
-        completed = total_referrals >= target
+        progress = min(qualified_referrals, target)
+        completed = qualified_referrals >= target
         claimed = key in claimed_keys
         claimable = completed and not claimed
 
@@ -193,7 +207,7 @@ def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
                 title=mission["title"],
                 reward_amount=reward,
                 target_referrals=target,
-                remaining_referrals=target - total_referrals,
+                remaining_referrals=target - qualified_referrals,
             )
 
         mission_items.append(
@@ -213,7 +227,10 @@ def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
     return ReferralStats(
         referral_code=referral_code,
         total_referrals=total_referrals,
+        qualified_referrals=qualified_referrals,
         total_earned=total_earned,
+        base_referral_reward=float(REFERRAL_BASE_SIGNUP_REWARD),
+        qualifying_recharge_amount=float(REFERRAL_QUALIFYING_RECHARGE),
         claimable_rewards_total=float(claimable_total),
         missions=mission_items,
         next_milestone=next_milestone,
@@ -240,15 +257,18 @@ def claim_referral_mission(
     if not mission:
         raise HTTPException(status_code=404, detail="Mission not found")
 
-    total_referrals = _count_referrals(db, current_user.id)
+    qualified_referrals = len(_get_qualified_referral_user_ids(db, current_user.id))
     target_referrals = int(mission["target_referrals"])
     reward_amount = Decimal(str(mission["reward_amount"]))
 
-    if total_referrals < target_referrals:
-        remaining = target_referrals - total_referrals
+    if qualified_referrals < target_referrals:
+        remaining = target_referrals - qualified_referrals
         raise HTTPException(
             status_code=400,
-            detail=f"Mission not completed yet. Invite {remaining} more friend(s).",
+            detail=(
+                f"Mission not completed yet. Need {remaining} more qualified referral(s). "
+                f"Each referred user must complete recharge of INR {int(REFERRAL_QUALIFYING_RECHARGE)}+"
+            ),
         )
 
     reference_id = _mission_reference_id(current_user.id, normalized_key)
