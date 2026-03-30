@@ -2,6 +2,7 @@ from fastapi import WebSocket
 from typing import Dict, List, Optional
 import json
 import logging
+from collections import deque
 
 logger = logging.getLogger("zexplay.ws")
 
@@ -10,6 +11,9 @@ CALL_SIGNAL_TYPES = {
     "offer", "answer", "ice_candidate", "admin_call_request",
     "call_busy", "chat_message", "call_hold", "call_unhold"
 }
+
+SUPPORT_EVENT_TYPES = {"chat_message", "support_escalation", "support_attended", "support_unattended"}
+MAX_PENDING_ADMIN_SUPPORT_EVENTS = 200
 
 
 class ConnectionManager:
@@ -22,6 +26,8 @@ class ConnectionManager:
         self.active_call_map: Dict[int, int] = {}
         # user_id -> admin_user_id: reverse map
         self.user_to_admin_map: Dict[int, int] = {}
+        # Buffer support events when no admins are online so reconnecting admin panels can catch up.
+        self.pending_admin_support_events: deque[dict] = deque(maxlen=MAX_PENDING_ADMIN_SUPPORT_EVENTS)
 
     async def connect(self, user_id: int, websocket: WebSocket, is_admin: bool = False):
         if user_id not in self.active_connections:
@@ -29,6 +35,23 @@ class ConnectionManager:
         self.active_connections[user_id].append(websocket)
         if is_admin and websocket not in self.admin_connections:
             self.admin_connections.append(websocket)
+
+            if self.pending_admin_support_events:
+                replayed = 0
+                for queued_event in list(self.pending_admin_support_events):
+                    try:
+                        await websocket.send_text(json.dumps(queued_event))
+                        replayed += 1
+                    except Exception as e:
+                        logger.warning(f"WS admin replay failed for user_id={user_id}: {e}")
+                        break
+
+                if replayed > 0:
+                    logger.info(
+                        f"WS replayed {replayed} pending support events to admin user_id={user_id}"
+                    )
+                self.pending_admin_support_events.clear()
+
         logger.info(
             f"WS connect: user_id={user_id} is_admin={is_admin} "
             f"total_users={len(self.active_connections)} "
@@ -119,7 +142,16 @@ class ConnectionManager:
     async def broadcast_to_admins(self, message: dict):
         """Broadcast a message to all connected admin sockets."""
         if not self.admin_connections:
-            logger.debug(f"WS broadcast_to_admins: no admins connected — message dropped: {message.get('type')}")
+            msg_type = message.get("type")
+            if msg_type in SUPPORT_EVENT_TYPES:
+                self.pending_admin_support_events.append(dict(message))
+                logger.info(
+                    "WS broadcast_to_admins: no admins connected — queued support event type=%s pending=%s",
+                    msg_type,
+                    len(self.pending_admin_support_events),
+                )
+            else:
+                logger.debug(f"WS broadcast_to_admins: no admins connected — message dropped: {msg_type}")
             return
 
         dead = []

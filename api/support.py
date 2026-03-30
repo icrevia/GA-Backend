@@ -571,8 +571,16 @@ async def send_message(
         "is_admin": True,
         "timestamp": now_ist().isoformat(),
     }
-    await manager.send_personal_message(bot_data, session.user_id)
+    user_delivery_ok = await manager.send_personal_message(bot_data, session.user_id)
     await manager.broadcast_to_admins(bot_data)
+    logger.info(
+        "Support bot reply generated: session_id=%s user_id=%s reason=%s escalated=%s delivered_to_user_ws=%s",
+        session.id,
+        session.user_id,
+        escalation_reason,
+        should_escalate,
+        user_delivery_ok,
+    )
 
     if should_escalate:
         escalation_event = {
