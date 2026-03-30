@@ -126,7 +126,13 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # CORS — explicit origins only, never wildcard
 # ─────────────────────────────────────────────
 def _normalize_origin(origin: str) -> str:
-    return origin.strip().rstrip("/")
+    normalized = origin.strip().rstrip("/")
+    # Guard against a frequent typo that breaks local admin panel CORS.
+    if "locahost" in normalized:
+        fixed = normalized.replace("locahost", "localhost")
+        logger.warning("CORS origin corrected from '%s' to '%s'", normalized, fixed)
+        normalized = fixed
+    return normalized
 
 
 ALLOWED_ORIGINS = []

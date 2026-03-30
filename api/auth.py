@@ -64,7 +64,44 @@ def _safe_header(request: Request, header_name: str, max_len: int = 180) -> str:
     return value[:max_len]
 
 
-def _build_request_context(request: Request, client_ip: str) -> dict[str, object]:
+def _safe_text(value: str, max_len: int) -> str:
+    return (value or "").replace("\n", " ").strip()[:max_len]
+
+
+def _build_browser_geo_context(login_data: LoginRequest) -> dict[str, object]:
+    context: dict[str, object] = {}
+
+    latitude = login_data.browser_geo_latitude
+    longitude = login_data.browser_geo_longitude
+    if latitude is not None and longitude is not None:
+        context["browser_geo_coordinates"] = f"{latitude:.6f}, {longitude:.6f}"
+        context["browser_geo_maps"] = f"https://maps.google.com/?q={latitude:.6f},{longitude:.6f}"
+
+    if login_data.browser_geo_accuracy_m is not None:
+        context["browser_geo_accuracy_m"] = round(float(login_data.browser_geo_accuracy_m), 1)
+
+    if login_data.browser_geo_captured_at:
+        context["browser_geo_captured_at"] = _safe_text(login_data.browser_geo_captured_at, 64)
+
+    if login_data.browser_geo_provider:
+        context["browser_geo_provider"] = _safe_text(login_data.browser_geo_provider, 40)
+
+    if login_data.browser_geo_permission:
+        context["browser_geo_permission"] = _safe_text(login_data.browser_geo_permission, 24)
+
+    return context
+
+
+def _is_geo_permission_denied(login_data: LoginRequest) -> bool:
+    permission = (login_data.browser_geo_permission or "").strip().lower()
+    return permission == "denied"
+
+
+def _build_request_context(
+    request: Request,
+    client_ip: str,
+    login_data: LoginRequest | None = None,
+) -> dict[str, object]:
     user_agent = _safe_user_agent(request)
     accept_language = _safe_header(request, "accept-language", 120)
     platform = _safe_header(request, "sec-ch-ua-platform", 80)
@@ -98,6 +135,9 @@ def _build_request_context(request: Request, client_ip: str) -> dict[str, object
     for key, value in optional_headers.items():
         if value != "-":
             context[key] = value
+
+    if login_data is not None:
+        context.update(_build_browser_geo_context(login_data))
 
     return context
 
@@ -219,7 +259,7 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
 @limiter.limit("10/minute")  # Rate limit: 10 login attempts per minute per IP
 def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
     client_ip = extract_client_ip(request)
-    request_context = _build_request_context(request, client_ip)
+    request_context = _build_request_context(request, client_ip, login_data)
     raw_identifier = login_data.email.strip()
 
     # Normalize identifier (could be email or phone)
@@ -312,6 +352,24 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.role == "ADMIN" and settings.ADMIN_BLOCK_LOGIN_ON_GEO_DENIED and _is_geo_permission_denied(login_data):
+        logger.warning("Admin login blocked due to denied geolocation permission: user_id=%s ip=%s", user.id, client_ip)
+        send_security_alert_async(
+            event="ADMIN_LOGIN_BLOCKED_GEO_PERMISSION_DENIED",
+            details={
+                **request_context,
+                "user_id": user.id,
+                "username": user.username,
+                "email": _mask_identifier(user.email),
+                "role": user.role,
+                "reason": "browser_geolocation_permission_denied",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin login blocked: location permission is required.",
         )
 
     clear_failed_logins(client_ip)

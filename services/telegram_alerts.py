@@ -21,6 +21,7 @@ _EVENT_META: dict[str, tuple[str, str]] = {
     "LOGIN_FAILED_UNKNOWN_IDENTIFIER": ("HIGH", "Failed Login (Unknown Identifier)"),
     "LOGIN_BLOCKED_IP_HIT": ("CRITICAL", "Blocked IP Login Attempt"),
     "LOGIN_IP_BLOCKED": ("CRITICAL", "IP Block Triggered"),
+    "ADMIN_LOGIN_BLOCKED_GEO_PERMISSION_DENIED": ("CRITICAL", "Admin Login Blocked (Geo Permission Denied)"),
 }
 
 
@@ -212,6 +213,19 @@ def _build_message(event: str, details: dict[str, object]) -> str:
             ("Block Seconds", normalized.get("block_seconds")),
             ("Retry After Seconds", normalized.get("retry_after_seconds")),
             ("Reason", normalized.get("reason")),
+        ],
+    )
+
+    _append_section(
+        lines,
+        "Browser Live Location",
+        [
+            ("GPS Coordinates", normalized.get("browser_geo_coordinates")),
+            ("GPS Accuracy (m)", normalized.get("browser_geo_accuracy_m")),
+            ("GPS Map", normalized.get("browser_geo_maps")),
+            ("Geo Permission", normalized.get("browser_geo_permission")),
+            ("Geo Provider", normalized.get("browser_geo_provider")),
+            ("Captured At", normalized.get("browser_geo_captured_at")),
         ],
     )
 

@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     SECURITY_ALERT_TIMEOUT_SECONDS: float = 3.0
     ENABLE_IP_GEO_LOOKUP: bool = True
     IP_GEO_LOOKUP_TIMEOUT_SECONDS: float = 2.0
+    ADMIN_BLOCK_LOGIN_ON_GEO_DENIED: bool = True
 
     # ── App URL ───────────────────────────────────────────────────────────────
     # In production, set this explicitly from Railway Variables.
