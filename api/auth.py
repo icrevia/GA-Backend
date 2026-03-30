@@ -334,5 +334,3 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
         "role": user.role,
         "user": user
     }
-
-
