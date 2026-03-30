@@ -10,6 +10,7 @@ from models.user import User
 from schemas.user import UserCreate, UserResponse, LoginRequest
 from schemas.token import Token
 from typing import Any
+from decimal import Decimal
 import hashlib
 import logging
 from services.login_security import (
@@ -205,6 +206,9 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
              logger.warning(f"Invalid referral code used: {user_in.referral_code}")
              # We don't block signup, just log it. Or could raise 400.
 
+    referred_user_bonus = Decimal("20.00")
+    referrer_bonus = Decimal("50.00")
+
     db_user = User(
         username=user_in.username,
         email=email,
@@ -213,8 +217,8 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
         role="USER",
         referral_code=ref_code,
         referred_by_id=referrer.id if referrer else None,
-        # Starting bonus for being referred ($20)
-        wallet_balance=20.00 if referrer else 0.00
+        # Starting bonus for being referred (INR 20)
+        wallet_balance=referred_user_bonus if referrer else Decimal("0.00")
     )
     db.add(db_user)
     db.commit()
@@ -222,13 +226,14 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
 
     # 3. Handle Referrer Payout ($50)
     if referrer:
-        referrer.wallet_balance += 50.00
+        current_balance = Decimal(str(referrer.wallet_balance or 0))
+        referrer.wallet_balance = current_balance + referrer_bonus
         
         from models.wallet import WalletTransaction
         # Record Referrer Transaction
         db.add(WalletTransaction(
             user_id=referrer.id,
-            amount=50.00,
+            amount=referrer_bonus,
             transaction_type="REFERRAL_REWARD",
             status="SUCCESS",
             reference_id=f"REF_EARN_{db_user.id}"
@@ -237,7 +242,7 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
         # Record New User Transaction
         db.add(WalletTransaction(
             user_id=db_user.id,
-            amount=20.00,
+            amount=referred_user_bonus,
             transaction_type="WELCOME_BONUS",
             status="SUCCESS",
             reference_id=f"WELCOME_{db_user.id}"
