@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 from collections import deque
 from threading import Lock
 import logging
+import re
 
 logger = logging.getLogger("zexplay.support")
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -166,19 +167,26 @@ def _check_ip_rate_limit(client_ip: str) -> bool:
 
 
 def _contains_any_keyword(text: str, keywords: tuple[str, ...]) -> bool:
-    words = set(text.replace(",", " ").replace(".", " ").split())
+    normalized_text = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    words = set(normalized_text.split())
+
     for keyword in keywords:
-        if " " in keyword:
-            if keyword in text:
+        normalized_keyword = re.sub(r"[^a-z0-9]+", " ", keyword.lower()).strip()
+        if not normalized_keyword:
+            continue
+
+        if " " in normalized_keyword:
+            if normalized_keyword in normalized_text:
                 return True
-        elif keyword in words:
+        elif normalized_keyword in words:
             return True
+
     return False
 
 
 def _build_support_bot_reply(message: str) -> Tuple[str, bool, str]:
     normalized = " ".join(message.lower().split())
-    words = [part for part in normalized.replace(",", " ").replace(".", " ").split() if part]
+    words = [part for part in re.sub(r"[^a-z0-9]+", " ", normalized).split() if part]
 
     if _contains_any_keyword(normalized, SUPPORT_BOT_ESCALATION_KEYWORDS):
         return (
