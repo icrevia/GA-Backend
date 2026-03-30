@@ -38,10 +38,12 @@ class ConnectionManager:
 
             if self.pending_admin_support_events:
                 replayed = 0
-                for queued_event in list(self.pending_admin_support_events):
+                while self.pending_admin_support_events:
+                    queued_event = self.pending_admin_support_events[0]
                     try:
                         await websocket.send_text(json.dumps(queued_event))
                         replayed += 1
+                        self.pending_admin_support_events.popleft()
                     except Exception as e:
                         logger.warning(f"WS admin replay failed for user_id={user_id}: {e}")
                         break
@@ -50,7 +52,6 @@ class ConnectionManager:
                     logger.info(
                         f"WS replayed {replayed} pending support events to admin user_id={user_id}"
                     )
-                self.pending_admin_support_events.clear()
 
         logger.info(
             f"WS connect: user_id={user_id} is_admin={is_admin} "
@@ -141,8 +142,9 @@ class ConnectionManager:
 
     async def broadcast_to_admins(self, message: dict):
         """Broadcast a message to all connected admin sockets."""
+        msg_type = message.get("type")
+
         if not self.admin_connections:
-            msg_type = message.get("type")
             if msg_type in SUPPORT_EVENT_TYPES:
                 self.pending_admin_support_events.append(dict(message))
                 logger.info(
@@ -155,9 +157,11 @@ class ConnectionManager:
             return
 
         dead = []
+        delivered = 0
         for connection in list(self.admin_connections):
             try:
                 await connection.send_text(json.dumps(message))
+                delivered += 1
             except Exception as e:
                 logger.warning(f"WS dead admin socket: {e}")
                 dead.append(connection)
@@ -166,6 +170,14 @@ class ConnectionManager:
                 self.admin_connections.remove(d)
             except ValueError:
                 pass
+
+        if msg_type in SUPPORT_EVENT_TYPES and delivered == 0:
+            self.pending_admin_support_events.append(dict(message))
+            logger.info(
+                "WS broadcast_to_admins: support event type=%s queued after zero delivery pending=%s",
+                msg_type,
+                len(self.pending_admin_support_events),
+            )
 
     async def broadcast(self, message: dict):
         """Broadcast to ALL connected users (admin + regular)."""
