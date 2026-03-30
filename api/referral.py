@@ -70,6 +70,12 @@ class NextMilestone(BaseModel):
     remaining_referrals: int
 
 
+class ReferredUser(BaseModel):
+    user_id: int
+    username: str
+    joined_at: str | None
+
+
 class ReferralStats(BaseModel):
     referral_code: str
     total_referrals: int
@@ -77,6 +83,7 @@ class ReferralStats(BaseModel):
     claimable_rewards_total: float
     missions: List[ReferralMission]
     next_milestone: NextMilestone | None
+    recent_referrals: List[ReferredUser]
 
 
 class MissionClaimResponse(BaseModel):
@@ -113,7 +120,34 @@ def _mission_reference_id(user_id: int, mission_key: str) -> str:
     return f"{MISSION_REF_PREFIX}_{user_id}_{mission_key}"
 
 
+def _ensure_referral_code(current_user: User, db: Session) -> str:
+    code = (current_user.referral_code or "").strip().upper()
+    if code:
+        if current_user.referral_code != code:
+            current_user.referral_code = code
+            db.commit()
+            db.refresh(current_user)
+        return code
+
+    base_code = f"ZP{current_user.id:06d}"
+    candidate = base_code
+    sequence = 1
+
+    while True:
+        owner = db.query(User.id).filter(User.referral_code == candidate).first()
+        if not owner or owner[0] == current_user.id:
+            break
+        candidate = f"{base_code}{sequence:02d}"
+        sequence += 1
+
+    current_user.referral_code = candidate
+    db.commit()
+    db.refresh(current_user)
+    return candidate
+
+
 def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
+    referral_code = _ensure_referral_code(current_user, db)
     total_referrals = _count_referrals(db, current_user.id)
     earned_rows = db.query(WalletTransaction.amount).filter(
         WalletTransaction.user_id == current_user.id,
@@ -121,6 +155,19 @@ def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
         WalletTransaction.status == "SUCCESS",
     ).all()
     total_earned = float(sum((Decimal(str(amount)) for (amount,) in earned_rows), Decimal("0")))
+
+    recent_referral_rows = db.query(User.id, User.username, User.created_at).filter(
+        User.referred_by_id == current_user.id,
+    ).order_by(User.created_at.desc(), User.id.desc()).limit(20).all()
+
+    recent_referrals = [
+        ReferredUser(
+            user_id=row.id,
+            username=row.username,
+            joined_at=row.created_at.isoformat() if row.created_at else None,
+        )
+        for row in recent_referral_rows
+    ]
 
     claimed_keys = _extract_claimed_mission_keys(db, current_user.id)
 
@@ -164,12 +211,13 @@ def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
         )
 
     return ReferralStats(
-        referral_code=current_user.referral_code or "ZEXPLAY",
+        referral_code=referral_code,
         total_referrals=total_referrals,
         total_earned=total_earned,
         claimable_rewards_total=float(claimable_total),
         missions=mission_items,
         next_milestone=next_milestone,
+        recent_referrals=recent_referrals,
     )
 
 
