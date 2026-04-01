@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from slowapi import Limiter
@@ -167,18 +167,53 @@ def _build_request_context(
     return context
 
 
+def _normalize_signup_phone(raw_phone: str) -> str:
+    phone = (raw_phone or "").strip().replace(" ", "")
+    if len(phone) == 10 and phone.isdigit():
+        phone = f"+91{phone}"
+    return phone
+
+
 class SignupResponse(Token):
     user: UserResponse
+
+
+@router.get("/signup-availability")
+@limiter.limit("60/minute")
+def signup_availability(
+    request: Request,
+    username: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    phone: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> Any:
+    normalized_username = (username or "").strip()
+    normalized_email = (email or "").strip().lower().split("\n")[0]
+    normalized_phone = _normalize_signup_phone(phone or "")
+
+    username_available = True
+    email_available = True
+    phone_available = True
+
+    if normalized_username:
+        username_available = db.query(User.id).filter(User.username == normalized_username).first() is None
+    if normalized_email:
+        email_available = db.query(User.id).filter(User.email == normalized_email).first() is None
+    if normalized_phone:
+        phone_available = db.query(User.id).filter(User.phone_number == normalized_phone).first() is None
+
+    return {
+        "username_available": username_available,
+        "email_available": email_available,
+        "phone_available": phone_available,
+    }
 
 
 @router.post("/signup", response_model=SignupResponse)
 @limiter.limit("5/minute")  # Rate limit: 5 signups per minute per IP
 def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
     email = user_in.email.strip().lower().split('\n')[0]
-    phone = user_in.phone_number.strip().replace(" ", "")
-    # Auto-format 10 digit numbers to +91 (India)
-    if len(phone) == 10 and phone.isdigit():
-        phone = f"+91{phone}"
+    phone = _normalize_signup_phone(user_in.phone_number)
 
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
