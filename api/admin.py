@@ -815,21 +815,24 @@ def get_tournament_roster(
     # FIXED: Bulk fetch users
     user_map = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
 
-    return [
-        {
+    def _serialize_participant(p: TournamentParticipant) -> dict:
+        team_members = p.team_members
+        primary = team_members[0] if team_members else None
+        return {
             "id":            p.user_id,
             "username":      user_map[p.user_id].username     if p.user_id in user_map else "Unknown",
             "avatar_url":    user_map[p.user_id].profile_pic  if p.user_id in user_map else None,
-            "game_username": p.game_username,
-            "game_uid":      p.game_uid,
+            "game_username": primary["name"] if primary else p.game_username,
+            "game_uid":      primary["uid"] if primary else p.game_uid,
+            "team_members":  team_members,
             "slot_no":       p.slot_no,
             "slot_label":    f"S{p.slot_no}" if p.slot_no else None,
             "bgmi_id":       user_map[p.user_id].bgmi_id      if p.user_id in user_map else None,
             "freefire_id":   user_map[p.user_id].freefire_id  if p.user_id in user_map else None,
             "valorant_id":   user_map[p.user_id].valorant_id  if p.user_id in user_map else None,
         }
-        for p in participants
-    ]
+
+    return [_serialize_participant(p) for p in participants]
 
 
 @router.get("/tournaments/{tournament_id}/slots", response_model=TournamentSlotsBoardResponse)

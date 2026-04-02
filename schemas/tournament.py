@@ -2,6 +2,11 @@ from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
 
+
+class TournamentTeamMember(BaseModel):
+    name: str
+    uid: str
+
 class TournamentBase(BaseModel):
     title: str
     game_name: str
@@ -36,6 +41,7 @@ class ParticipantResponse(BaseModel):
     avatar_url: Optional[str] = None
     slot_no: Optional[int] = None
     slot_label: Optional[str] = None
+    team_members: list[TournamentTeamMember] = []
 
     class Config:
         from_attributes = True
@@ -60,6 +66,7 @@ class TournamentJoinResponse(BaseModel):
     new_wallet_balance: float
     slot_no: int
     slot_label: str
+    team_members: list[TournamentTeamMember] = []
 
 
 class TournamentSlotResponse(BaseModel):
@@ -70,6 +77,7 @@ class TournamentSlotResponse(BaseModel):
     username: Optional[str] = None
     game_username: Optional[str] = None
     game_uid: Optional[str] = None
+    team_members: list[TournamentTeamMember] = []
     is_mine: bool = False
 
 
@@ -82,5 +90,7 @@ class TournamentSlotsBoardResponse(BaseModel):
     slots: list[TournamentSlotResponse]
 
 class TournamentJoinRequest(BaseModel):
-    game_username: str
-    game_uid: str
+    players: list[TournamentTeamMember] = []
+    # Legacy fallback fields for older clients.
+    game_username: Optional[str] = None
+    game_uid: Optional[str] = None

@@ -57,6 +57,58 @@ def _slot_label(slot_no: int) -> str:
     return f"S{slot_no}"
 
 
+def _expected_team_size(match_type: str | None) -> int:
+    mode = (match_type or "SOLO").upper()
+    if mode == "DUO":
+        return 2
+    if mode == "SQUAD":
+        return 4
+    return 1
+
+
+def _normalize_join_players(request: TournamentJoinRequest) -> list[dict[str, str]]:
+    members: list[dict[str, str]] = []
+
+    if request.players:
+        for idx, player in enumerate(request.players, start=1):
+            name = (player.name or "").strip()
+            uid = (player.uid or "").strip()
+            if not name or not uid:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Player {idx} requires both name and UID",
+                )
+            members.append({"name": name, "uid": uid})
+        return members
+
+    # Backward compatible fallback for old clients.
+    if request.game_username or request.game_uid:
+        name = (request.game_username or "").strip()
+        uid = (request.game_uid or "").strip()
+        if not name or not uid:
+            raise HTTPException(status_code=400, detail="Player details must include both name and UID")
+        members.append({"name": name, "uid": uid})
+
+    return members
+
+
+def _validate_team_for_match(match_type: str | None, members: list[dict[str, str]]) -> list[dict[str, str]]:
+    mode = (match_type or "SOLO").upper()
+    expected = _expected_team_size(mode)
+
+    if len(members) != expected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{mode} match requires exactly {expected} player name/UID pairs.",
+        )
+
+    uids = [member["uid"] for member in members]
+    if len(set(uids)) != len(uids):
+        raise HTTPException(status_code=400, detail="Each player UID must be unique")
+
+    return members
+
+
 def _resolve_participant_slots(participants: List[TournamentParticipant], max_slots: int) -> dict[int, TournamentParticipant]:
     slot_map: dict[int, TournamentParticipant] = {}
 
@@ -109,6 +161,8 @@ def _build_slots_board(
             continue
 
         username = participant.username if participant.user else None
+        team_members = participant.team_members
+        primary_member = team_members[0] if team_members else None
         slots.append(
             TournamentSlotResponse(
                 slot_no=slot_no,
@@ -116,8 +170,9 @@ def _build_slots_board(
                 status="BOOKED",
                 user_id=participant.user_id,
                 username=username,
-                game_username=participant.game_username,
-                game_uid=participant.game_uid,
+                game_username=(primary_member["name"] if primary_member else participant.game_username),
+                game_uid=(primary_member["uid"] if primary_member else participant.game_uid),
+                team_members=team_members,
                 is_mine=(current_user_id is not None and participant.user_id == current_user_id),
             )
         )
@@ -239,6 +294,11 @@ def join_tournament(
             }
         )
 
+    team_members = _validate_team_for_match(
+        tournament.match_type,
+        _normalize_join_players(request),
+    )
+
     user_wallet.wallet_balance -= tournament.entry_fee
 
     transaction = WalletTransaction(
@@ -257,10 +317,9 @@ def join_tournament(
     participant = TournamentParticipant(
         tournament_id=tournament_id,
         user_id=current_user.id,
-        game_username=request.game_username,
-        game_uid=request.game_uid,
         slot_no=slot_no,
     )
+    participant.set_team_members(team_members)
     db.add(participant)
     try:
         db.commit()
@@ -284,6 +343,7 @@ def join_tournament(
         "new_wallet_balance": float(user_wallet.wallet_balance),
         "slot_no": slot_no,
         "slot_label": _slot_label(slot_no),
+        "team_members": team_members,
     }
 
 

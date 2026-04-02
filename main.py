@@ -216,6 +216,9 @@ def startup_event():
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER"
             ))
             conn.execute(text(
+                "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_members TEXT"
+            ))
+            conn.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_tournament_participant_slot_idx ON tournament_participants (tournament_id, slot_no) WHERE slot_no IS NOT NULL"
             ))
             conn.execute(text(
