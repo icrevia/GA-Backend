@@ -34,6 +34,8 @@ class ParticipantResponse(BaseModel):
     user_id: int
     username: str
     avatar_url: Optional[str] = None
+    slot_no: Optional[int] = None
+    slot_label: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -56,6 +58,28 @@ class TournamentJoinResponse(BaseModel):
     message: str
     tournament_id: int
     new_wallet_balance: float
+    slot_no: int
+    slot_label: str
+
+
+class TournamentSlotResponse(BaseModel):
+    slot_no: int
+    slot_label: str
+    status: str
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    game_username: Optional[str] = None
+    game_uid: Optional[str] = None
+    is_mine: bool = False
+
+
+class TournamentSlotsBoardResponse(BaseModel):
+    tournament_id: int
+    max_slots: int
+    booked_slots: int
+    my_slot_no: Optional[int] = None
+    my_slot_label: Optional[str] = None
+    slots: list[TournamentSlotResponse]
 
 class TournamentJoinRequest(BaseModel):
     game_username: str

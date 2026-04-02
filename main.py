@@ -213,6 +213,12 @@ def startup_event():
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_at TIMESTAMP"
             ))
             conn.execute(text(
+                "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tournament_participant_slot_idx ON tournament_participants (tournament_id, slot_no) WHERE slot_no IS NOT NULL"
+            ))
+            conn.execute(text(
                 "UPDATE chat_sessions SET requires_admin = FALSE WHERE requires_admin IS NULL"
             ))
             conn.commit()

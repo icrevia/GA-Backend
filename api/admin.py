@@ -39,7 +39,7 @@ from schemas.admin import (
     DeveloperOtpVerifyResponse,
     DeveloperOtpStatusResponse,
 )
-from schemas.tournament import TournamentCreate, TournamentResponse
+from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
 
 logger = logging.getLogger("zexplay.admin")
 router = APIRouter()
@@ -547,6 +547,9 @@ def refund_tournament(
 
     participants = db.query(TournamentParticipant).filter(
         TournamentParticipant.tournament_id == tournament_id
+    ).order_by(
+        func.coalesce(TournamentParticipant.slot_no, 999999),
+        TournamentParticipant.id.asc(),
     ).all()
 
     ref_count = 0
@@ -803,6 +806,9 @@ def get_tournament_roster(
 ):
     participants = db.query(TournamentParticipant).filter(
         TournamentParticipant.tournament_id == tournament_id
+    ).order_by(
+        func.coalesce(TournamentParticipant.slot_no, 999999),
+        TournamentParticipant.id.asc(),
     ).all()
 
     user_ids = [p.user_id for p in participants]
@@ -816,12 +822,32 @@ def get_tournament_roster(
             "avatar_url":    user_map[p.user_id].profile_pic  if p.user_id in user_map else None,
             "game_username": p.game_username,
             "game_uid":      p.game_uid,
+            "slot_no":       p.slot_no,
+            "slot_label":    f"S{p.slot_no}" if p.slot_no else None,
             "bgmi_id":       user_map[p.user_id].bgmi_id      if p.user_id in user_map else None,
             "freefire_id":   user_map[p.user_id].freefire_id  if p.user_id in user_map else None,
             "valorant_id":   user_map[p.user_id].valorant_id  if p.user_id in user_map else None,
         }
         for p in participants
     ]
+
+
+@router.get("/tournaments/{tournament_id}/slots", response_model=TournamentSlotsBoardResponse)
+def get_tournament_slots_admin(
+    tournament_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    from api.tournaments import _build_slots_board
+
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+
+    participants = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id,
+    ).all()
+    return _build_slots_board(tournament, participants)
 
 
 # ─────────────────────────────────────────────────────────────────

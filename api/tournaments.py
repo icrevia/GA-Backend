@@ -14,7 +14,9 @@ from schemas.tournament import (
     TournamentUpdate,
     TournamentResponse,
     TournamentJoinResponse,
-    TournamentJoinRequest
+    TournamentJoinRequest,
+    TournamentSlotsBoardResponse,
+    TournamentSlotResponse,
 )
 from services.notifications import add_user_notification
 
@@ -49,6 +51,98 @@ def _with_count(tournament: Tournament, db: Session) -> Tournament:
     count_map = _build_joined_count_map(db, [tournament.id])
     tournament.joined_count = count_map.get(tournament.id, 0)  # type: ignore[attr-defined]
     return tournament
+
+
+def _slot_label(slot_no: int) -> str:
+    return f"S{slot_no}"
+
+
+def _resolve_participant_slots(participants: List[TournamentParticipant], max_slots: int) -> dict[int, TournamentParticipant]:
+    slot_map: dict[int, TournamentParticipant] = {}
+
+    for participant in participants:
+        slot_no = participant.slot_no
+        if slot_no and 1 <= slot_no <= max_slots and slot_no not in slot_map:
+            slot_map[slot_no] = participant
+
+    fallback_slot = 1
+    for participant in participants:
+        slot_no = participant.slot_no
+        if slot_no and 1 <= slot_no <= max_slots and slot_no in slot_map and slot_map[slot_no].id == participant.id:
+            continue
+
+        while fallback_slot <= max_slots and fallback_slot in slot_map:
+            fallback_slot += 1
+        if fallback_slot > max_slots:
+            break
+        slot_map[fallback_slot] = participant
+
+    return slot_map
+
+
+def _build_slots_board(
+    tournament: Tournament,
+    participants: List[TournamentParticipant],
+    current_user_id: int | None = None,
+) -> TournamentSlotsBoardResponse:
+    max_slots = max(int(tournament.max_slots or 100), 1)
+    slot_map = _resolve_participant_slots(participants, max_slots)
+
+    my_slot_no = None
+    if current_user_id is not None:
+        for slot_no, participant in slot_map.items():
+            if participant.user_id == current_user_id:
+                my_slot_no = slot_no
+                break
+
+    slots: list[TournamentSlotResponse] = []
+    for slot_no in range(1, max_slots + 1):
+        participant = slot_map.get(slot_no)
+        if participant is None:
+            slots.append(
+                TournamentSlotResponse(
+                    slot_no=slot_no,
+                    slot_label=_slot_label(slot_no),
+                    status="AVAILABLE",
+                )
+            )
+            continue
+
+        username = participant.username if participant.user else None
+        slots.append(
+            TournamentSlotResponse(
+                slot_no=slot_no,
+                slot_label=_slot_label(slot_no),
+                status="BOOKED",
+                user_id=participant.user_id,
+                username=username,
+                game_username=participant.game_username,
+                game_uid=participant.game_uid,
+                is_mine=(current_user_id is not None and participant.user_id == current_user_id),
+            )
+        )
+
+    return TournamentSlotsBoardResponse(
+        tournament_id=tournament.id,
+        max_slots=max_slots,
+        booked_slots=len(slot_map),
+        my_slot_no=my_slot_no,
+        my_slot_label=_slot_label(my_slot_no) if my_slot_no else None,
+        slots=slots,
+    )
+
+
+def _next_available_slot(db: Session, tournament_id: int, max_slots: int) -> int | None:
+    used_rows = db.query(TournamentParticipant.slot_no).filter(
+        TournamentParticipant.tournament_id == tournament_id,
+        TournamentParticipant.slot_no.isnot(None),
+    ).all()
+    used_slots = {int(slot_no) for (slot_no,) in used_rows if slot_no is not None}
+
+    for slot_no in range(1, max_slots + 1):
+        if slot_no not in used_slots:
+            return slot_no
+    return None
 
 
 @router.get("/", response_model=List[TournamentResponse])
@@ -117,7 +211,8 @@ def join_tournament(
     participant_count = db.query(TournamentParticipant).filter(
         TournamentParticipant.tournament_id == tournament_id
     ).count()
-    if participant_count >= (tournament.max_slots or 100):
+    max_slots = int(tournament.max_slots or 100)
+    if participant_count >= max_slots:
         raise HTTPException(status_code=400, detail="Arena is full! Try another one.")
 
     # Already joined?
@@ -155,11 +250,16 @@ def join_tournament(
     )
     db.add(transaction)
 
+    slot_no = _next_available_slot(db, tournament_id, max_slots)
+    if slot_no is None:
+        raise HTTPException(status_code=400, detail="Arena slots unavailable. Please retry.")
+
     participant = TournamentParticipant(
         tournament_id=tournament_id,
         user_id=current_user.id,
         game_username=request.game_username,
-        game_uid=request.game_uid
+        game_uid=request.game_uid,
+        slot_no=slot_no,
     )
     db.add(participant)
     try:
@@ -181,8 +281,34 @@ def join_tournament(
     return {
         "message": f"Successfully joined {tournament.title}!",
         "tournament_id": tournament_id,
-        "new_wallet_balance": float(user_wallet.wallet_balance)
+        "new_wallet_balance": float(user_wallet.wallet_balance),
+        "slot_no": slot_no,
+        "slot_label": _slot_label(slot_no),
     }
+
+
+@router.get("/{tournament_id}/slots", response_model=TournamentSlotsBoardResponse)
+def get_tournament_slots(
+    tournament_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+
+    my_participant = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id,
+        TournamentParticipant.user_id == current_user.id,
+    ).first()
+
+    if current_user.role != "ADMIN" and not my_participant:
+        raise HTTPException(status_code=403, detail="Join this tournament to view slot board")
+
+    participants = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id,
+    ).all()
+    return _build_slots_board(tournament, participants, current_user_id=current_user.id)
 
 
 @router.get("/my", response_model=List[TournamentResponse])
