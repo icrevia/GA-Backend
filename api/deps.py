@@ -8,6 +8,9 @@ from models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
+# Backward-compat export used by legacy modules (e.g. admin routes).
+get_db = get_db_sync
+
 
 def get_current_user(
     db: Session = Depends(get_db_sync),
