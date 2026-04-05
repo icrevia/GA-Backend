@@ -9,8 +9,8 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_ .\-]+$")
     email: EmailStr
     phone_number: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
-    password: str = Field(..., min_length=6, max_length=128)
     referral_code: Optional[str] = None
+
 
     @field_validator("username")
     @classmethod
@@ -20,13 +20,13 @@ class UserCreate(BaseModel):
 
 class LoginRequest(BaseModel):
     email: str = Field(..., max_length=320)   # RFC 5321 max email length
-    password: str = Field(..., max_length=128) # Prevent bcrypt CPU-spike DoS
     browser_geo_latitude: Optional[float] = Field(None, ge=-90, le=90)
     browser_geo_longitude: Optional[float] = Field(None, ge=-180, le=180)
     browser_geo_accuracy_m: Optional[float] = Field(None, ge=0, le=100000)
     browser_geo_captured_at: Optional[str] = Field(None, max_length=64)
     browser_geo_provider: Optional[str] = Field(None, max_length=40)
     browser_geo_permission: Optional[str] = Field(None, max_length=24)
+
 
 
 class UserResponse(BaseModel):
@@ -61,7 +61,6 @@ class UserUpdate(BaseModel):
 
 
 class SecureContactUpdate(BaseModel):
-    password: str = Field(..., min_length=6, max_length=128)
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, pattern=r"^\+?[0-9]{10,15}$")
 
@@ -71,8 +70,5 @@ class SecureContactUpdate(BaseModel):
             raise ValueError("Provide at least one field: email or phone_number")
         return self
 
-
-class PasswordChangeRequest(BaseModel):
-    new_password: str = Field(..., min_length=6, max_length=128)
 
 

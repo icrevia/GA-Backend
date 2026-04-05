@@ -247,12 +247,12 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
         username=user_in.username,
         email=email,
         phone_number=phone,
-        hashed_password=hash_password(user_in.password),
         role="USER",
         referral_code=ref_code,
         referred_by_id=referrer.id if referrer else None,
         wallet_balance=Decimal("0.00")
     )
+
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -311,35 +311,52 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
     }
 
 
-@router.post("/login", response_model=SignupResponse)
-@limiter.limit("10/minute")  # Rate limit: 10 login attempts per minute per IP
-def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
-    client_ip = extract_client_ip(request)
-    is_admin_panel_login = _is_admin_panel_request(request)
-    request_context = _build_request_context(request, client_ip, login_data)
-    raw_identifier = login_data.email.strip()
+@router.post("/send-otp")
+@limiter.limit("3/minute")
+def send_otp(request: Request, phone: str = Query(...), db: Session = Depends(get_db)) -> Any:
+    """Mock OTP sending endpoint."""
+    normalized_phone = _normalize_signup_phone(phone)
+    logger.info(f"OTP requested for {normalized_phone}. Mock code: 1234")
+    # In a real app, integrate with SMS gateway here.
+    return {"message": "OTP sent successfully", "phone": normalized_phone}
 
-    # Normalize identifier (could be email or phone)
+
+@router.post("/verify-otp", response_model=SignupResponse)
+def verify_otp(
+    request: Request, 
+    phone: str = Query(...), 
+    otp: str = Query(...), 
+    db: Session = Depends(get_db)
+) -> Any:
+    """Verify OTP and return access token."""
+    normalized_phone = _normalize_signup_phone(phone)
+    
+    # Mock verification logic
+    if otp != "1234":
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+        
+    user = db.query(User).filter(User.phone_number == normalized_phone).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    token_version = getattr(user, "token_version", 0) or 0
+    return {
+        "access_token": create_access_token({"sub": str(user.id), "tv": token_version}),
+        "token_type": "bearer",
+        "role": user.role,
+        "user": user
+    }
+
+
+@router.post("/login", response_model=Any)
+@limiter.limit("10/minute")
+def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
+    """Passwordless login: just checks if user exists then triggers OTP."""
+    client_ip = extract_client_ip(request)
+    raw_identifier = login_data.email.strip()
     identifier = raw_identifier.lower()
     if identifier.isdigit() and len(identifier) == 10:
         identifier = f"+91{identifier}"
-
-    blocked, retry_after_seconds = is_ip_blocked(client_ip)
-    if blocked:
-        logger.warning("Blocked login attempt from ip=%s", client_ip)
-        if is_admin_panel_login:
-            send_security_alert_async(
-                event="LOGIN_BLOCKED_IP_HIT",
-                details={
-                    **request_context,
-                    "retry_after_seconds": retry_after_seconds,
-                    "identifier": _mask_identifier(raw_identifier),
-                },
-            )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Too many failed login attempts from this IP. Try again in {retry_after_seconds} seconds.",
-        )
 
     user = db.query(User).filter(
         or_(
@@ -350,108 +367,8 @@ def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_
     ).first()
 
     if not user:
-        attempts, blocked_now, blocked_for_seconds = record_failed_login(client_ip)
-        logger.warning("Login attempt for unknown identifier from ip=%s", client_ip)
-        if is_admin_panel_login:
-            send_security_alert_async(
-                event="LOGIN_FAILED_UNKNOWN_IDENTIFIER",
-                details={
-                    **request_context,
-                    "attempts_in_window": attempts,
-                    "identifier": _mask_identifier(raw_identifier),
-                    "blocked_now": blocked_now,
-                    "block_seconds": blocked_for_seconds,
-                },
-            )
+        raise HTTPException(status_code=404, detail="Account not found")
 
-        if blocked_now and is_admin_panel_login:
-            send_security_alert_async(
-                event="LOGIN_IP_BLOCKED",
-                details={
-                    **request_context,
-                    "reason": "too_many_failed_logins",
-                    "block_seconds": blocked_for_seconds,
-                },
-            )
+    # In passwordless flow, we just confirm user exists and tell client to ask for OTP
+    return {"message": "User identified", "phone": user.phone_number}
 
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if not verify_password(login_data.password, user.hashed_password):
-        attempts, blocked_now, blocked_for_seconds = record_failed_login(client_ip)
-        should_alert = is_admin_panel_login and user.role == "ADMIN"
-        logger.warning("Failed login attempt for user_id=%s from ip=%s", user.id, client_ip)
-        if should_alert:
-            send_security_alert_async(
-                event="LOGIN_FAILED_BAD_PASSWORD",
-                details={
-                    **request_context,
-                    "attempts_in_window": attempts,
-                    "blocked_now": blocked_now,
-                    "block_seconds": blocked_for_seconds,
-                    "user_id": user.id,
-                    "username": user.username,
-                    "identifier": _mask_identifier(raw_identifier),
-                },
-            )
-
-        if blocked_now and should_alert:
-            send_security_alert_async(
-                event="LOGIN_IP_BLOCKED",
-                details={
-                    **request_context,
-                    "reason": "too_many_failed_logins",
-                    "block_seconds": blocked_for_seconds,
-                    "last_user_id": user.id,
-                },
-            )
-
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if user.role == "ADMIN" and settings.ADMIN_BLOCK_LOGIN_ON_GEO_DENIED and _is_geo_permission_denied(login_data):
-        logger.warning("Admin login blocked due to denied geolocation permission: user_id=%s ip=%s", user.id, client_ip)
-        if is_admin_panel_login:
-            send_security_alert_async(
-                event="ADMIN_LOGIN_BLOCKED_GEO_PERMISSION_DENIED",
-                details={
-                    **request_context,
-                    "user_id": user.id,
-                    "username": user.username,
-                    "email": _mask_identifier(user.email),
-                    "role": user.role,
-                    "reason": "browser_geolocation_permission_denied",
-                },
-            )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin login blocked: location permission is required.",
-        )
-
-    clear_failed_logins(client_ip)
-    logger.info(f"Successful login: user_id={user.id}")
-    if is_admin_panel_login and user.role == "ADMIN":
-        send_security_alert_async(
-            event="LOGIN_SUCCESS",
-            details={
-                **request_context,
-                "user_id": user.id,
-                "username": user.username,
-                "email": _mask_identifier(user.email),
-                "role": user.role,
-            },
-        )
-
-    token_version = getattr(user, "token_version", 0) or 0
-    return {
-        "access_token": create_access_token({"sub": str(user.id), "tv": token_version}),
-        "token_type": "bearer",
-        "role": user.role,
-        "user": user
-    }
