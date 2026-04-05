@@ -7,17 +7,30 @@ logger = logging.getLogger("GamerzAdda.otp")
 # Updated MC Base URL (CPaas) as per latest docs
 MC_BASE_URL = "https://cpaas.messagecentral.com"
 
+
+def _clean_env_value(value: str | None) -> str:
+    """Trim whitespace and common accidental wrappers from env secrets."""
+    cleaned = str(value or "").strip().strip("\"'")
+    if cleaned.lower().startswith("bearer "):
+        cleaned = cleaned[7:].strip()
+    return cleaned
+
+
+def _safe_text_preview(raw: str, max_len: int = 200) -> str:
+    text = (raw or "").replace("\n", " ").replace("\r", " ").strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "..."
+
 def _headers() -> dict:
-    # Ensure token is cleaned of any extra whitespace
-    token = str(settings.MC_AUTH_TOKEN or "").strip()
+    token = _clean_env_value(settings.MC_AUTH_TOKEN)
     return {
         "authToken": token,
-        "Content-Type": "application/json",
         "Accept": "application/json"
     }
 
 async def send_otp(phone_e164: str) -> dict:
-    """Async send OTP using Message Central JSON Body V3"""
+    """Async send OTP using Message Central VerifyNow V3 API."""
     phone = phone_e164.lstrip("+")
     # For India, ensure 91 is extracted correctly
     if phone.startswith("91") and len(phone) == 12:
@@ -30,9 +43,12 @@ async def send_otp(phone_e164: str) -> dict:
     url = f"{MC_BASE_URL}/verification/v3/send"
     
     # Customer ID must be exactly as provided in MC portal
-    customer_id = str(settings.MC_CUSTOMER_ID or "").strip()
+    customer_id = _clean_env_value(settings.MC_CUSTOMER_ID)
+    if not customer_id or not _clean_env_value(settings.MC_AUTH_TOKEN):
+        raise RuntimeError("OTP Gateway credentials are missing. Set MC_AUTH_TOKEN and MC_CUSTOMER_ID.")
     
-    payload = {
+    # VerifyNow V3 expects these as URL params (not JSON body).
+    params = {
         "countryCode": country_code,
         "customerId": customer_id,
         "flowType": "SMS",
@@ -43,13 +59,23 @@ async def send_otp(phone_e164: str) -> dict:
     async with httpx.AsyncClient() as client:
         try:
             logger.info(f"MC Send (V3) -> Mobile: {mobile}, CustomerId: {customer_id}")
-            # MC requires POST with JSON body
-            resp = await client.post(url, json=payload, headers=_headers(), timeout=15.0)
+            resp = await client.post(url, params=params, headers=_headers(), timeout=15.0)
             
             # If 401, it's explicitly an Auth/Token issue
             if resp.status_code == 401:
-                logger.error(f"MC AUTH FAILED (401). Check MC_AUTH_TOKEN and MC_CUSTOMER_ID in Railway.")
+                logger.error(
+                    "MC AUTH FAILED (401). Check MC_AUTH_TOKEN and MC_CUSTOMER_ID in Railway. Body=%s",
+                    _safe_text_preview(resp.text),
+                )
                 raise RuntimeError("OTP Gateway Authentication Failed (401)")
+
+            if resp.status_code != 200:
+                logger.error(
+                    "MC Send HTTP %s. Body=%s",
+                    resp.status_code,
+                    _safe_text_preview(resp.text),
+                )
+                raise RuntimeError(f"OTP Gateway HTTP {resp.status_code}")
 
             data = resp.json()
             # MC V3 uses 'responseCode': 200 for success
@@ -67,7 +93,7 @@ async def send_otp(phone_e164: str) -> dict:
 async def verify_otp(verification_id: str, otp_code: str) -> bool:
     """Async verify OTP using V3 endpoint"""
     url = f"{MC_BASE_URL}/verification/v3/validateOtp"
-    customer_id = str(settings.MC_CUSTOMER_ID or "").strip()
+    customer_id = _clean_env_value(settings.MC_CUSTOMER_ID)
     
     params = {
         "verificationId": verification_id,
