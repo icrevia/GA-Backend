@@ -94,14 +94,15 @@ async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depen
 
     try:
         from services import otp as otp_service
-        # Sync call (OTP service is usually REST)
-        result = otp_service.send_otp(phone)
+        # Async call with await
+        result = await otp_service.send_otp(phone)
         verification_id = result["data"]["verificationId"]
         _otp_store[phone] = verification_id
         return {"message": "OTP sent to phone for verification", "phone": phone, "status": "pending_verification"}
     except Exception as e:
         _pending_signups.pop(phone, None)
-        raise HTTPException(status_code=503, detail="Failed to send OTP verification.")
+        logger.error(f"OTP send error during signup: {e}")
+        raise HTTPException(status_code=503, detail=f"Failed to send OTP verification. Error: {str(e)}")
 
 @router.post("/verify-otp")
 async def verify_otp(
@@ -116,7 +117,9 @@ async def verify_otp(
         raise HTTPException(status_code=400, detail="OTP expired or not requested.")
 
     from services import otp as otp_service
-    if not otp_service.verify_otp(verification_id, otp):
+    # Async verify with await
+    is_valid = await otp_service.verify_otp(verification_id, otp)
+    if not is_valid:
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
     _otp_store.pop(normalized_phone, None)
@@ -207,8 +210,11 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
 
     try:
         from services import otp as otp_service
-        res = otp_service.send_otp(user.phone_number)
+        # Async call with await
+        res = await otp_service.send_otp(user.phone_number)
         _otp_store[user.phone_number] = res["data"]["verificationId"]
+        logger.info(f"OTP successfully sent for login: {user.phone_number}")
         return {"message": "OTP sent", "phone": user.phone_number, "status": "pending_verification"}
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Failed to send OTP.")
+        logger.error(f"OTP SEND ERR LOGIN: {e}")
+        raise HTTPException(status_code=503, detail=f"Failed to send OTP login: {str(e)}")
