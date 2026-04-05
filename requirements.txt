@@ -17,3 +17,4 @@ redis
 aioredis
 jinja2
 python-dotenv
+email-validator
