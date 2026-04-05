@@ -6,10 +6,8 @@ from collections import deque
 
 logger = logging.getLogger("GamerzAdda.ws")
 
-CALL_SIGNAL_TYPES = {
-    "call_ring", "call_accepted", "call_rejected", "call_end",
-    "offer", "answer", "ice_candidate", "admin_call_request",
-    "call_busy", "chat_message", "call_hold", "call_unhold"
+ALLOWED_WS_EVENTS = {
+    "chat_message", "support_escalation"
 }
 
 SUPPORT_EVENT_TYPES = {"chat_message", "support_escalation", "support_attended", "support_unattended"}
@@ -22,10 +20,7 @@ class ConnectionManager:
         self.active_connections: Dict[int, List[WebSocket]] = {}
         # Admin sockets for quick routing
         self.admin_connections: List[WebSocket] = []
-        # admin_user_id -> user_id: tracks which user each admin is in a call with
-        self.active_call_map: Dict[int, int] = {}
-        # user_id -> admin_user_id: reverse map
-        self.user_to_admin_map: Dict[int, int] = {}
+        # admin_connections: List[WebSocket] already declared
         # Buffer support events when no admins are online so reconnecting admin panels can catch up.
         self.pending_admin_support_events: deque[dict] = deque(maxlen=MAX_PENDING_ADMIN_SUPPORT_EVENTS)
 
@@ -78,29 +73,7 @@ class ConnectionManager:
             f"total_admins={len(self.admin_connections)}"
         )
 
-    def set_call_pair(self, admin_user_id: int, target_user_id: int):
-        """Track that an admin is now in a call with a specific user."""
-        self.active_call_map[admin_user_id] = target_user_id
-        self.user_to_admin_map[target_user_id] = admin_user_id
-        logger.info(f"WS CallPair set: Admin={admin_user_id} <-> User={target_user_id}")
 
-    def clear_call_pair_by_admin(self, admin_user_id: int):
-        user_id = self.active_call_map.pop(admin_user_id, None)
-        if user_id is not None:
-            self.user_to_admin_map.pop(user_id, None)
-        logger.info(f"WS CallPair cleared for Admin={admin_user_id}")
-
-    def clear_call_pair_by_user(self, user_id: int):
-        admin_id = self.user_to_admin_map.pop(user_id, None)
-        if admin_id is not None:
-            self.active_call_map.pop(admin_id, None)
-        logger.info(f"WS CallPair cleared for User={user_id}")
-
-    def get_user_for_admin(self, admin_user_id: int) -> Optional[int]:
-        return self.active_call_map.get(admin_user_id)
-
-    def get_admin_for_user(self, user_id: int) -> Optional[int]:
-        return self.user_to_admin_map.get(user_id)
 
     def is_user_online(self, user_id: int) -> bool:
         """Check if a user has at least one active WebSocket connection."""

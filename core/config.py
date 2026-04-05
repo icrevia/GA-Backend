@@ -55,23 +55,8 @@ class Settings(BaseSettings):
     # ── Database ──────────────────────────────────────────────────────────────
     DATABASE_URL: str = ""
 
-    # ── PayU ──────────────────────────────────────────────────────────────────
-    PAYU_MERCHANT_KEY:  str = ""
-    PAYU_MERCHANT_SALT: str = ""
-    PAYU_BASE_URL:      str = ""
-    PAYU_MERCHANT_VPA:  str = ""
-    
-    # ── Razorpay ──────────────────────────────────────────────────────────────
-    RAZORPAY_KEY_ID:     str = ""
-    RAZORPAY_KEY_SECRET: str = ""
-    RAZORPAY_API_BASE_URL: str = ""
-
-    # ── CCAvenue ──────────────────────────────────────────────────────────────
-    CCAVENUE_MERCHANT_ID: str = ""
-    CCAVENUE_ACCESS_CODE: str = ""
-    CCAVENUE_WORKING_KEY: str = ""
-    CCAVENUE_WEB_BASE_URL: str = ""
-    CCAVENUE_API_BASE_URL: str = ""
+    # ── Pay0.shop ─────────────────────────────────────────────────────────────
+    PAY0_MERCHANT_KEY: str = ""
 
     class Config:
         env_file = ".env"
@@ -100,15 +85,7 @@ class Settings(BaseSettings):
         is_production = env_name in {"production", "prod"}
 
         # Local-only defaults to reduce setup friction.
-        if not is_production:
-            if not self.PAYU_BASE_URL:
-                object.__setattr__(self, "PAYU_BASE_URL", "https://secure.payu.in")
-            if not self.RAZORPAY_API_BASE_URL:
-                object.__setattr__(self, "RAZORPAY_API_BASE_URL", "https://api.razorpay.com")
-            if not self.CCAVENUE_WEB_BASE_URL:
-                object.__setattr__(self, "CCAVENUE_WEB_BASE_URL", "https://secure.ccavenue.com")
-            if not self.CCAVENUE_API_BASE_URL:
-                object.__setattr__(self, "CCAVENUE_API_BASE_URL", "https://api.ccavenue.com")
+        pass
 
         # ── HARD FAIL: Only crash if SECRET_KEY is still the placeholder ──────
         # Everything else gets a warning — we don't want to take prod offline.
@@ -132,10 +109,6 @@ class Settings(BaseSettings):
                 "APP_URL": self.APP_URL,
                 "ALLOWED_ORIGINS": self.ALLOWED_ORIGINS,
                 "DATABASE_URL": self.DATABASE_URL,
-                "PAYU_BASE_URL": self.PAYU_BASE_URL,
-                "RAZORPAY_API_BASE_URL": self.RAZORPAY_API_BASE_URL,
-                "CCAVENUE_WEB_BASE_URL": self.CCAVENUE_WEB_BASE_URL,
-                "CCAVENUE_API_BASE_URL": self.CCAVENUE_API_BASE_URL,
             }
             missing = [key for key, value in required_fields.items() if not value]
             if missing:
@@ -146,7 +119,7 @@ class Settings(BaseSettings):
         # ── SOFT WARNINGS: Log but don't crash ────────────────────────────────
         if not self.APP_URL:
             print(
-                "[CONFIG WARNING] APP_URL is not set. PayU payment callbacks (SURL/FURL) "
+                "[CONFIG WARNING] APP_URL is not set. Payment callbacks "
                 "will not work correctly. Set APP_URL in Railway environment variables.",
                 file=sys.stderr
             )
@@ -170,19 +143,11 @@ class Settings(BaseSettings):
                     "Refusing to start with implicit wildcard behavior."
                 )
         
-        # ── Razorpay Soft Warning ─────────────────────────────────────────────
-        if not self.RAZORPAY_KEY_ID or not self.RAZORPAY_KEY_SECRET:
+        # ── Pay0 Soft Warning ─────────────────────────────────────────────
+        if not self.PAY0_MERCHANT_KEY:
             print(
-                "[CONFIG WARNING] Razorpay Key ID or Secret not set. "
-                "Razorpay payments will fail.",
-                file=sys.stderr
-            )
-
-        # ── CCAvenue Soft Warning ─────────────────────────────────────────────
-        if not self.CCAVENUE_MERCHANT_ID or not self.CCAVENUE_ACCESS_CODE or not self.CCAVENUE_WORKING_KEY:
-            print(
-                "[CONFIG WARNING] CCAvenue Merchant ID, Access Code, or Working Key not set. "
-                "CCAvenue payments will fail.",
+                "[CONFIG WARNING] PAY0_MERCHANT_KEY is not set. "
+                "Payments via Pay0 will fail.",
                 file=sys.stderr
             )
 
