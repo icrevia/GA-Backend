@@ -180,11 +180,12 @@ async def verify_otp(
         raise HTTPException(status_code=404, detail="User not found")
 
     token_version = getattr(db_user, "token_version", 0) or 0
+    user_payload = UserResponse.model_validate(db_user).model_dump(mode="json")
     return {
         "access_token": create_access_token({"sub": str(db_user.id), "tv": token_version}),
         "token_type": "bearer",
         "role": db_user.role,
-        "user": db_user
+        "user": user_payload
     }
 
 @router.post("/login")
