@@ -7,13 +7,14 @@ logger = logging.getLogger("GamerzAdda.otp")
 MC_BASE_URL = "https://cpaas.messagecentral.com"
 
 def _headers() -> dict:
+    # Message Central uses authToken in headers
     return {
         "authToken": str(settings.MC_AUTH_TOKEN or ""),
         "Content-Type": "application/json",
     }
 
 async def send_otp(phone_e164: str) -> dict:
-    """Async send OTP using Message Central"""
+    """Async send OTP using Message Central JSON Body"""
     phone = phone_e164.lstrip("+")
     if phone.startswith("91") and len(phone) == 12:
         country_code = "91"
@@ -23,7 +24,8 @@ async def send_otp(phone_e164: str) -> dict:
         mobile = phone
 
     url = f"{MC_BASE_URL}/verification/v3/send"
-    params = {
+    # Using JSON body instead of URL params
+    payload = {
         "countryCode": country_code,
         "customerId": str(settings.MC_CUSTOMER_ID or ""),
         "flowType": "SMS",
@@ -33,23 +35,28 @@ async def send_otp(phone_e164: str) -> dict:
     
     async with httpx.AsyncClient() as client:
         try:
-            logger.info(f"Sending OTP to {mobile} via Message Central...")
-            resp = await client.post(url, params=params, headers=_headers(), timeout=15.0)
-            data = resp.json()
+            logger.info(f"Sending OTP to {mobile} via JSON Body...")
+            resp = await client.post(url, json=payload, headers=_headers(), timeout=15.0)
             
-            if resp.status_code != 200 or str(data.get("responseCode")) != "200":
-                error_msg = data.get("message") or f"MC Error {resp.status_code}"
-                logger.error(f"OTP SEND FAILED: {error_msg}")
+            # Handle potential non-JSON responses (HTML error pages from gateway)
+            if resp.status_code != 200:
+                logger.error(f"OTP Gateway HTTP {resp.status_code}: {resp.text[:200]}")
+                raise RuntimeError(f"SMS Gateway returned HTTP {resp.status_code}")
+
+            data = resp.json()
+            if str(data.get("responseCode")) != "200":
+                error_msg = data.get("message") or f"MC Error {data.get('responseCode')}"
+                logger.error(f"OTP SEND FAILED response: {error_msg}")
                 raise RuntimeError(error_msg)
                 
             logger.info(f"OTP SENT SUCCESS: {mobile}")
             return data
         except Exception as e:
             logger.error(f"OTP SERVICE EXCEPTION: {e}")
-            raise RuntimeError(f"SMS gateway error: {str(e)}")
+            raise RuntimeError(f"SMS provider error: {str(e)}")
 
 async def verify_otp(verification_id: str, otp_code: str) -> bool:
-    """Async verify OTP"""
+    """Async verify OTP using query params (GET is usually fine for verification)"""
     url = f"{MC_BASE_URL}/verification/v3/validateOtp"
     params = {
         "verificationId": verification_id,
@@ -60,6 +67,8 @@ async def verify_otp(verification_id: str, otp_code: str) -> bool:
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(url, params=params, headers=_headers(), timeout=15.0)
+            if resp.status_code != 200:
+                return False
             data = resp.json()
             return (
                 str(data.get("responseCode")) == "200"

@@ -525,9 +525,9 @@ def case_static_checks() -> list[dict[str, Any]]:
         {
             "bug_id": "ZP-FUNC-008",
             "proof": {
-                "hardcoded_android_base_url_removed": "web-production-051ba.up.railway.app" not in app_nav,
-                "hardcoded_ccavenue_redirect_removed": "web-production-051ba.up.railway.app/api/v1/wallet/ccavenue/return" not in ccav_screen,
-                "hardcoded_admin_ws_fallback_removed": "web-production-051ba.up.railway.app" not in finance_page and "web-production-051ba.up.railway.app" not in call_context,
+                "hardcoded_android_base_url_removed": "gamerzadda-backend-production.up.railway.app" not in app_nav,
+                "hardcoded_ccavenue_redirect_removed": "gamerzadda-backend-production.up.railway.app/api/v1/wallet/ccavenue/return" not in ccav_screen,
+                "hardcoded_admin_ws_fallback_removed": "gamerzadda-backend-production.up.railway.app" not in finance_page and "gamerzadda-backend-production.up.railway.app" not in call_context,
             },
         }
     )
