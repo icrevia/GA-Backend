@@ -16,7 +16,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 )
-logger = logging.getLogger("zexplay")
+logger = logging.getLogger("GamerzAdda")
 
 from api.router import api_router
 from core.database import engine, Base
@@ -164,7 +164,7 @@ Base.metadata.create_all(bind=engine)
 
 @app.on_event("startup")
 def startup_event():
-    logger.info("ZexPlay API starting up...")
+    logger.info("GamerzAdda API starting up...")
     logger.info(f"DEBUG mode: {settings.DEBUG}")
     logger.info(f"Allowed origins: {ALLOWED_ORIGINS}")
     logger.info(
@@ -235,7 +235,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():
-    return {"message": "ZexPlay API — Online", "version": "2.0"}
+    return {"message": "GamerzAdda API — Online", "version": "2.0"}
 
 
 @app.get("/api/v1/status")
@@ -261,10 +261,10 @@ def get_system_status():
             "force_update":       config_map.get("force_update", "false").lower() == "true",
             "update_message":     config_map.get(
                 "update_message",
-                "A new version of ZexPlay is available! Upgrade now for the latest features."
+                "A new version of GamerzAdda is available! Upgrade now for the latest features."
             ),
             "payu_merchant_vpa":  settings.PAYU_MERCHANT_VPA,
-            "support_email":      "support@zexplay.com" # Example, could be from settings
+            "support_email":      "support@GamerzAdda.com" # Example, could be from settings
         }
     finally:
         db.close()

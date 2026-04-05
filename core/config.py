@@ -4,11 +4,11 @@ import sys
 import logging
 import os
 
-logger = logging.getLogger("zexplay.config")
+logger = logging.getLogger("GamerzAdda.config")
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "ZexPlay"
+    PROJECT_NAME: str = "GamerzAdda"
     API_V1_STR:   str = "/api/v1"
     ENVIRONMENT:  str = "development"
     DEBUG:        bool = False
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     APP_URL: str = ""
 
     # ── CORS ──────────────────────────────────────────────────────────────────
-    # Comma-separated list of origins: "https://admin.zexplay.com, http://localhost:3000"
+    # Comma-separated list of origins: "https://admin.GamerzAdda.com, http://localhost:3000"
     ALLOWED_ORIGINS: str = ""
 
     # ── Database ──────────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ class Settings(BaseSettings):
             "CHANGE_ME",
             "",
             "CHANGE_ME_GENERATE_WITH_secrets_token_hex_32",
-            "ZexPlay_Super_Secure_JWT_Key_2026_@",
+            "GamerzAdda_Super_Secure_JWT_Key_2026_@",
             "your-super-secret-key-change-this",
         }
         if self.SECRET_KEY in placeholder_keys or (is_production and len(self.SECRET_KEY) < 32):

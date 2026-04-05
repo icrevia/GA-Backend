@@ -5,7 +5,7 @@ import bcrypt
 import logging
 from core.config import settings
 
-logger = logging.getLogger("zexplay.security")
+logger = logging.getLogger("GamerzAdda.security")
 
 
 def hash_password(password: str) -> str:

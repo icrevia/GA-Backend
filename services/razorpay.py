@@ -5,7 +5,7 @@ import json
 import logging
 from core.config import settings
 
-logger = logging.getLogger("zexplay.razorpay")
+logger = logging.getLogger("GamerzAdda.razorpay")
 
 
 def _rzp_url(path: str) -> str:

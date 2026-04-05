@@ -26,7 +26,7 @@ from models.config import SystemConfig
 from services.notifications import add_user_notification
 from core.websockets import manager as ws_manager
 
-logger = logging.getLogger("zexplay.wallet")
+logger = logging.getLogger("GamerzAdda.wallet")
 
 router = APIRouter()
 
@@ -165,7 +165,7 @@ def init_add_money(
     if req.amount > 100_000:
         raise HTTPException(status_code=400, detail="Maximum recharge amount is ₹1,00,000")
 
-    txnid = f"ZEX_{uuid.uuid4().hex[:12].upper()}"
+    txnid = f"GA_{uuid.uuid4().hex[:12].upper()}"
     productinfo = "Digital Services"
 
     tx = WalletTransaction(
@@ -511,7 +511,7 @@ async def payu_webhook(
         add_user_notification(
             db, user.id,
             "Payment Confirmed ✅",
-            f"₹{tx.amount:.0f} has been added to your ZexPlay wallet.",
+            f"₹{tx.amount:.0f} has been added to your GamerzAdda wallet.",
             "WALLET"
         )
         logger.info(f"Payment SUCCESS: txnid={txnid} user={tx.user_id} amount={tx.amount}")
@@ -592,7 +592,7 @@ async def payu_return_handler(
                         add_user_notification(
                             db, user.id,
                             "Payment Confirmed ✅",
-                            f"₹{tx.amount:.0f} has been added to your ZexPlay wallet.",
+                            f"₹{tx.amount:.0f} has been added to your GamerzAdda wallet.",
                             "WALLET"
                         )
                         final_status = "success"
@@ -659,10 +659,10 @@ def get_upi_intent(
     upi_link = (
         f"upi://pay"
         f"?pa={merchant_vpa}"
-        f"&pn=ZexPlay"
+        f"&pn=GamerzAdda"
         f"&am={amount_str}"
         f"&cu=INR"
-        f"&tn=ZexPlay+Wallet+Recharge"
+        f"&tn=GamerzAdda+Wallet+Recharge"
         f"&tr={txnid}"
         f"&mc=7372"
     )
@@ -859,7 +859,7 @@ async def verify_razorpay_payment(
     add_user_notification(
         db, user.id,
         "Payment Confirmed ✅",
-        f"₹{tx.amount:.0f} has been added to your ZexPlay wallet via Razorpay.",
+        f"₹{tx.amount:.0f} has been added to your GamerzAdda wallet via Razorpay.",
         "WALLET"
     )
 
@@ -985,7 +985,7 @@ async def ccavenue_return_handler(
                     add_user_notification(
                         db, user.id,
                         "Payment Confirmed ✅",
-                        f"₹{tx.amount:.0f} has been added to your ZexPlay wallet via CCAvenue.",
+                        f"₹{tx.amount:.0f} has been added to your GamerzAdda wallet via CCAvenue.",
                         "WALLET"
                     )
                     label = "Payment Successful!"

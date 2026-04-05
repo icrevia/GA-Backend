@@ -7,7 +7,7 @@ from core.security import decode_access_token
 from core.database import SessionLocal
 from models.user import User
 
-logger = logging.getLogger("zexplay.ws")
+logger = logging.getLogger("GamerzAdda.ws")
 router = APIRouter()
 
 
@@ -16,7 +16,7 @@ def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, st
     Extract auth token from websocket handshake without using query parameters.
     Supports:
     - Authorization: Bearer <jwt>
-    - Sec-WebSocket-Protocol: zexplay.v1, token.<jwt>
+    - Sec-WebSocket-Protocol: GamerzAdda.v1, token.<jwt>
     """
     auth_header = websocket.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
@@ -28,7 +28,7 @@ def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, st
 
     selected_protocol = None
     for proto in protocols:
-        if proto.lower() == "zexplay.v1":
+        if proto.lower() == "GamerzAdda.v1":
             selected_protocol = proto
             break
 

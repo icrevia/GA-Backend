@@ -14,7 +14,7 @@ from threading import Lock
 import logging
 import re
 
-logger = logging.getLogger("zexplay.support")
+logger = logging.getLogger("GamerzAdda.support")
 IST = timezone(timedelta(hours=5, minutes=30))
 MAX_SUPPORT_MESSAGE_LENGTH = 1000
 SUPPORT_RATE_LIMIT_WINDOW_SECONDS = 60

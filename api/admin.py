@@ -41,7 +41,7 @@ from schemas.admin import (
 )
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
 
-logger = logging.getLogger("zexplay.admin")
+logger = logging.getLogger("GamerzAdda.admin")
 router = APIRouter()
 
 # ─────────────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ def _send_developer_otp_message(admin: User, request: Request, otp: str) -> None
 
     now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
     message = "\n".join([
-        "=== ZexPlay Developer OTP ===",
+        "=== GamerzAdda Developer OTP ===",
         f"Admin ID: {admin.id}",
         f"Username: {admin.username}",
         f"OTP: {otp}",
@@ -311,7 +311,7 @@ def upload_apk(
         raise HTTPException(status_code=400, detail="Only APK files are allowed.")
 
     # FIXED: Generate a safe server-side filename — never use user-supplied name
-    safe_filename = f"zexplay_app_{uuid.uuid4().hex}.apk"
+    safe_filename = f"GamerzAdda_app_{uuid.uuid4().hex}.apk"
     static_dir = "static"
     os.makedirs(static_dir, exist_ok=True)
     file_path = os.path.join(static_dir, safe_filename)
@@ -1289,7 +1289,7 @@ def manual_credit_transaction(
         add_user_notification(
             db, tx.user_id,
             "Payment Confirmed ✅",
-            f"₹{float(credit_amount):.0f} has been added to your ZexPlay wallet.",
+            f"₹{float(credit_amount):.0f} has been added to your GamerzAdda wallet.",
             "WALLET"
         )
     except Exception:

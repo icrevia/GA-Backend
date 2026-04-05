@@ -9,7 +9,7 @@ from urllib import request as urllib_request
 from core.config import settings
 
 
-logger = logging.getLogger("zexplay.security.alerts")
+logger = logging.getLogger("GamerzAdda.security.alerts")
 
 _GEO_CACHE_TTL_SECONDS = 6 * 60 * 60
 _GEO_CACHE_LOCK = Lock()
@@ -69,7 +69,7 @@ def _extract_geo_profile(ip: str) -> dict[str, str]:
     url = f"https://ipwho.is/{ip}"
     req = urllib_request.Request(
         url,
-        headers={"User-Agent": "ZexPlaySecurityAlerts/1.0"},
+        headers={"User-Agent": "GamerzAddaSecurityAlerts/1.0"},
         method="GET",
     )
 
@@ -184,7 +184,7 @@ def _build_message(event: str, details: dict[str, object]) -> str:
             normalized.setdefault(key, value)
 
     lines = [
-        "=== ZexPlay Security Shield ===",
+        "=== GamerzAdda Security Shield ===",
         f"Alert: {title}",
         f"Severity: {severity}",
         f"Event Code: {event}",

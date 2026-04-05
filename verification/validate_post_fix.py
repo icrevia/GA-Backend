@@ -405,7 +405,7 @@ def case_zp_sec_006(client: TestClient) -> dict[str, Any]:
     try:
         with client.websocket_connect(
             "/api/v1/ws/ws",
-            subprotocols=["zexplay.v1", f"token.{token}"],
+            subprotocols=["GamerzAdda.v1", f"token.{token}"],
         ) as ws:
             protocol_frame = ws.receive_json()
             protocol_ok = protocol_frame.get("type") == "connected"
@@ -416,7 +416,7 @@ def case_zp_sec_006(client: TestClient) -> dict[str, Any]:
         "bug_id": "ZP-SEC-006",
         "request": {
             "query_path": "/api/v1/ws/ws?token=<JWT>",
-            "protocol_auth": "Sec-WebSocket-Protocol: zexplay.v1, token.<JWT>",
+            "protocol_auth": "Sec-WebSocket-Protocol: GamerzAdda.v1, token.<JWT>",
         },
         "response": {
             "query_token_frame": query_token_frame,
@@ -517,8 +517,8 @@ def case_static_checks() -> list[dict[str, Any]]:
         }
     )
 
-    app_nav = (REPO_ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "zexplay" / "ui" / "navigation" / "AppNavigation.kt").read_text(encoding="utf-8")
-    ccav_screen = (REPO_ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "zexplay" / "ui" / "screens" / "wallet" / "CCAvenueWebViewScreen.kt").read_text(encoding="utf-8")
+    app_nav = (REPO_ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "GamerzAdda" / "ui" / "navigation" / "AppNavigation.kt").read_text(encoding="utf-8")
+    ccav_screen = (REPO_ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "GamerzAdda" / "ui" / "screens" / "wallet" / "CCAvenueWebViewScreen.kt").read_text(encoding="utf-8")
     finance_page = (REPO_ROOT / "admin-web" / "app" / "finance" / "page.tsx").read_text(encoding="utf-8")
     call_context = (REPO_ROOT / "admin-web" / "context" / "CallContext.tsx").read_text(encoding="utf-8")
     results.append(
@@ -541,7 +541,7 @@ def case_static_checks() -> list[dict[str, Any]]:
             "bug_id": "ZP-SEC-020",
             "proof": {
                 "wildcard_cors_with_credentials_removed": not root_main_exists,
-                "hardcoded_secret_in_source_removed": "ZexPlay_Super_Secure_JWT_Key_2026_@" not in root_config,
+                "hardcoded_secret_in_source_removed": "GamerzAdda_Super_Secure_JWT_Key_2026_@" not in root_config,
             },
         }
     )

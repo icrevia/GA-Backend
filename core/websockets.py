@@ -4,7 +4,7 @@ import json
 import logging
 from collections import deque
 
-logger = logging.getLogger("zexplay.ws")
+logger = logging.getLogger("GamerzAdda.ws")
 
 CALL_SIGNAL_TYPES = {
     "call_ring", "call_accepted", "call_rejected", "call_end",

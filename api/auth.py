@@ -21,7 +21,7 @@ from services.login_security import (
 )
 from services.telegram_alerts import send_security_alert_async
 
-logger = logging.getLogger("zexplay.auth")
+logger = logging.getLogger("GamerzAdda.auth")
 limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter()
@@ -295,7 +295,7 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
     add_user_notification(
         db,
         db_user.id,
-        "Welcome to ZexPlay",
+        "Welcome to GamerzAdda",
         "Start your esports journey with India's fastest tournament platform. 🦾",
         "APP"
     )

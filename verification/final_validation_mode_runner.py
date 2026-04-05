@@ -446,7 +446,7 @@ def run() -> dict:
     # ---- Additional check: ZP-PERF-017 static backoff presence ----
     support_page = (ROOT / "admin-web" / "app" / "support" / "page.tsx").read_text(encoding="utf-8")
     finance_page = (ROOT / "admin-web" / "app" / "finance" / "page.tsx").read_text(encoding="utf-8")
-    android_vm = (ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "zexplay" / "ui" / "screens" / "profile" / "SupportViewModel.kt").read_text(encoding="utf-8")
+    android_vm = (ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "GamerzAdda" / "ui" / "screens" / "profile" / "SupportViewModel.kt").read_text(encoding="utf-8")
 
     perf017_fixed = (
         "sessionsPollBackoffRef" in support_page
@@ -464,7 +464,7 @@ def run() -> dict:
         "response": {"checked_files": [
             "admin-web/app/support/page.tsx",
             "admin-web/app/finance/page.tsx",
-            "android/app/src/main/java/com/zexplay/ui/screens/profile/SupportViewModel.kt"
+            "android/app/src/main/java/com/GamerzAdda/ui/screens/profile/SupportViewModel.kt"
         ]},
         "proof": {
             "backoff_policy_present": perf017_fixed
