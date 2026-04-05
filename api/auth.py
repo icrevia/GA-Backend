@@ -219,3 +219,32 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
     except Exception as e:
         logger.error(f"OTP SEND ERR LOGIN: {e}")
         raise HTTPException(status_code=503, detail=f"Failed to send OTP login: {str(e)}")
+
+
+@router.post("/send-otp")
+@limiter.limit("10/minute")
+async def send_otp(
+    request: Request,
+    phone: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Resend OTP for login/signup continuation flows.
+
+    Supports existing users (login) and pending signups already present in memory.
+    """
+    normalized_phone = _normalize_signup_phone(phone)
+
+    user_exists_res = await db.execute(select(User.id).where(User.phone_number == normalized_phone))
+    user_exists = user_exists_res.scalar_one_or_none() is not None
+
+    if not user_exists and normalized_phone not in _pending_signups:
+        raise HTTPException(status_code=404, detail="Account not found for this phone")
+
+    try:
+        from services import otp as otp_service
+        res = await otp_service.send_otp(normalized_phone)
+        _otp_store[normalized_phone] = res["data"]["verificationId"]
+        return {"message": "OTP sent", "phone": normalized_phone, "status": "pending_verification"}
+    except Exception as e:
+        logger.error(f"OTP SEND ERR RESEND: {e}")
+        raise HTTPException(status_code=503, detail=f"Failed to resend OTP: {str(e)}")
