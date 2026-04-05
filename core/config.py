@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # ── Pay0.shop ─────────────────────────────────────────────────────────────
     PAY0_MERCHANT_KEY: str = ""
 
+    # ── Message Central OTP ───────────────────────────────────────────────────
+    MC_CUSTOMER_ID: str = ""
+    MC_AUTH_TOKEN:  str = ""
+
     class Config:
         env_file = ".env"
         case_sensitive = True

@@ -263,7 +263,7 @@ def get_system_status():
                 "update_message",
                 "A new version of GamerzAdda is available! Upgrade now for the latest features."
             ),
-            "payu_merchant_vpa":  settings.PAYU_MERCHANT_VPA,
+            "payu_merchant_vpa":  "",
             "support_email":      "support@GamerzAdda.com" # Example, could be from settings
         }
     finally:
