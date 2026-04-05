@@ -4,7 +4,8 @@ from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
 from typing import List
 
-from api.deps import get_db, get_current_user, get_current_active_admin
+from api.deps import get_current_user, get_current_active_admin
+from core.database import get_db_sync as get_db
 from models.user import User
 from models.tournament import Tournament
 from models.participant import TournamentParticipant

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from api.deps import get_current_user, get_current_active_admin
-from core.database import get_db
+from core.database import get_db_sync as get_db
 from models.user import User
 from schemas.user import UserResponse, UserUpdate
 

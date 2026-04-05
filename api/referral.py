@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
-from core.database import get_db
+from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
 from services.notifications import add_user_notification

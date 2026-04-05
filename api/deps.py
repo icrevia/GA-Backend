@@ -1,8 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from core.database import get_db
+from sqlalchemy.orm import Session
+from core.database import get_db_sync
 from core.config import settings
 from core.security import decode_access_token
 from models.user import User
@@ -10,8 +9,8 @@ from models.user import User
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
 
-async def get_current_user(
-    db: AsyncSession = Depends(get_db),
+def get_current_user(
+    db: Session = Depends(get_db_sync),
     token: str | None = Depends(oauth2_scheme),
 ) -> User:
     if not token:
@@ -27,8 +26,7 @@ async def get_current_user(
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
-    result = await db.execute(select(User).where(User.id == int(user_id)))
-    user = result.scalar_one_or_none()
+    user = db.query(User).filter(User.id == int(user_id)).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
@@ -50,8 +48,8 @@ async def get_current_user(
     return user
 
 
-async def get_user_for_support(
-    db: AsyncSession = Depends(get_db),
+def get_user_for_support(
+    db: Session = Depends(get_db_sync),
     token: str | None = Depends(oauth2_scheme),
 ) -> User:
     """Special dependency for support — allows users to connect even if restricted/banned."""
@@ -63,8 +61,7 @@ async def get_user_for_support(
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    result = await db.execute(select(User).where(User.id == int(user_id)))
-    user = result.scalar_one_or_none()
+    user = db.query(User).filter(User.id == int(user_id)).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 

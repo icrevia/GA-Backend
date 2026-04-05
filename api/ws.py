@@ -4,7 +4,7 @@ import logging
 
 from core.websockets import manager, ALLOWED_WS_EVENTS
 from core.security import decode_access_token
-from core.database import SessionLocal
+from core.database import SyncSessionLocal
 from models.user import User
 
 logger = logging.getLogger("GamerzAdda.ws")
@@ -54,7 +54,7 @@ async def get_user_from_token(token: str):
             return None, False
 
         uid = int(user_id)
-        db = SessionLocal()
+        db = SyncSessionLocal()
         try:
             user = db.query(User).filter(User.id == uid).first()
             if not user:
@@ -148,7 +148,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 msg["from_user_id"] = user_id
 
                 # Fetch username for admin-side display
-                db = SessionLocal()
+                db = SyncSessionLocal()
                 try:
                     user = db.query(User).filter(User.id == user_id).first()
                     msg["from_user_name"] = user.username if user else f"User #{user_id}"

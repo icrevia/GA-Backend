@@ -8,7 +8,8 @@ import html
 import logging
 import hashlib
 
-from api.deps import get_db, get_current_user, get_current_active_admin
+from api.deps import get_current_user, get_current_active_admin
+from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
 from services.pay0 import create_pay0_order, check_pay0_order_status
