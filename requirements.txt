@@ -12,3 +12,8 @@ websockets
 alembic
 psycopg2-binary
 gunicorn
+slowapi
+redis
+aioredis
+jinja2
+python-dotenv
