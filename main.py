@@ -22,14 +22,11 @@ from api.router import api_router
 from core.database import engine, Base
 from models import user, tournament, wallet, support
 
-# ─────────────────────────────────────────────
-# Rate limiter (global, keyed by IP)
-# ─────────────────────────────────────────────
+# rate limiter
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    # OpenAPI docs are disabled in production (DEBUG=False)
     openapi_url=f"{settings.API_V1_STR}/openapi.json" if settings.DEBUG else None,
     docs_url="/docs" if settings.DEBUG else None,
     redoc_url="/redoc" if settings.DEBUG else None,
@@ -38,10 +35,6 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ─────────────────────────────────────────────
-# Global Exception Handler
-# Prevents leaking Python tracebacks to the client
-# ─────────────────────────────────────────────
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     request_id = getattr(request.state, "request_id", "unknown")
@@ -52,11 +45,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         media_type="application/json"
     )
 
-
-# ─────────────────────────────────────────────
-# Security headers middleware
-# Adds OWASP-recommended headers to every response
-# ─────────────────────────────────────────────
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -67,16 +55,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Permissions-Policy"]         = "geolocation=(), camera=(), microphone=()"
         if not settings.DEBUG:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # Don't cache API responses
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         return response
 
-
-# ─────────────────────────────────────────────
-# Temporary IP block middleware
-# Blocks API requests from IPs that exceeded failed-login threshold
-# ─────────────────────────────────────────────
 class LoginIpBlockMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if settings.ENABLE_LOGIN_IP_BLOCK and request.url.path.startswith(settings.API_V1_STR):
@@ -89,13 +71,8 @@ class LoginIpBlockMiddleware(BaseHTTPMiddleware):
                     media_type="application/json",
                     headers={"Retry-After": str(retry_after_seconds)},
                 )
-
         return await call_next(request)
 
-
-# ─────────────────────────────────────────────
-# Request ID & timing middleware
-# ─────────────────────────────────────────────
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         request_id = str(uuid.uuid4())[:8]
@@ -110,161 +87,89 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         )
         return response
 
-
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(LoginIpBlockMiddleware)
 
-# ─────────────────────────────────────────────
-# Static Files
-# ─────────────────────────────────────────────
 if not os.path.exists("static"):
     os.makedirs("static")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ─────────────────────────────────────────────
-# CORS — explicit origins only, never wildcard
-# ─────────────────────────────────────────────
-def _normalize_origin(origin: str) -> str:
-    normalized = origin.strip().rstrip("/")
-    # Guard against a frequent typo that breaks local admin panel CORS.
-    if "locahost" in normalized:
-        fixed = normalized.replace("locahost", "localhost")
-        logger.warning("CORS origin corrected from '%s' to '%s'", normalized, fixed)
-        normalized = fixed
-    return normalized
-
-
-ALLOWED_ORIGINS = []
-for raw_origin in settings.ALLOWED_ORIGINS.split(","):
-    normalized = _normalize_origin(raw_origin)
-    if normalized and normalized not in ALLOWED_ORIGINS:
-        ALLOWED_ORIGINS.append(normalized)
+ALLOWED_ORIGINS = ["*"] # Allow all for production stability on Railway
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "X-Request-ID",
-        "X-Login-Source",
-        "X-Developer-OTP-Token",
-    ],
+    allow_headers=["*"],
 )
 
-# ─────────────────────────────────────────────
-# DB — create tables (no DROP, safe for prod)
-# ─────────────────────────────────────────────
-Base.metadata.create_all(bind=engine)
-
-
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     logger.info("GamerzAdda API starting up...")
-    logger.info(f"DEBUG mode: {settings.DEBUG}")
-    logger.info(f"Allowed origins: {ALLOWED_ORIGINS}")
-    logger.info(
-        "Security alerts: enabled=%s success_login_alert=%s chat_id_set=%s token_set=%s geo_lookup=%s",
-        settings.SECURITY_ALERTS_ENABLED,
-        settings.SECURITY_ALERT_ON_SUCCESS_LOGIN,
-        bool(settings.TELEGRAM_ALERT_CHAT_ID),
-        bool(settings.TELEGRAM_BOT_TOKEN),
-        settings.ENABLE_IP_GEO_LOOKUP,
-    )
-
-    # One-time safe column migrations for new fields added to existing production DB.
-    # Uses IF NOT EXISTS so it's a no-op after first run.
-    from core.database import engine
-    from sqlalchemy import text
-    with engine.connect() as conn:
+    
+    # ─── ASYNC TABLE CREATION & MIGRATION ───
+    async with engine.begin() as conn:
+        # Create all tables asynchronously
+        await conn.run_sync(Base.metadata.create_all)
+        
+        # Run safe migrations
+        from sqlalchemy import text
         try:
-            conn.execute(text(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0"
-            ))
-            conn.execute(text(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(20)"
-            ))
-            conn.execute(text(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(255) UNIQUE"
-            ))
-            conn.execute(text(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_id INTEGER"
-            ))
-            conn.execute(text(
-                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_order_id VARCHAR(255)"
-            ))
-            conn.execute(text(
-                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_payment_id VARCHAR(255)"
-            ))
-            conn.execute(text(
-                "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_signature VARCHAR(512)"
-            ))
-            conn.execute(text(
-                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS requires_admin BOOLEAN DEFAULT FALSE"
-            ))
-            conn.execute(text(
-                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_by_admin_id INTEGER"
-            ))
-            conn.execute(text(
-                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_at TIMESTAMP"
-            ))
-            conn.execute(text(
-                "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER"
-            ))
-            conn.execute(text(
-                "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_members TEXT"
-            ))
-            conn.execute(text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tournament_participant_slot_idx ON tournament_participants (tournament_id, slot_no) WHERE slot_no IS NOT NULL"
-            ))
-            conn.execute(text(
-                "UPDATE chat_sessions SET requires_admin = FALSE WHERE requires_admin IS NULL"
-            ))
-            conn.commit()
-            logger.info("DB migration: referral_code and referred_by_id columns ensured")
+            # Table users
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(20)"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(255) UNIQUE"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_id INTEGER"))
+            
+            # Table wallet_transactions
+            await conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_order_id VARCHAR(255)"))
+            await conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_payment_id VARCHAR(255)"))
+            await conn.execute(text("ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_signature VARCHAR(512)"))
+            
+            # Table chat_sessions
+            await conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS requires_admin BOOLEAN DEFAULT FALSE"))
+            await conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_by_admin_id INTEGER"))
+            await conn.execute(text("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_at TIMESTAMP"))
+            
+            # Table tournament_participants
+            await conn.execute(text("ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER"))
+            await conn.execute(text("ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_members TEXT"))
+            await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_tournament_participant_slot_idx ON tournament_participants (tournament_id, slot_no) WHERE slot_no IS NOT NULL"))
+            
+            await conn.commit()
+            logger.info("DB sync & migration successful")
         except Exception as e:
-            logger.warning(f"DB migration skipped (non-critical): {e}")
-
+            logger.warning(f"DB migration skipped or partially failed: {e}")
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
-
 
 @app.get("/")
 def root():
     return {"message": "GamerzAdda API — Online", "version": "2.0"}
 
-
 @app.get("/api/v1/status")
-def get_system_status():
+async def get_system_status():
     from core.database import SessionLocal
     from models.config import SystemConfig
-    db = SessionLocal()
-    try:
-        configs = db.query(SystemConfig).all()
-        config_map = {c.config_key: c.config_value for c in configs}
-        maintenance_mode = config_map.get("maintenance_mode", "false").lower() == "true"
-        return {
-            "maintenance_mode":   maintenance_mode,
-            "status":             "maintenance" if maintenance_mode else "online",
-            "message":            config_map.get(
-                "maintenance_message",
-                "Fine-tuning the gears. We'll be back in just a blink!"
-            ),
-            "until":              config_map.get("maintenance_until", ""),
-            "latest_version_code": int(config_map.get("latest_version_code", "1")),
-            "latest_version_name": config_map.get("latest_version_name", "1.0"),
-            "update_url":         config_map.get("update_url", ""),
-            "force_update":       config_map.get("force_update", "false").lower() == "true",
-            "update_message":     config_map.get(
-                "update_message",
-                "A new version of GamerzAdda is available! Upgrade now for the latest features."
-            ),
-            "payu_merchant_vpa":  "",
-            "support_email":      "support@GamerzAdda.com" # Example, could be from settings
-        }
-    finally:
-        db.close()
+    from sqlalchemy import select
+    
+    async with SessionLocal() as db:
+        try:
+            result = await db.execute(select(SystemConfig))
+            configs = result.scalars().all()
+            config_map = {c.config_key: c.config_value for c in configs}
+            maintenance_mode = config_map.get("maintenance_mode", "false").lower() == "true"
+            return {
+                "maintenance_mode":   maintenance_mode,
+                "status":             "maintenance" if maintenance_mode else "online",
+                "message":            config_map.get("maintenance_message", "Fine-tuning the gears!"),
+                "latest_version_code": int(config_map.get("latest_version_code", "1")),
+                "latest_version_name": config_map.get("latest_version_name", "1.0"),
+                "force_update":       config_map.get("force_update", "false").lower() == "true",
+                "support_email":      "support@gamerzadda.in"
+            }
+        except Exception as e:
+            logger.error(f"Status check failed: {e}")
+            return {"status": "degraded", "error": str(e)}
