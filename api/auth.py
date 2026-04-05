@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import or_, select, func
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from core.database import get_db
@@ -13,18 +13,10 @@ from typing import Any
 from decimal import Decimal
 import hashlib
 import logging
-from services.login_security import (
-    extract_client_ip,
-    is_ip_blocked,
-    record_failed_login,
-    clear_failed_logins,
-)
-from services.telegram_alerts import send_security_alert_async
-from services import otp as otp_service
+import string
+import random
 
-# In-memory store: phone -> verificationId (ephemeral, per-process)
-# Good enough for single-instance local and Railway deploys.
-# For multi-instance production, swap for Redis.
+# In-memory store
 _otp_store: dict[str, str] = {}
 _pending_signups: dict[str, dict] = {}
 
@@ -33,166 +25,20 @@ limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter()
 
-
-def _mask_identifier(value: str) -> str:
-    raw = (value or "").strip()
-    if not raw:
-        return "-"
-
-    if "@" in raw:
-        local, domain = raw.split("@", 1)
-        if not local:
-            return f"***@{domain}"
-        if len(local) == 1:
-            local_masked = "*"
-        elif len(local) == 2:
-            local_masked = f"{local[0]}*"
-        else:
-            local_masked = f"{local[0]}{'*' * (len(local) - 2)}{local[-1]}"
-        return f"{local_masked}@{domain}"
-
-    digits = "".join(ch for ch in raw if ch.isdigit())
-    if len(digits) >= 6:
-        return f"***{digits[-4:]}"
-
-    if len(raw) <= 3:
-        return "***"
-    return f"{raw[0]}***{raw[-1]}"
-
-
-def _safe_user_agent(request: Request) -> str:
-    ua = (request.headers.get("user-agent") or "-").replace("\n", " ").strip()
-    return ua[:180]
-
-
-def _safe_header(request: Request, header_name: str, max_len: int = 180) -> str:
-    value = (request.headers.get(header_name) or "").replace("\n", " ").strip()
-    if not value:
-        return "-"
-    return value[:max_len]
-
-
-def _safe_text(value: str, max_len: int) -> str:
-    return (value or "").replace("\n", " ").strip()[:max_len]
-
-
-def _is_admin_panel_request(request: Request) -> bool:
-    explicit_source = (request.headers.get("x-login-source") or "").strip().lower()
-    if explicit_source == "admin-web":
-        return True
-
-    origin = (request.headers.get("origin") or "").strip().lower().rstrip("/")
-    referer = (request.headers.get("referer") or "").strip().lower().rstrip("/")
-    if not origin and not referer:
-        return False
-
-    for raw_origin in settings.ALLOWED_ORIGINS.split(","):
-        allowed = raw_origin.strip().lower().rstrip("/")
-        if not allowed:
-            continue
-        if allowed in origin or allowed in referer:
-            return True
-
-    # Local admin panel fallback.
-    if "localhost:3000" in origin or "localhost:3000" in referer:
-        return True
-
-    return False
-
-
-def _build_browser_geo_context(login_data: LoginRequest) -> dict[str, object]:
-    context: dict[str, object] = {}
-
-    latitude = login_data.browser_geo_latitude
-    longitude = login_data.browser_geo_longitude
-    if latitude is not None and longitude is not None:
-        context["browser_geo_coordinates"] = f"{latitude:.6f}, {longitude:.6f}"
-        context["browser_geo_maps"] = f"https://maps.google.com/?q={latitude:.6f},{longitude:.6f}"
-
-    if login_data.browser_geo_accuracy_m is not None:
-        context["browser_geo_accuracy_m"] = round(float(login_data.browser_geo_accuracy_m), 1)
-
-    if login_data.browser_geo_captured_at:
-        context["browser_geo_captured_at"] = _safe_text(login_data.browser_geo_captured_at, 64)
-
-    if login_data.browser_geo_provider:
-        context["browser_geo_provider"] = _safe_text(login_data.browser_geo_provider, 40)
-
-    if login_data.browser_geo_permission:
-        context["browser_geo_permission"] = _safe_text(login_data.browser_geo_permission, 24)
-
-    return context
-
-
-def _is_geo_permission_denied(login_data: LoginRequest) -> bool:
-    permission = (login_data.browser_geo_permission or "").strip().lower()
-    return permission == "denied"
-
-
-def _build_request_context(
-    request: Request,
-    client_ip: str,
-    login_data: LoginRequest | None = None,
-) -> dict[str, object]:
-    user_agent = _safe_user_agent(request)
-    accept_language = _safe_header(request, "accept-language", 120)
-    platform = _safe_header(request, "sec-ch-ua-platform", 80)
-    browser_hint = _safe_header(request, "sec-ch-ua", 120)
-    origin = _safe_header(request, "origin", 140)
-    referer = _safe_header(request, "referer", 180)
-    forwarded_for = _safe_header(request, "x-forwarded-for", 140)
-    real_ip = _safe_header(request, "x-real-ip", 80)
-    cf_connecting_ip = _safe_header(request, "cf-connecting-ip", 80)
-
-    fingerprint_source = "|".join([client_ip, user_agent, accept_language, platform, browser_hint])
-    device_fingerprint = hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()[:12]
-
-    context: dict[str, object] = {
-        "ip": client_ip,
-        "user_agent": user_agent,
-        "device_fingerprint": device_fingerprint,
-    }
-
-    optional_headers = {
-        "accept_language": accept_language,
-        "platform": platform,
-        "browser_hint": browser_hint,
-        "origin": origin,
-        "referer": referer,
-        "forwarded_for": forwarded_for,
-        "real_ip": real_ip,
-        "cf_connecting_ip": cf_connecting_ip,
-    }
-
-    for key, value in optional_headers.items():
-        if value != "-":
-            context[key] = value
-
-    if login_data is not None:
-        context.update(_build_browser_geo_context(login_data))
-
-    return context
-
-
 def _normalize_signup_phone(raw_phone: str) -> str:
     phone = (raw_phone or "").strip().replace(" ", "")
     if len(phone) == 10 and phone.isdigit():
         phone = f"+91{phone}"
     return phone
 
-
-class SignupResponse(Token):
-    user: UserResponse
-
-
 @router.get("/signup-availability")
 @limiter.limit("60/minute")
-def signup_availability(
+async def signup_availability(
     request: Request,
     username: str | None = Query(default=None),
     email: str | None = Query(default=None),
     phone: str | None = Query(default=None),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> Any:
     normalized_username = (username or "").strip()
     normalized_email = (email or "").strip().lower().split("\n")[0]
@@ -203,11 +49,14 @@ def signup_availability(
     phone_available = True
 
     if normalized_username:
-        username_available = db.query(User.id).filter(User.username == normalized_username).first() is None
+        result = await db.execute(select(User.id).where(User.username == normalized_username))
+        username_available = result.scalar_one_or_none() is None
     if normalized_email:
-        email_available = db.query(User.id).filter(User.email == normalized_email).first() is None
+        result = await db.execute(select(User.id).where(User.email == normalized_email))
+        email_available = result.scalar_one_or_none() is None
     if normalized_phone:
-        phone_available = db.query(User.id).filter(User.phone_number == normalized_phone).first() is None
+        result = await db.execute(select(User.id).where(User.phone_number == normalized_phone))
+        phone_available = result.scalar_one_or_none() is None
 
     return {
         "username_available": username_available,
@@ -215,23 +64,27 @@ def signup_availability(
         "phone_available": phone_available,
     }
 
-
 @router.post("/signup")
-@limiter.limit("5/minute")  # Rate limit: 5 signups per minute per IP
-def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db)) -> Any:
-    email = user_in.email.strip().lower().split('\\n')[0]
+@limiter.limit("5/minute")
+async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depends(get_db)) -> Any:
+    email = user_in.email.strip().lower().split('\n')[0]
     phone = _normalize_signup_phone(user_in.phone_number)
 
-    if db.query(User).filter(User.email == email).first():
+    # Email check
+    result = await db.execute(select(User).where(User.email == email))
+    if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    if db.query(User).filter(User.phone_number == phone).first():
+    # Phone check
+    result = await db.execute(select(User).where(User.phone_number == phone))
+    if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Phone number already in use")
 
-    if db.query(User).filter(User.username == user_in.username).first():
+    # Username check
+    result = await db.execute(select(User).where(User.username == user_in.username))
+    if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username taken")
 
-    # Store pending signup instead of saving to DB immediately
     _pending_signups[phone] = {
         "username": user_in.username,
         "email": email,
@@ -239,84 +92,54 @@ def signup(request: Request, user_in: UserCreate, db: Session = Depends(get_db))
         "referral_code": user_in.referral_code,
     }
 
-    # Automatically trigger OTP sending
     try:
+        from services import otp as otp_service
+        # Sync call (OTP service is usually REST)
         result = otp_service.send_otp(phone)
         verification_id = result["data"]["verificationId"]
         _otp_store[phone] = verification_id
-        logger.info(f"OTP automatically sent for pending signup {phone}, verificationId={verification_id}")
+        return {"message": "OTP sent to phone for verification", "phone": phone, "status": "pending_verification"}
     except Exception as e:
-        # If OTP service fails, remove pending signup
         _pending_signups.pop(phone, None)
-        logger.error(f"Failed to send OTP during signup: {e}")
-        raise HTTPException(status_code=503, detail="Failed to send OTP verification. Please try again.")
+        raise HTTPException(status_code=503, detail="Failed to send OTP verification.")
 
-    return {
-        "message": "OTP sent to phone for verification",
-        "phone": phone,
-        "status": "pending_verification"
-    }
-
-@router.post("/send-otp")
-@limiter.limit("3/minute")
-def send_otp(request: Request, phone: str = Query(...), db: Session = Depends(get_db)) -> Any:
-    """Send a real 4-digit OTP via Message Central."""
-    normalized_phone = _normalize_signup_phone(phone)
-    try:
-        result = otp_service.send_otp(normalized_phone)
-        verification_id = result["data"]["verificationId"]
-        _otp_store[normalized_phone] = verification_id
-        logger.info(f"OTP sent to {normalized_phone}, verificationId={verification_id}")
-        return {"message": "OTP sent successfully", "phone": normalized_phone}
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
-
-@router.post("/verify-otp", response_model=SignupResponse)
-def verify_otp(
+@router.post("/verify-otp")
+async def verify_otp(
     request: Request,
     phone: str = Query(...),
     otp: str = Query(...),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ) -> Any:
-    """Verify OTP via Message Central and return access token."""
     normalized_phone = _normalize_signup_phone(phone)
-
     verification_id = _otp_store.get(normalized_phone)
     if not verification_id:
-        raise HTTPException(status_code=400, detail="OTP expired or not requested. Please resend.")
+        raise HTTPException(status_code=400, detail="OTP expired or not requested.")
 
-    valid = otp_service.verify_otp(verification_id, otp)
-    if not valid:
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+    from services import otp as otp_service
+    if not otp_service.verify_otp(verification_id, otp):
+        raise HTTPException(status_code=400, detail="Invalid OTP")
 
-    # OTP verified — clean up
     _otp_store.pop(normalized_phone, None)
     
-    user = None
+    # Existing user?
+    result = await db.execute(select(User).where(User.phone_number == normalized_phone))
+    db_user = result.scalar_one_or_none()
 
-    # Check if this is a pending signup
     if normalized_phone in _pending_signups:
-        # Commit the user to the database now
         pending_data = _pending_signups.pop(normalized_phone)
         
-        # 1. Generate unique referral code for the new user
-        import string, random
         def generate_code():
             return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         
         ref_code = generate_code()
-        while db.query(User).filter(User.referral_code == ref_code).first():
+        # Ensure unique ref code
+        while (await db.execute(select(User).where(User.referral_code == ref_code))).scalar_one_or_none():
             ref_code = generate_code()
 
-        # 2. Check for referrer
         referrer = None
         if pending_data["referral_code"]:
-            referrer = db.query(User).filter(User.referral_code == pending_data["referral_code"].strip().upper()).first()
-            if not referrer:
-                 logger.warning(f"Invalid referral code used: {pending_data['referral_code']}")
-
-        referrer_signup_bonus = Decimal("2.00")
+            res = await db.execute(select(User).where(User.referral_code == pending_data["referral_code"].strip().upper()))
+            referrer = res.scalar_one_or_none()
 
         db_user = User(
             username=pending_data["username"],
@@ -329,99 +152,63 @@ def verify_otp(
         )
 
         db.add(db_user)
-        db.commit()
-        db.refresh(db_user)
+        await db.commit()
+        await db.refresh(db_user)
 
-        # 3. Handle Referrer instant signup payout (INR 2)
+        # Referrer bonus?
         if referrer:
-            current_balance = Decimal(str(referrer.wallet_balance or 0))
-            referrer.wallet_balance = current_balance + referrer_signup_bonus
-            
+            referrer.wallet_balance = (referrer.wallet_balance or 0) + Decimal("2.00")
             from models.wallet import WalletTransaction
-            # Record Referrer Transaction
             db.add(WalletTransaction(
                 user_id=referrer.id,
-                amount=referrer_signup_bonus,
+                amount=Decimal("2.00"),
                 transaction_type="REFERRAL_REWARD",
                 status="SUCCESS",
                 reference_id=f"REF_SIGNUP_{db_user.id}"
             ))
-            
-            from services.notifications import add_user_notification
-            add_user_notification(
-                db,
-                referrer.id,
-                "Referral Reward! 💎",
-                (
-                    f"Your friend {db_user.username} joined using your code. "
-                    f"₹2 instant bonus added. Mission progress grows after their ₹50+ recharge."
-                ),
-                "WALLET"
-            )
-            db.commit()
+            await db.commit()
 
-        # Auto-assign one of 5 default avatars
-        avatar_id = (db_user.id % 5) + 1
-        db_user.profile_pic = f"{settings.APP_URL}/static/avatars/avatar{avatar_id}.png"
-        db.commit()
-        db.refresh(db_user)
+        # Assign avatar
+        db_user.profile_pic = f"{settings.APP_URL}/static/avatars/avatar{(db_user.id % 5) + 1}.png"
+        await db.commit()
+        await db.refresh(db_user)
 
-        from services.notifications import add_user_notification
-        add_user_notification(
-            db,
-            db_user.id,
-            "Welcome to GamerzAdda",
-            "Start your esports journey with India's fastest tournament platform. 🦾",
-            "APP"
-        )
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-        logger.info(f"New signup verified & created: user_id={db_user.id} username={db_user.username}")
-        user = db_user
-    else:
-        # Existing login
-        user = db.query(User).filter(User.phone_number == normalized_phone).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-    token_version = getattr(user, "token_version", 0) or 0
+    token_version = getattr(db_user, "token_version", 0) or 0
     return {
-        "access_token": create_access_token({"sub": str(user.id), "tv": token_version}),
+        "access_token": create_access_token({"sub": str(db_user.id), "tv": token_version}),
         "token_type": "bearer",
-        "role": user.role,
-        "user": user
+        "role": db_user.role,
+        "user": db_user
     }
 
-@router.post("/login", response_model=Any)
+@router.post("/login")
 @limiter.limit("10/minute")
-def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)) -> Any:
-    """Passwordless login: just checks if user exists then triggers OTP."""
-    client_ip = extract_client_ip(request)
-    raw_identifier = login_data.email.strip()
-    identifier = raw_identifier.lower()
+async def login(request: Request, login_data: LoginRequest, db: AsyncSession = Depends(get_db)) -> Any:
+    identifier = login_data.email.strip().lower()
     if identifier.isdigit() and len(identifier) == 10:
         identifier = f"+91{identifier}"
 
-    user = db.query(User).filter(
-        or_(
-            User.email == identifier,
-            User.username == raw_identifier,
-            User.phone_number == identifier
+    result = await db.execute(
+        select(User).where(
+            or_(
+                User.email == identifier,
+                User.username == login_data.email.strip(),
+                User.phone_number == identifier
+            )
         )
-    ).first()
+    )
+    user = result.scalar_one_or_none()
 
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    # Automatically trigger OTP sending for Login
     try:
-        result = otp_service.send_otp(user.phone_number)
-        verification_id = result["data"]["verificationId"]
-        _otp_store[user.phone_number] = verification_id
-        logger.info(f"OTP automatically sent during login for {user.phone_number}, verificationId={verification_id}")
+        from services import otp as otp_service
+        res = otp_service.send_otp(user.phone_number)
+        _otp_store[user.phone_number] = res["data"]["verificationId"]
+        return {"message": "OTP sent", "phone": user.phone_number, "status": "pending_verification"}
     except Exception as e:
-        logger.error(f"Failed to send OTP during login: {e}")
-        raise HTTPException(status_code=503, detail="Failed to send OTP verification. Please try again.")
-
-    return {"message": "OTP sent to phone for verification", "phone": user.phone_number, "status": "pending_verification"}
-
-
+        raise HTTPException(status_code=503, detail="Failed to send OTP.")
