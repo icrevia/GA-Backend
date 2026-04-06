@@ -1,12 +1,11 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import List
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 import uuid
 import html
 import logging
-import hashlib
 
 from api.deps import get_current_user, get_current_active_admin
 from core.database import get_db_sync as get_db
@@ -73,28 +72,46 @@ def init_add_money(
     db.flush()
 
     api_key = settings.PAY0_MERCHANT_KEY
-    redirect_url = f"{settings.APP_URL}/api/v1/wallet/pay0/return"
+    if not api_key:
+        tx.status = "FAILED"
+        tx.failure_reason = "PAY0_MERCHANT_KEY_NOT_CONFIGURED"
+        db.add(tx)
+        db.commit()
+        raise HTTPException(status_code=503, detail="Payment gateway is temporarily unavailable")
+
+    app_url = settings.APP_URL.strip().rstrip("/")
+    if not app_url:
+        tx.status = "FAILED"
+        tx.failure_reason = "APP_URL_NOT_CONFIGURED"
+        db.add(tx)
+        db.commit()
+        raise HTTPException(status_code=503, detail="Payment redirect is not configured")
+
+    redirect_url = f"{app_url}/api/v1/wallet/pay0/return"
+    customer_name = (current_user.username or f"User{current_user.id}").strip()
+    customer_mobile = (current_user.phone_number or "").strip()
     
     try:
         pay0_res = create_pay0_order(
             api_key=api_key,
             order_id=txnid,
             amount=float(req.amount),
-            customer_name=current_user.username,
-            customer_mobile=current_user.phone_number or "9999999999",
+            customer_name=customer_name,
+            customer_mobile=customer_mobile,
             redirect_url=redirect_url
         )
         
         if not pay0_res.get("success"):
             raise RuntimeError(f"PAY0_INIT_FAILED: {pay0_res.get('error', 'Unknown Error')}")
 
-        tx.gateway_order_id = txnid
+        provider_order_id = pay0_res.get("order_id") or txnid
+        tx.gateway_order_id = provider_order_id
         
         response_payload = {
             "gateway": "PAY0",
             "pay0_init": {
                 "payment_url": pay0_res["payment_url"],
-                "order_id": txnid
+                "order_id": provider_order_id
             }
         }
     except Exception as exc:
@@ -161,12 +178,12 @@ async def pay0_callback_handler(
     else:
         form_data = dict(request.query_params)
 
-    order_id = form_data.get("order_id")
+    order_id = form_data.get("order_id") or form_data.get("orderId")
     if not order_id:
         return HTMLResponse("<body>Invalid Request: Missing order_id</body>", status_code=400)
 
     tx = db.query(WalletTransaction).filter(
-        WalletTransaction.reference_id == order_id
+        (WalletTransaction.reference_id == order_id) | (WalletTransaction.gateway_order_id == order_id)
     ).with_for_update().first()
 
     if not tx:
@@ -175,12 +192,25 @@ async def pay0_callback_handler(
     # Strictly verify against Pay0 Check Status API to prevent spoofing
     api_key = settings.PAY0_MERCHANT_KEY
     status_res = check_pay0_order_status(api_key, order_id)
+    provider_order_id = status_res.get("order_id") or order_id
+    if tx.gateway_order_id != provider_order_id:
+        tx.gateway_order_id = provider_order_id
     
     final_status = "PENDING"
     
     if status_res["status"] == "SUCCESS":
         final_status = "success"
         if tx.status == "PENDING":
+            status_amount = Decimal(str(status_res.get("amount", 0)))
+            if status_amount != tx.amount:
+                tx.status = "FAILED"
+                tx.failure_reason = f"PAY0_AMOUNT_MISMATCH expected={tx.amount} got={status_amount}"
+                db.add(tx)
+                db.commit()
+                if "/webhook" in str(request.url):
+                    return {"message": "Amount mismatch", "status": "failed"}
+                return HTMLResponse("<body>Payment verification failed: amount mismatch</body>", status_code=400)
+
             tx.status = "SUCCESS"
             tx.gateway_payment_id = status_res.get("utr") or form_data.get("utr")
             user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
@@ -240,17 +270,28 @@ def get_payment_status(
     tx = db.query(WalletTransaction).filter(
         WalletTransaction.reference_id == txnid,
         WalletTransaction.user_id == current_user.id
-    ).first()
+    ).with_for_update().first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
     
     if tx.status == "PENDING":
         status_res = check_pay0_order_status(settings.PAY0_MERCHANT_KEY, txnid)
         if status_res["status"] == "SUCCESS":
-            tx.status = "SUCCESS"
-            tx.gateway_payment_id = status_res.get("utr")
-            user = db.query(User).filter(User.id == tx.user_id).first()
-            user.wallet_balance += tx.amount
+            status_amount = Decimal(str(status_res.get("amount", 0)))
+            if status_amount == tx.amount:
+                tx.status = "SUCCESS"
+                tx.gateway_payment_id = status_res.get("utr")
+                tx.gateway_order_id = status_res.get("order_id") or tx.gateway_order_id or txnid
+                user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+                user.wallet_balance += tx.amount
+                db.commit()
+            else:
+                tx.status = "FAILED"
+                tx.failure_reason = f"PAY0_AMOUNT_MISMATCH expected={tx.amount} got={status_amount}"
+                db.commit()
+        elif status_res["status"] == "FAILED":
+            tx.status = "FAILED"
+            tx.failure_reason = status_res.get("error") or "PAY0_CONFIRMED_FAILED"
             db.commit()
 
     return {
@@ -259,6 +300,7 @@ def get_payment_status(
         "amount": tx.amount,
         "payment_mode": tx.payment_mode,
         "failure_reason": tx.failure_reason,
+        "gateway_payment_id": tx.gateway_payment_id,
         "utr": tx.gateway_payment_id
     }
 
