@@ -46,6 +46,7 @@ class WithdrawUpiAccountPayload(BaseModel):
 
 class WithdrawUpiAccountListRequest(BaseModel):
     accounts: List[WithdrawUpiAccountPayload]
+    selected_upi_id: Optional[str] = None
 
 
 class WithdrawUpiAccountResponse(BaseModel):

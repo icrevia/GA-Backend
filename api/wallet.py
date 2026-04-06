@@ -88,6 +88,7 @@ def replace_withdraw_accounts(
 
     normalized_accounts: list[tuple[str, str]] = []
     seen_upi_ids: set[str] = set()
+    selected_upi_id = _normalize_upi_id(req.selected_upi_id) if req.selected_upi_id else None
 
     for account in req.accounts:
         account_holder_name = _normalize_account_holder_name(account.account_holder_name)
@@ -103,6 +104,9 @@ def replace_withdraw_accounts(
         normalized_accounts.append((account_holder_name, upi_id))
         seen_upi_ids.add(upi_id)
 
+    if selected_upi_id and selected_upi_id not in seen_upi_ids:
+        raise HTTPException(status_code=400, detail="Selected UPI must be part of saved accounts")
+
     db.query(WithdrawUpiAccount).filter(
         WithdrawUpiAccount.user_id == current_user.id
     ).delete(synchronize_session=False)
@@ -116,7 +120,10 @@ def replace_withdraw_accounts(
             )
         )
 
-    current_user.upi_id = normalized_accounts[0][1] if normalized_accounts else None
+    if normalized_accounts:
+        current_user.upi_id = selected_upi_id or normalized_accounts[-1][1]
+    else:
+        current_user.upi_id = None
     db.add(current_user)
     db.commit()
 
