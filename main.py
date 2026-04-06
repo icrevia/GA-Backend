@@ -21,7 +21,7 @@ logger = logging.getLogger("GamerzAdda")
 
 from api.router import api_router
 from core.database import engine, Base
-from models import user, tournament, wallet, support
+from models import user, tournament, wallet, support, withdraw_upi_account
 
 # ─────────────────────────────────────────────
 # Lifespan context manager (Modern approach)

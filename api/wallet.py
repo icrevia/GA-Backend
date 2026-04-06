@@ -11,8 +11,17 @@ from api.deps import get_current_user, get_current_active_admin
 from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
+from models.withdraw_upi_account import WithdrawUpiAccount
 from services.pay0 import create_pay0_order, check_pay0_order_status
-from schemas.wallet import AddMoneyRequest, PaymentInitResponse, WithdrawalRequest, WalletTransactionResponse, WalletBalanceResponse
+from schemas.wallet import (
+    AddMoneyRequest,
+    PaymentInitResponse,
+    WithdrawalRequest,
+    WalletTransactionResponse,
+    WalletBalanceResponse,
+    WithdrawUpiAccountListRequest,
+    WithdrawUpiAccountResponse,
+)
 from core.config import settings
 from services.notifications import add_user_notification
 from core.websockets import manager as ws_manager
@@ -20,6 +29,15 @@ from core.websockets import manager as ws_manager
 logger = logging.getLogger("GamerzAdda.wallet")
 
 router = APIRouter()
+MAX_WITHDRAW_UPI_ACCOUNTS = 3
+
+
+def _normalize_upi_id(raw_value: str) -> str:
+    return raw_value.strip().lower()
+
+
+def _normalize_account_holder_name(raw_value: str) -> str:
+    return " ".join(raw_value.strip().split())
 
 # ─────────────────────────────────────────────────────────────────
 # Wallet balance & history
@@ -39,6 +57,73 @@ def get_transactions(
         db.query(WalletTransaction)
         .filter(WalletTransaction.user_id == current_user.id)
         .order_by(WalletTransaction.created_at.desc())
+        .all()
+    )
+
+
+@router.get("/withdraw/accounts", response_model=List[WithdrawUpiAccountResponse])
+def get_withdraw_accounts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return (
+        db.query(WithdrawUpiAccount)
+        .filter(WithdrawUpiAccount.user_id == current_user.id)
+        .order_by(WithdrawUpiAccount.id.asc())
+        .all()
+    )
+
+
+@router.put("/withdraw/accounts", response_model=List[WithdrawUpiAccountResponse])
+def replace_withdraw_accounts(
+    req: WithdrawUpiAccountListRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if len(req.accounts) > MAX_WITHDRAW_UPI_ACCOUNTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You can save up to {MAX_WITHDRAW_UPI_ACCOUNTS} UPI accounts"
+        )
+
+    normalized_accounts: list[tuple[str, str]] = []
+    seen_upi_ids: set[str] = set()
+
+    for account in req.accounts:
+        account_holder_name = _normalize_account_holder_name(account.account_holder_name)
+        upi_id = _normalize_upi_id(account.upi_id)
+
+        if not account_holder_name:
+            raise HTTPException(status_code=400, detail="Account holder name is required")
+        if not upi_id:
+            raise HTTPException(status_code=400, detail="UPI ID is required")
+        if upi_id in seen_upi_ids:
+            raise HTTPException(status_code=400, detail="Duplicate UPI IDs are not allowed")
+
+        normalized_accounts.append((account_holder_name, upi_id))
+        seen_upi_ids.add(upi_id)
+
+    db.query(WithdrawUpiAccount).filter(
+        WithdrawUpiAccount.user_id == current_user.id
+    ).delete(synchronize_session=False)
+
+    for account_holder_name, upi_id in normalized_accounts:
+        db.add(
+            WithdrawUpiAccount(
+                user_id=current_user.id,
+                account_holder_name=account_holder_name,
+                upi_id=upi_id,
+            )
+        )
+
+    current_user.upi_id = normalized_accounts[0][1] if normalized_accounts else None
+    db.add(current_user)
+    db.commit()
+
+    return (
+        db.query(WithdrawUpiAccount)
+        .filter(WithdrawUpiAccount.user_id == current_user.id)
+        .order_by(WithdrawUpiAccount.id.asc())
         .all()
     )
 
@@ -80,14 +165,12 @@ def init_add_money(
         raise HTTPException(status_code=503, detail="Payment gateway is temporarily unavailable")
 
     app_url = settings.APP_URL.strip().rstrip("/")
+    redirect_url = f"{app_url}/api/v1/wallet/pay0/return" if app_url else "https://pay0.shop"
     if not app_url:
-        tx.status = "FAILED"
-        tx.failure_reason = "APP_URL_NOT_CONFIGURED"
-        db.add(tx)
-        db.commit()
-        raise HTTPException(status_code=503, detail="Payment redirect is not configured")
-
-    redirect_url = f"{app_url}/api/v1/wallet/pay0/return"
+        logger.warning(
+            "APP_URL is not configured, using Pay0 fallback redirect URL. "
+            "Webhook/redirect callback may not hit backend; app polling will confirm payment."
+        )
     customer_name = (current_user.username or f"User{current_user.id}").strip()
     customer_mobile = (current_user.phone_number or "").strip()
     
@@ -321,12 +404,32 @@ def request_withdrawal(
         raise HTTPException(status_code=400, detail="Maximum withdrawal per request is ₹50,000")
 
     user = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+    normalized_upi_id = _normalize_upi_id(req.upi_id)
+
+    if not normalized_upi_id:
+        raise HTTPException(status_code=400, detail="UPI ID is required")
 
     if user.wallet_balance < req.amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
     user.wallet_balance -= req.amount
-    user.upi_id = req.upi_id
+    user.upi_id = normalized_upi_id
+
+    existing_accounts = (
+        db.query(WithdrawUpiAccount)
+        .filter(WithdrawUpiAccount.user_id == user.id)
+        .order_by(WithdrawUpiAccount.id.asc())
+        .all()
+    )
+    has_saved_upi = any(account.upi_id == normalized_upi_id for account in existing_accounts)
+    if not has_saved_upi and len(existing_accounts) < MAX_WITHDRAW_UPI_ACCOUNTS:
+        db.add(
+            WithdrawUpiAccount(
+                user_id=user.id,
+                account_holder_name=(user.username or f"User{user.id}").strip(),
+                upi_id=normalized_upi_id,
+            )
+        )
 
     tx = WalletTransaction(
         user_id=user.id,
@@ -334,7 +437,7 @@ def request_withdrawal(
         transaction_type="WITHDRAWAL",
         status="PENDING",
         reference_id=f"WITHDRAW_{uuid.uuid4().hex[:8].upper()}",
-        gateway_payment_id=req.upi_id
+        gateway_payment_id=normalized_upi_id
     )
 
     db.add(tx)

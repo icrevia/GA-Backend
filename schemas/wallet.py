@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 
 
 class AddMoneyRequest(BaseModel):
@@ -37,3 +37,21 @@ class WalletTransactionResponse(BaseModel):
 
 class WalletBalanceResponse(BaseModel):
     balance: Decimal
+
+
+class WithdrawUpiAccountPayload(BaseModel):
+    account_holder_name: str
+    upi_id: str
+
+
+class WithdrawUpiAccountListRequest(BaseModel):
+    accounts: List[WithdrawUpiAccountPayload]
+
+
+class WithdrawUpiAccountResponse(BaseModel):
+    id: int
+    account_holder_name: str
+    upi_id: str
+
+    class Config:
+        from_attributes = True
