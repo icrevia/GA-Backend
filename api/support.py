@@ -495,7 +495,7 @@ async def send_message(
     if len(clean_message) > MAX_SUPPORT_MESSAGE_LENGTH:
         raise HTTPException(status_code=400, detail=f"Message is too long (max {MAX_SUPPORT_MESSAGE_LENGTH} characters)")
 
-    window_start = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=SUPPORT_RATE_LIMIT_WINDOW_SECONDS)
+    window_start = datetime.now(timezone.utc) - timedelta(seconds=SUPPORT_RATE_LIMIT_WINDOW_SECONDS)
     max_allowed = SUPPORT_RATE_LIMIT_PER_MIN_ADMIN if current_user.role == "ADMIN" else SUPPORT_RATE_LIMIT_PER_MIN_USER
     recent_count_result = await db.execute(
         select(func.count(ChatMessage.id)).where(
