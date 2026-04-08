@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
             queries = [
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(20)",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS bio VARCHAR(30)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(255) UNIQUE",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_id INTEGER",
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_order_id VARCHAR(255)",

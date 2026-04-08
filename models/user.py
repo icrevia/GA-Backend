@@ -15,6 +15,7 @@ class User(Base):
 
     upi_id          = Column(String, nullable=True)
     profile_pic     = Column(String, nullable=True)
+    bio             = Column(String(30), nullable=True)
 
 
     # Game IDs

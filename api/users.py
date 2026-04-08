@@ -32,6 +32,9 @@ def update_user_me(
 
     if user_update.upi_id is not None:
         current_user.upi_id = user_update.upi_id
+    if user_update.bio is not None:
+        cleaned_bio = user_update.bio.strip()
+        current_user.bio = cleaned_bio or None
     if user_update.bgmi_id is not None:
         current_user.bgmi_id = user_update.bgmi_id
     if user_update.valorant_id is not None:
