@@ -1,5 +1,6 @@
 import logging
 import httpx
+import asyncio
 from core.config import settings
 
 logger = logging.getLogger("GamerzAdda.otp")
@@ -120,28 +121,73 @@ async def verify_otp(verification_id: str, otp_code: str) -> bool:
         "code": otp_code,
     }
     
+    transient_status_codes = {408, 429}
+    max_attempts = 3
+
     async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(url, params=params, headers=_headers(), timeout=15.0)
-            data = _safe_json(resp)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = await client.get(url, params=params, headers=_headers(), timeout=15.0)
+                data = _safe_json(resp)
 
-            if resp.status_code == 401:
-                logger.error("MC Verify auth failed (401). Body=%s", _safe_text_preview(resp.text))
-                raise RuntimeError("OTP verification provider auth failed")
+                if resp.status_code == 401:
+                    logger.error("MC Verify auth failed (401). Body=%s", _safe_text_preview(resp.text))
+                    raise RuntimeError("OTP verification provider auth failed")
 
-            # Provider-side outage/transient errors should not be shown as "Invalid OTP".
-            if resp.status_code >= 500 or resp.status_code in {408, 429}:
-                logger.error("MC Verify HTTP %s. Body=%s", resp.status_code, _safe_text_preview(resp.text))
-                raise RuntimeError("OTP verification service unavailable")
+                # Provider-side outage/transient errors should not be shown as "Invalid OTP".
+                if resp.status_code >= 500 or resp.status_code in transient_status_codes:
+                    if attempt < max_attempts:
+                        backoff = 0.8 * attempt
+                        logger.warning(
+                            "MC Verify transient HTTP %s (attempt %s/%s). Retrying in %.1fs",
+                            resp.status_code,
+                            attempt,
+                            max_attempts,
+                            backoff,
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
 
-            verification_status = str((data.get("data") or {}).get("verificationStatus") or "").upper()
-            response_code = str(data.get("responseCode") or "")
+                    logger.error("MC Verify HTTP %s. Body=%s", resp.status_code, _safe_text_preview(resp.text))
+                    raise RuntimeError("OTP verification service unavailable")
 
-            if resp.status_code == 200:
-                if response_code == "200" and verification_status == "VERIFICATION_COMPLETED":
-                    return True
+                verification_status = str((data.get("data") or {}).get("verificationStatus") or "").upper()
+                response_code = str(data.get("responseCode") or "")
 
-                # Known user-facing invalid/expired states.
+                if resp.status_code == 200:
+                    if response_code == "200" and verification_status == "VERIFICATION_COMPLETED":
+                        return True
+
+                    # Known user-facing invalid/expired states.
+                    if verification_status in {
+                        "VERIFICATION_FAILED",
+                        "OTP_INVALID",
+                        "INVALID_OTP",
+                        "OTP_MISMATCH",
+                        "FAILED",
+                        "EXPIRED",
+                    }:
+                        return False
+
+                    if response_code in {"702", "703", "704", "705", "1702", "1703", "1704"}:
+                        return False
+
+                    if attempt < max_attempts:
+                        backoff = 0.8 * attempt
+                        logger.warning(
+                            "MC Verify unresolved response (attempt %s/%s). Retrying in %.1fs. Body=%s",
+                            attempt,
+                            max_attempts,
+                            backoff,
+                            _safe_text_preview(resp.text),
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+
+                    logger.error("MC Verify unresolved response. Body=%s", _safe_text_preview(resp.text))
+                    raise RuntimeError("OTP verification service unavailable")
+
+                # Non-200 but non-5xx: map clearly invalid OTP states to False.
                 if verification_status in {
                     "VERIFICATION_FAILED",
                     "OTP_INVALID",
@@ -149,28 +195,42 @@ async def verify_otp(verification_id: str, otp_code: str) -> bool:
                     "OTP_MISMATCH",
                     "FAILED",
                     "EXPIRED",
-                }:
+                } or response_code in {"702", "703", "704", "705", "1702", "1703", "1704"}:
                     return False
 
-                if response_code in {"702", "703", "704", "705", "1702", "1703", "1704"}:
-                    return False
+                if attempt < max_attempts:
+                    backoff = 0.8 * attempt
+                    logger.warning(
+                        "MC Verify non-terminal HTTP %s (attempt %s/%s). Retrying in %.1fs",
+                        resp.status_code,
+                        attempt,
+                        max_attempts,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
 
-                logger.error("MC Verify unresolved response. Body=%s", _safe_text_preview(resp.text))
+                logger.error("MC Verify HTTP %s. Body=%s", resp.status_code, _safe_text_preview(resp.text))
                 raise RuntimeError("OTP verification service unavailable")
 
-            # Non-200 but non-5xx: map clearly invalid OTP states to False.
-            if verification_status in {
-                "VERIFICATION_FAILED",
-                "OTP_INVALID",
-                "INVALID_OTP",
-                "OTP_MISMATCH",
-                "FAILED",
-                "EXPIRED",
-            } or response_code in {"702", "703", "704", "705", "1702", "1703", "1704"}:
-                return False
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                if attempt < max_attempts:
+                    backoff = 0.8 * attempt
+                    logger.warning(
+                        "MC Verify network error (attempt %s/%s): %s. Retrying in %.1fs",
+                        attempt,
+                        max_attempts,
+                        e,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
 
-            logger.error("MC Verify HTTP %s. Body=%s", resp.status_code, _safe_text_preview(resp.text))
-            raise RuntimeError("OTP verification service unavailable")
-        except Exception as e:
-            logger.error(f"MC Verify Exception: {e}")
-            raise RuntimeError(f"OTP verification failed: {str(e)}")
+                logger.error("MC Verify network exception: %s", e)
+                raise RuntimeError("OTP verification service unavailable")
+
+            except Exception as e:
+                logger.error(f"MC Verify Exception: {e}")
+                raise RuntimeError(f"OTP verification failed: {str(e)}")
+
+    raise RuntimeError("OTP verification service unavailable")
