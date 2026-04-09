@@ -23,6 +23,18 @@ class WithdrawalRequest(BaseModel):
     upi_id: str
 
 
+class PromoRedeemRequest(BaseModel):
+    code: str
+
+
+class PromoRedeemResponse(BaseModel):
+    message: str
+    code: str
+    reward_amount: Decimal
+    wallet_balance: Decimal
+    transaction_reference: str
+
+
 class WalletTransactionResponse(BaseModel):
     id: int
     amount: Decimal

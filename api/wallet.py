@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import List
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
+from datetime import datetime
 import uuid
 import html
 import logging
@@ -11,11 +12,14 @@ from api.deps import get_current_user, get_current_active_admin
 from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
+from models.promo import PromoCode
 from models.withdraw_upi_account import WithdrawUpiAccount
 from services.pay0 import create_pay0_order, check_pay0_order_status
 from schemas.wallet import (
     AddMoneyRequest,
     PaymentInitResponse,
+    PromoRedeemRequest,
+    PromoRedeemResponse,
     WithdrawalRequest,
     WalletTransactionResponse,
     WalletBalanceResponse,
@@ -38,6 +42,22 @@ def _normalize_upi_id(raw_value: str) -> str:
 
 def _normalize_account_holder_name(raw_value: str) -> str:
     return " ".join(raw_value.strip().split())
+
+
+def _normalize_promo_code(raw_value: str) -> str:
+    cleaned = " ".join(raw_value.strip().upper().split())
+    normalized = cleaned.replace(" ", "_")
+    return normalized[:40]
+
+
+def _is_promo_expired(promo: PromoCode) -> bool:
+    if not promo.expires_at:
+        return False
+
+    expires_at = promo.expires_at
+    if getattr(expires_at, "tzinfo", None) is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    return expires_at <= datetime.utcnow()
 
 # ─────────────────────────────────────────────────────────────────
 # Wallet balance & history
@@ -72,6 +92,87 @@ def get_withdraw_accounts(
         .order_by(WithdrawUpiAccount.id.asc())
         .all()
     )
+
+
+@router.post("/promo/redeem", response_model=PromoRedeemResponse)
+def redeem_promo_code(
+    req: PromoRedeemRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    normalized_code = _normalize_promo_code(req.code)
+    if len(normalized_code) < 3:
+        raise HTTPException(status_code=400, detail="Enter a valid promo code")
+
+    promo = (
+        db.query(PromoCode)
+        .filter(PromoCode.code == normalized_code)
+        .with_for_update()
+        .first()
+    )
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo code not found")
+
+    if not bool(promo.is_active):
+        raise HTTPException(status_code=400, detail="Promo code is inactive")
+
+    if int(promo.uses_count or 0) >= int(promo.max_uses or 0):
+        raise HTTPException(status_code=400, detail="Promo code usage limit reached")
+
+    if _is_promo_expired(promo):
+        raise HTTPException(status_code=400, detail="Promo code has expired")
+
+    reference_id = f"PROMO_{promo.id}_{current_user.id}"
+    already_redeemed = db.query(WalletTransaction.id).filter(
+        WalletTransaction.reference_id == reference_id,
+        WalletTransaction.status == "SUCCESS",
+    ).first()
+    if already_redeemed:
+        raise HTTPException(status_code=409, detail="Promo code already redeemed")
+
+    reward_amount = Decimal(str(promo.discount_amount or Decimal("0"))).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    if reward_amount <= Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Promo code has invalid reward amount")
+
+    user = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.wallet_balance = Decimal(str(user.wallet_balance or Decimal("0"))) + reward_amount
+    promo.uses_count = int(promo.uses_count or 0) + 1
+
+    tx = WalletTransaction(
+        user_id=user.id,
+        amount=reward_amount,
+        transaction_type="PROMO_REWARD",
+        status="SUCCESS",
+        reference_id=reference_id,
+        payment_mode="PROMO",
+    )
+
+    db.add(user)
+    db.add(promo)
+    db.add(tx)
+    db.commit()
+    db.refresh(user)
+
+    add_user_notification(
+        db,
+        user.id,
+        "Promo Applied",
+        f"Promo {normalized_code} applied. ₹{reward_amount:.2f} added to your wallet.",
+        "WALLET",
+    )
+
+    return {
+        "message": f"Promo applied successfully. ₹{reward_amount:.2f} credited.",
+        "code": normalized_code,
+        "reward_amount": reward_amount,
+        "wallet_balance": user.wallet_balance,
+        "transaction_reference": reference_id,
+    }
 
 
 @router.put("/withdraw/accounts", response_model=List[WithdrawUpiAccountResponse])
