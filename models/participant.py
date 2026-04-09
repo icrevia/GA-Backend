@@ -33,7 +33,11 @@ class TournamentParticipant(Base):
         
     @property
     def avatar_url(self):
-        return self.user.avatar_url
+        return self.user.profile_pic if self.user else None
+
+    @property
+    def bio(self):
+        return self.user.bio if self.user else None
 
     @property
     def slot_label(self):

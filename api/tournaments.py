@@ -171,6 +171,8 @@ def _build_slots_board(
                 status="BOOKED",
                 user_id=participant.user_id,
                 username=username,
+                avatar_url=(participant.user.profile_pic if participant.user else None),
+                bio=(participant.user.bio if participant.user else None),
                 game_username=(primary_member["name"] if primary_member else participant.game_username),
                 game_uid=(primary_member["uid"] if primary_member else participant.game_uid),
                 team_members=team_members,

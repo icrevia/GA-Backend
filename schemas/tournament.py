@@ -75,6 +75,8 @@ class TournamentSlotResponse(BaseModel):
     status: str
     user_id: Optional[int] = None
     username: Optional[str] = None
+    avatar_url: Optional[str] = None
+    bio: Optional[str] = None
     game_username: Optional[str] = None
     game_uid: Optional[str] = None
     team_members: list[TournamentTeamMember] = []
