@@ -35,19 +35,37 @@ def _to_sync_database_url(database_url: str) -> str:
     rebuilt = parsed._replace(query=urlencode(normalized_params, doseq=True))
     return urlunsplit(rebuilt)
 
+
+def _pool_kwargs_for_url(database_url: str) -> dict:
+    lowered = (database_url or "").lower()
+    if lowered.startswith("sqlite"):
+        return {}
+    return {
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_timeout": settings.DB_POOL_TIMEOUT_SECONDS,
+        "pool_recycle": settings.DB_POOL_RECYCLE_SECONDS,
+        "pool_pre_ping": True,
+        "pool_use_lifo": True,
+    }
+
+
+async_url = settings.DATABASE_URL
+sync_url = _to_sync_database_url(settings.DATABASE_URL)
+
 # Correct Async Engine for asyncpg driver
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    async_url,
     echo=False,
     future=True,
-    pool_pre_ping=True
+    **_pool_kwargs_for_url(async_url)
 )
 
 sync_engine = create_engine(
-    _to_sync_database_url(settings.DATABASE_URL),
+    sync_url,
     echo=False,
     future=True,
-    pool_pre_ping=True,
+    **_pool_kwargs_for_url(sync_url),
 )
 
 # Async Session Factory

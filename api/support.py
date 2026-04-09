@@ -5,7 +5,7 @@ from sqlalchemy import and_, func, select, update
 from pydantic import BaseModel, Field
 from typing import List, Tuple
 from core.database import get_db
-from api.deps import get_current_user, get_user_for_support
+from api.deps import get_current_user_async, get_user_for_support_async
 from models.support import ChatSession, ChatMessage
 from models.user import User
 from core.websockets import manager
@@ -336,7 +336,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int, token: str = ""
 async def get_session_messages(
     session_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_async)
 ):
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -372,7 +372,7 @@ async def get_session_messages(
 @router.get("/sessions", response_model=List[dict])
 async def get_sessions(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_async)
 ):
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -450,7 +450,7 @@ async def get_sessions(
 @router.get("/my-chat")
 async def get_my_chat(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_user_for_support)
+    current_user: User = Depends(get_user_for_support_async)
 ):
     session, all_sessions = await _get_or_create_user_support_session(db, current_user.id)
     attending_admin = await _get_attending_admin_for_user(db, current_user.id)
@@ -487,7 +487,7 @@ async def send_message(
     body: SendMessageRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_user_for_support)
+    current_user: User = Depends(get_user_for_support_async)
 ):
     clean_message = body.message.strip()
     if not clean_message:
@@ -623,7 +623,7 @@ async def log_call(
     duration: str = Query(None),
     user_id: int = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_user_for_support)
+    current_user: User = Depends(get_user_for_support_async)
 ):
     target_user_id = user_id if (current_user.role == "ADMIN" and user_id) else current_user.id
     session, _ = await _get_or_create_user_support_session(db, target_user_id)
@@ -664,7 +664,7 @@ async def log_call(
 async def admin_attend_session(
     request: AttendSessionRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_async)
 ):
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -735,7 +735,7 @@ async def admin_attend_session(
 async def admin_end_session(
     request: EndSessionRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_async)
 ):
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")
@@ -820,7 +820,7 @@ async def admin_end_session(
 async def admin_reply(
     request: AdminReplyRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_async)
 ):
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Not authorized")

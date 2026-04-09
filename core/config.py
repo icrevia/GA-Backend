@@ -61,6 +61,10 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     DATABASE_URL: str = ""
+    DB_POOL_SIZE: int = 1
+    DB_MAX_OVERFLOW: int = 0
+    DB_POOL_TIMEOUT_SECONDS: int = 30
+    DB_POOL_RECYCLE_SECONDS: int = 1800
 
     # ── Pay0.shop ─────────────────────────────────────────────────────────────
     PAY0_MERCHANT_KEY: str = ""
@@ -140,6 +144,34 @@ class Settings(BaseSettings):
                 "[CONFIG WARNING] DATABASE_URL is not set. The app will fail on DB operations.",
                 file=sys.stderr
             )
+
+        if self.DB_POOL_SIZE < 1:
+            print(
+                "[CONFIG WARNING] DB_POOL_SIZE must be >= 1. Falling back to 1.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DB_POOL_SIZE", 1)
+
+        if self.DB_MAX_OVERFLOW < 0:
+            print(
+                "[CONFIG WARNING] DB_MAX_OVERFLOW cannot be negative. Falling back to 0.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DB_MAX_OVERFLOW", 0)
+
+        if self.DB_POOL_TIMEOUT_SECONDS <= 0:
+            print(
+                "[CONFIG WARNING] DB_POOL_TIMEOUT_SECONDS must be positive. Falling back to 30.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DB_POOL_TIMEOUT_SECONDS", 30)
+
+        if self.DB_POOL_RECYCLE_SECONDS <= 0:
+            print(
+                "[CONFIG WARNING] DB_POOL_RECYCLE_SECONDS must be positive. Falling back to 1800.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "DB_POOL_RECYCLE_SECONDS", 1800)
 
         if not self.ALLOWED_ORIGINS:
             if self.DEBUG:

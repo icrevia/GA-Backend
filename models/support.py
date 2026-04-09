@@ -1,7 +1,13 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, CheckConstraint, Index
 from sqlalchemy.orm import relationship
-from datetime import datetime, timezone
+from datetime import datetime
 from core.database import Base
+
+
+def _utcnow_naive() -> datetime:
+    # chat_sessions/chat_messages columns are TIMESTAMP WITHOUT TIME ZONE
+    # so defaults must be naive datetime values.
+    return datetime.utcnow()
 
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
@@ -12,7 +18,7 @@ class ChatSession(Base):
     attended_at = Column(DateTime, nullable=True)
     status = Column(String, default="ACTIVE")
     requires_admin = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=_utcnow_naive)
 
     # Explicit FK avoids ambiguity now that chat_sessions also references users via attended_by_admin_id.
     user = relationship("User", foreign_keys=[user_id])
@@ -29,7 +35,7 @@ class ChatMessage(Base):
     session_id = Column(Integer, ForeignKey("chat_sessions.id"))
     sender_id = Column(Integer, ForeignKey("users.id"))
     content = Column(Text, nullable=False)
-    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    timestamp = Column(DateTime, default=_utcnow_naive)
     is_admin = Column(Boolean, default=False)
     is_read = Column(Boolean, default=False)
 

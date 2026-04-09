@@ -1,7 +1,9 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from core.database import get_db_sync
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from core.database import get_db_sync, get_db
 from core.config import settings
 from core.security import decode_access_token
 from models.user import User
@@ -65,6 +67,42 @@ def get_current_user(
     return user
 
 
+async def get_current_user_async(
+    db: AsyncSession = Depends(get_db),
+    token: str | None = Depends(oauth2_scheme),
+) -> User:
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Provide a Bearer token in the Authorization header.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = decode_access_token(token)
+    user_id: str = payload.get("sub")
+    if user_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+
+    result = await db.execute(select(User).where(User.id == int(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+
+    token_version = payload.get("tv", 0)
+    db_token_version = getattr(user, "token_version", 0) or 0
+    if int(token_version) != int(db_token_version):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_session_revoked_detail(user),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
 def get_user_for_support(
     db: Session = Depends(get_db_sync),
     token: str | None = Depends(oauth2_scheme),
@@ -83,6 +121,35 @@ def get_user_for_support(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
     # Token version check — must still match current user version
+    token_version = payload.get("tv", 0)
+    db_token_version = getattr(user, "token_version", 0) or 0
+    if int(token_version) != int(db_token_version):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_session_revoked_detail(user)
+        )
+
+    return user
+
+
+async def get_user_for_support_async(
+    db: AsyncSession = Depends(get_db),
+    token: str | None = Depends(oauth2_scheme),
+) -> User:
+    """Special dependency for support — allows users to connect even if restricted/banned."""
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    payload = decode_access_token(token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    result = await db.execute(select(User).where(User.id == int(user_id)))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
     token_version = payload.get("tv", 0)
     db_token_version = getattr(user, "token_version", 0) or 0
     if int(token_version) != int(db_token_version):
