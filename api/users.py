@@ -5,6 +5,7 @@ from api.deps import get_current_user, get_current_active_admin
 from core.database import get_db_sync as get_db
 from models.user import User
 from schemas.user import UserResponse, UserUpdate
+from services.match_stats import compute_match_stats_for_user
 
 router = APIRouter()
 
@@ -19,6 +20,14 @@ def _normalize_phone(phone_number: str) -> str:
 @router.get("/me", response_model=UserResponse)
 def read_user_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.get("/me/stats")
+def read_user_me_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return compute_match_stats_for_user(db, current_user.id)
 
 
 @router.put("/me", response_model=UserResponse)

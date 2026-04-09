@@ -18,6 +18,8 @@ from urllib import request as urllib_request
 from api.deps import get_db, get_current_active_admin
 from core.config import settings
 from models.user import User
+from models.banner import HomeBanner
+from models.promo import PromoCode
 from models.tournament import Tournament
 from models.wallet import WalletTransaction
 from models.config import SystemConfig
@@ -25,6 +27,11 @@ from models.notification import Notification
 from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
 from services.notifications import add_user_notification
+from services.match_stats import (
+    compute_match_stats_for_user,
+    compute_match_stats_for_user_ids,
+    empty_user_match_stats,
+)
 from core.websockets import manager as ws_manager
 
 from schemas.admin import (
@@ -38,6 +45,10 @@ from schemas.admin import (
     DeveloperOtpVerifyRequest,
     DeveloperOtpVerifyResponse,
     DeveloperOtpStatusResponse,
+    PromoCreateRequest,
+    PromoUpdateRequest,
+    BannerCreateRequest,
+    BannerUpdateRequest,
 )
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
 
@@ -854,8 +865,380 @@ def get_tournament_slots_admin(
 
 
 # ─────────────────────────────────────────────────────────────────
+# Banner management
+# ─────────────────────────────────────────────────────────────────
+
+
+def _normalize_banner_title(value: str) -> str:
+    title = " ".join(value.strip().split())
+    if len(title) < 2:
+        raise HTTPException(status_code=400, detail="Banner title must be at least 2 characters")
+    return title[:120]
+
+
+def _normalize_banner_url(value: str, field_name: str) -> str:
+    url = value.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required")
+    return url[:500]
+
+
+def _normalize_optional_banner_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized[:500] if normalized else None
+
+
+def _normalize_optional_banner_notes(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized[:300] if normalized else None
+
+
+def _coerce_banner_active(status: str | None) -> bool:
+    if status is None:
+        return True
+    normalized = status.strip().upper()
+    if normalized in {"ACTIVE", "ENABLED"}:
+        return True
+    if normalized in {"INACTIVE", "DISABLED"}:
+        return False
+    raise HTTPException(status_code=400, detail="Invalid banner status. Use ACTIVE or INACTIVE")
+
+
+def _validate_banner_schedule(starts_at: datetime | None, ends_at: datetime | None) -> None:
+    if starts_at and ends_at and ends_at <= starts_at:
+        raise HTTPException(status_code=400, detail="ends_at must be after starts_at")
+
+
+def _banner_status(banner: HomeBanner) -> str:
+    if not banner.is_active:
+        return "INACTIVE"
+
+    now = datetime.utcnow()
+
+    if banner.starts_at:
+        starts_at = banner.starts_at
+        if getattr(starts_at, "tzinfo", None) is not None:
+            starts_at = starts_at.replace(tzinfo=None)
+        if starts_at > now:
+            return "SCHEDULED"
+
+    if banner.ends_at:
+        ends_at = banner.ends_at
+        if getattr(ends_at, "tzinfo", None) is not None:
+            ends_at = ends_at.replace(tzinfo=None)
+        if ends_at <= now:
+            return "EXPIRED"
+
+    return "ACTIVE"
+
+
+def _serialize_banner(banner: HomeBanner) -> dict:
+    return {
+        "id": banner.id,
+        "title": banner.title,
+        "image_url": banner.image_url,
+        "redirect_url": banner.redirect_url,
+        "notes": banner.notes,
+        "sort_order": int(banner.sort_order or 0),
+        "status": _banner_status(banner),
+        "is_active": bool(banner.is_active),
+        "starts_at": banner.starts_at,
+        "ends_at": banner.ends_at,
+        "created_at": banner.created_at,
+        "updated_at": banner.updated_at,
+    }
+
+
+@router.get("/banners")
+def list_banners(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    banners = (
+        db.query(HomeBanner)
+        .order_by(HomeBanner.sort_order.asc(), HomeBanner.created_at.desc())
+        .all()
+    )
+    return [_serialize_banner(banner) for banner in banners]
+
+
+@router.post("/banners")
+def create_banner(
+    payload: BannerCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    title = _normalize_banner_title(payload.title)
+    image_url = _normalize_banner_url(payload.image_url, "image_url")
+    redirect_url = _normalize_optional_banner_url(payload.redirect_url)
+    notes = _normalize_optional_banner_notes(payload.notes)
+    _validate_banner_schedule(payload.starts_at, payload.ends_at)
+
+    banner = HomeBanner(
+        title=title,
+        image_url=image_url,
+        redirect_url=redirect_url,
+        notes=notes,
+        sort_order=int(payload.sort_order or 0),
+        is_active=_coerce_banner_active(payload.status),
+        starts_at=payload.starts_at,
+        ends_at=payload.ends_at,
+    )
+
+    db.add(banner)
+    db.commit()
+    db.refresh(banner)
+    logger.info("Banner created by admin=%s banner_id=%s", current_user.username, banner.id)
+    return _serialize_banner(banner)
+
+
+@router.put("/banners/{banner_id}")
+def update_banner(
+    banner_id: int,
+    payload: BannerUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    banner = db.query(HomeBanner).filter(HomeBanner.id == banner_id).first()
+    if not banner:
+        raise HTTPException(status_code=404, detail="Banner not found")
+
+    if payload.title is not None:
+        banner.title = _normalize_banner_title(payload.title)
+
+    if payload.image_url is not None:
+        banner.image_url = _normalize_banner_url(payload.image_url, "image_url")
+
+    if payload.redirect_url is not None:
+        banner.redirect_url = _normalize_optional_banner_url(payload.redirect_url)
+
+    if payload.notes is not None:
+        banner.notes = _normalize_optional_banner_notes(payload.notes)
+
+    if payload.sort_order is not None:
+        banner.sort_order = int(payload.sort_order)
+
+    if payload.status is not None:
+        banner.is_active = _coerce_banner_active(payload.status)
+
+    next_starts_at = banner.starts_at
+    next_ends_at = banner.ends_at
+    if payload.starts_at is not None:
+        next_starts_at = payload.starts_at
+    if payload.ends_at is not None:
+        next_ends_at = payload.ends_at
+
+    _validate_banner_schedule(next_starts_at, next_ends_at)
+
+    if payload.starts_at is not None:
+        banner.starts_at = payload.starts_at
+    if payload.ends_at is not None:
+        banner.ends_at = payload.ends_at
+
+    db.add(banner)
+    db.commit()
+    db.refresh(banner)
+    logger.info("Banner updated by admin=%s banner_id=%s", current_user.username, banner_id)
+    return _serialize_banner(banner)
+
+
+@router.delete("/banners/{banner_id}")
+def delete_banner(
+    banner_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    banner = db.query(HomeBanner).filter(HomeBanner.id == banner_id).first()
+    if not banner:
+        raise HTTPException(status_code=404, detail="Banner not found")
+
+    banner_title = banner.title
+    db.delete(banner)
+    db.commit()
+    logger.warning("Banner deleted by admin=%s banner_id=%s", current_user.username, banner_id)
+    return {"message": f"Banner '{banner_title}' deleted"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# Promo management
+# ─────────────────────────────────────────────────────────────────
+
+
+def _normalize_promo_code(code: str) -> str:
+    cleaned = " ".join(code.strip().upper().split())
+    normalized = cleaned.replace(" ", "_")
+    if len(normalized) < 3:
+        raise HTTPException(status_code=400, detail="Promo code must be at least 3 characters")
+    return normalized[:40]
+
+
+def _coerce_promo_active(status: str | None) -> bool:
+    if status is None:
+        return True
+    normalized = status.strip().upper()
+    if normalized in {"ACTIVE", "ENABLED"}:
+        return True
+    if normalized in {"INACTIVE", "DISABLED", "EXPIRED"}:
+        return False
+    raise HTTPException(status_code=400, detail="Invalid promo status. Use ACTIVE or INACTIVE")
+
+
+def _promo_status(promo: PromoCode) -> str:
+    if not promo.is_active:
+        return "INACTIVE"
+    if (promo.uses_count or 0) >= (promo.max_uses or 0):
+        return "EXHAUSTED"
+
+    if promo.expires_at:
+        expires_at = promo.expires_at
+        if getattr(expires_at, "tzinfo", None) is not None:
+            expires_at = expires_at.replace(tzinfo=None)
+        if expires_at <= datetime.utcnow():
+            return "EXPIRED"
+
+    return "ACTIVE"
+
+
+def _serialize_promo(promo: PromoCode) -> dict:
+    return {
+        "id": promo.id,
+        "code": promo.code,
+        "discount": float(promo.discount_amount or 0),
+        "uses": int(promo.uses_count or 0),
+        "max_uses": int(promo.max_uses or 0),
+        "status": _promo_status(promo),
+        "is_active": bool(promo.is_active),
+        "notes": promo.notes,
+        "expires_at": promo.expires_at,
+        "created_at": promo.created_at,
+        "updated_at": promo.updated_at,
+    }
+
+
+@router.get("/promos")
+def list_promos(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    promos = db.query(PromoCode).order_by(PromoCode.created_at.desc()).all()
+    return [_serialize_promo(promo) for promo in promos]
+
+
+@router.post("/promos")
+def create_promo(
+    payload: PromoCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    code = _normalize_promo_code(payload.code)
+    exists = db.query(PromoCode).filter(PromoCode.code == code).first()
+    if exists:
+        raise HTTPException(status_code=400, detail="Promo code already exists")
+
+    promo = PromoCode(
+        code=code,
+        discount_amount=Decimal(str(payload.discount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        max_uses=int(payload.max_uses),
+        is_active=_coerce_promo_active(payload.status),
+        notes=payload.notes.strip() if payload.notes else None,
+        expires_at=payload.expires_at,
+    )
+
+    db.add(promo)
+    db.commit()
+    db.refresh(promo)
+    logger.info("Promo created by admin=%s code=%s", current_user.username, promo.code)
+    return _serialize_promo(promo)
+
+
+@router.put("/promos/{promo_id}")
+def update_promo(
+    promo_id: int,
+    payload: PromoUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    promo = db.query(PromoCode).filter(PromoCode.id == promo_id).first()
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo not found")
+
+    if payload.code is not None:
+        normalized_code = _normalize_promo_code(payload.code)
+        conflict = db.query(PromoCode).filter(PromoCode.code == normalized_code, PromoCode.id != promo_id).first()
+        if conflict:
+            raise HTTPException(status_code=400, detail="Promo code already exists")
+        promo.code = normalized_code
+
+    if payload.discount is not None:
+        promo.discount_amount = Decimal(str(payload.discount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    if payload.max_uses is not None:
+        if payload.max_uses < int(promo.uses_count or 0):
+            raise HTTPException(status_code=400, detail="max_uses cannot be less than current uses")
+        promo.max_uses = int(payload.max_uses)
+
+    if payload.status is not None:
+        promo.is_active = _coerce_promo_active(payload.status)
+
+    if payload.notes is not None:
+        promo.notes = payload.notes.strip() or None
+
+    if payload.expires_at is not None:
+        promo.expires_at = payload.expires_at
+
+    db.add(promo)
+    db.commit()
+    db.refresh(promo)
+    logger.info("Promo updated by admin=%s promo_id=%s", current_user.username, promo_id)
+    return _serialize_promo(promo)
+
+
+@router.delete("/promos/{promo_id}")
+def delete_promo(
+    promo_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    promo = db.query(PromoCode).filter(PromoCode.id == promo_id).first()
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo not found")
+
+    code = promo.code
+    db.delete(promo)
+    db.commit()
+    logger.warning("Promo deleted by admin=%s code=%s", current_user.username, code)
+    return {"message": f"Promo '{code}' deleted"}
+
+
+# ─────────────────────────────────────────────────────────────────
 # User management
 # ─────────────────────────────────────────────────────────────────
+
+
+def _serialize_admin_user(user: User, match_stats: dict | None = None) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "phone_number": user.phone_number,
+        "role": user.role,
+        "wallet_balance": float(user.wallet_balance or 0),
+        "upi_id": user.upi_id,
+        "profile_pic": user.profile_pic,
+        "bio": user.bio,
+        "bgmi_id": user.bgmi_id,
+        "valorant_id": user.valorant_id,
+        "freefire_id": user.freefire_id,
+        "is_active": user.is_active,
+        "referral_code": user.referral_code,
+        "created_at": user.created_at,
+        "updated_at": user.updated_at,
+        "match_stats": match_stats or empty_user_match_stats(),
+    }
 
 @router.get("/users")
 def search_users(
@@ -876,7 +1259,22 @@ def search_users(
         users = db.query(User).filter(or_(*filters)).limit(50).all()
     else:
         users = db.query(User).limit(50).all()
-    return users
+
+    user_ids = [user.id for user in users]
+    stats_map = compute_match_stats_for_user_ids(db, user_ids)
+    return [_serialize_admin_user(user, stats_map.get(user.id)) for user in users]
+
+
+@router.get("/users/{user_id}/stats")
+def get_user_stats(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return compute_match_stats_for_user(db, user_id)
 
 
 @router.put("/users/{user_id}/status")

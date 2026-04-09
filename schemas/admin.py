@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Union, Any
+from datetime import datetime
 
 class SystemConfigResponse(BaseModel):
     id: int
@@ -61,3 +62,43 @@ class DeveloperOtpStatusResponse(BaseModel):
     otp_required: bool
     verified: bool
     expires_in_seconds: int = 0
+
+
+class PromoCreateRequest(BaseModel):
+    code: str = Field(..., min_length=3, max_length=40)
+    discount: float = Field(..., gt=0)
+    max_uses: int = Field(100, ge=1, le=1_000_000)
+    status: str = Field(default="ACTIVE")
+    notes: Optional[str] = Field(default=None, max_length=300)
+    expires_at: Optional[datetime] = None
+
+
+class PromoUpdateRequest(BaseModel):
+    code: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    discount: Optional[float] = Field(default=None, gt=0)
+    max_uses: Optional[int] = Field(default=None, ge=1, le=1_000_000)
+    status: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=300)
+    expires_at: Optional[datetime] = None
+
+
+class BannerCreateRequest(BaseModel):
+    title: str = Field(..., min_length=2, max_length=120)
+    image_url: str = Field(..., min_length=5, max_length=500)
+    redirect_url: Optional[str] = Field(default=None, max_length=500)
+    sort_order: int = Field(default=0, ge=0, le=10_000)
+    status: str = Field(default="ACTIVE")
+    notes: Optional[str] = Field(default=None, max_length=300)
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+
+
+class BannerUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    image_url: Optional[str] = Field(default=None, min_length=5, max_length=500)
+    redirect_url: Optional[str] = Field(default=None, max_length=500)
+    sort_order: Optional[int] = Field(default=None, ge=0, le=10_000)
+    status: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=300)
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
