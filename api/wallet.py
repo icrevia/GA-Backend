@@ -444,7 +444,8 @@ def request_withdrawal(
         transaction_type="WITHDRAWAL",
         status="PENDING",
         reference_id=f"WITHDRAW_{uuid.uuid4().hex[:8].upper()}",
-        gateway_payment_id=normalized_upi_id
+        payment_mode="UPI",
+        payu_txn_id=normalized_upi_id,
     )
 
     db.add(tx)

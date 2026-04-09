@@ -26,6 +26,7 @@ from models.config import SystemConfig
 from models.notification import Notification
 from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
+from models.withdraw_upi_account import WithdrawUpiAccount
 from services.notifications import add_user_notification
 from services.match_stats import (
     compute_match_stats_for_user,
@@ -1536,6 +1537,17 @@ def list_all_transactions(
     if user_ids:
         users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
 
+    withdraw_accounts_by_user: dict[int, list[WithdrawUpiAccount]] = {}
+    if user_ids:
+        withdraw_accounts = (
+            db.query(WithdrawUpiAccount)
+            .filter(WithdrawUpiAccount.user_id.in_(user_ids))
+            .order_by(WithdrawUpiAccount.id.desc())
+            .all()
+        )
+        for account in withdraw_accounts:
+            withdraw_accounts_by_user.setdefault(account.user_id, []).append(account)
+
     res = []
     for tx in txs:
         u        = users.get(tx.user_id)
@@ -1543,6 +1555,38 @@ def list_all_transactions(
         email    = u.email    if u else ""
         phone    = u.phone_number if u else None
         upi_id   = u.upi_id if u else None
+        is_withdrawal = tx.transaction_type == "WITHDRAWAL"
+
+        withdrawal_upi_id = None
+        withdrawal_account_holder_name = None
+        if is_withdrawal:
+            withdrawal_upi_id = (
+                getattr(tx, 'payu_txn_id', None)
+                or getattr(tx, 'gateway_payment_id', None)
+                or upi_id
+            )
+
+            matched_account = None
+            user_accounts = withdraw_accounts_by_user.get(tx.user_id, [])
+            if withdrawal_upi_id:
+                normalized_withdraw_upi = str(withdrawal_upi_id).strip().lower()
+                for account in user_accounts:
+                    if (account.upi_id or "").strip().lower() == normalized_withdraw_upi:
+                        matched_account = account
+                        break
+
+            if not matched_account and upi_id:
+                normalized_user_upi = str(upi_id).strip().lower()
+                for account in user_accounts:
+                    if (account.upi_id or "").strip().lower() == normalized_user_upi:
+                        matched_account = account
+                        break
+
+            withdrawal_account_holder_name = (
+                matched_account.account_holder_name
+                if matched_account
+                else (username if withdrawal_upi_id else None)
+            )
 
         if search:
             search_lower = search.lower()
@@ -1551,6 +1595,8 @@ def list_all_transactions(
                 search_lower in email.lower(),
                 search_lower in (phone or "").lower(),
                 search_lower in (upi_id or "").lower(),
+                search_lower in (withdrawal_upi_id or "").lower(),
+                search_lower in (withdrawal_account_holder_name or "").lower(),
                 search_lower in (tx.reference_id or "").lower(),
                 search_lower in (tx.payu_txn_id or "").lower(),
                 search_lower in (getattr(tx, 'gateway_order_id', None) or "").lower(),
@@ -1582,12 +1628,13 @@ def list_all_transactions(
             "reference_id":   tx.reference_id,
             "payu_txn_id":    getattr(tx, 'payu_txn_id', None),
             "gateway_utr":    getattr(tx, 'payu_txn_id', None) if tx.transaction_type == "ADD_MONEY" else None,
-            "payment_mode":   getattr(tx, 'payment_mode', None),
+            "payment_mode":   "UPI" if is_withdrawal else getattr(tx, 'payment_mode', None),
             "failure_reason": getattr(tx, 'failure_reason', None),
-            "gateway_order_id": getattr(tx, 'gateway_order_id', None),
-            "gateway_payment_id": getattr(tx, 'gateway_payment_id', None),
-            "gateway_signature": getattr(tx, 'gateway_signature', None),
-            "withdrawal_upi_id": getattr(tx, 'payu_txn_id', None) if tx.transaction_type == "WITHDRAWAL" else None,
+            "gateway_order_id": None if is_withdrawal else getattr(tx, 'gateway_order_id', None),
+            "gateway_payment_id": None if is_withdrawal else getattr(tx, 'gateway_payment_id', None),
+            "gateway_signature": None if is_withdrawal else getattr(tx, 'gateway_signature', None),
+            "withdrawal_upi_id": withdrawal_upi_id if is_withdrawal else None,
+            "withdrawal_account_holder_name": withdrawal_account_holder_name if is_withdrawal else None,
             "created_at":     tx.created_at,
             "updated_at":     tx.updated_at,
         })
