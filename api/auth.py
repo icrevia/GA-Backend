@@ -302,7 +302,15 @@ async def verify_otp(
 
     from services import otp as otp_service
     # Async verify with await
-    is_valid = await otp_service.verify_otp(verification_id, otp)
+    try:
+        is_valid = await otp_service.verify_otp(verification_id, otp)
+    except Exception as e:
+        logger.error(f"OTP verify provider error: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="OTP verification service is temporarily unavailable. Please retry in 30 seconds."
+        )
+
     if not is_valid:
         raise HTTPException(status_code=400, detail="Invalid OTP")
 
