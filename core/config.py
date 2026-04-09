@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     # not database identifier matching.
     ADMIN_LOGIN_IDENTIFIER: str = ""
     ADMIN_LOGIN_PHONE: str = ""
+    ADMIN_LOGIN_TELEGRAM_CHAT_ID: str = ""
 
     # ── Telegram security alerts ─────────────────────────────────────────────
     SECURITY_ALERTS_ENABLED: bool = False
@@ -180,6 +181,22 @@ class Settings(BaseSettings):
             print(
                 "[CONFIG WARNING] ADMIN_LOGIN_PHONE is set but ADMIN_LOGIN_IDENTIFIER is empty. "
                 "Admin-web login will be blocked until both are configured.",
+                file=sys.stderr,
+            )
+
+        if (self.ADMIN_LOGIN_IDENTIFIER or self.ADMIN_LOGIN_PHONE) and not self.TELEGRAM_BOT_TOKEN:
+            print(
+                "[CONFIG WARNING] Admin-web OTP via Telegram requires TELEGRAM_BOT_TOKEN.",
+                file=sys.stderr,
+            )
+
+        if (
+            (self.ADMIN_LOGIN_IDENTIFIER or self.ADMIN_LOGIN_PHONE)
+            and not (self.ADMIN_LOGIN_TELEGRAM_CHAT_ID or self.TELEGRAM_ALERT_CHAT_ID)
+        ):
+            print(
+                "[CONFIG WARNING] Set ADMIN_LOGIN_TELEGRAM_CHAT_ID (or TELEGRAM_ALERT_CHAT_ID) "
+                "to receive admin login OTP in Telegram.",
                 file=sys.stderr,
             )
 

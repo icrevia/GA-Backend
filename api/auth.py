@@ -12,16 +12,19 @@ from schemas.user import UserCreate, UserResponse, LoginRequest
 from schemas.token import Token
 from typing import Any
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
+import hmac
 import logging
 import string
 import random
+import httpx
 from services.login_security import extract_client_ip
 
 # In-memory store
 _otp_store: dict[str, str] = {}
 _pending_signups: dict[str, dict] = {}
+_admin_login_otp_store: dict[str, dict[str, Any]] = {}
 
 logger = logging.getLogger("GamerzAdda.auth")
 limiter = Limiter(key_func=get_remote_address)
@@ -110,6 +113,123 @@ def _resolve_login_device(request: Request) -> str:
         return user_agent[:160]
 
     return "Unknown Device"
+
+
+def _clean_env_value(value: str | None) -> str:
+    return str(value or "").strip().strip('"\'')
+
+
+def _admin_login_phone_key() -> str:
+    return _normalize_signup_phone(settings.ADMIN_LOGIN_PHONE)
+
+
+def _is_admin_login_phone_value(raw_phone: str) -> bool:
+    configured_variants = _phone_variants(settings.ADMIN_LOGIN_PHONE)
+    incoming_variants = _phone_variants(raw_phone)
+    return bool(configured_variants and incoming_variants and not configured_variants.isdisjoint(incoming_variants))
+
+
+def _resolve_admin_login_chat_id() -> str:
+    return _clean_env_value(settings.ADMIN_LOGIN_TELEGRAM_CHAT_ID or settings.TELEGRAM_ALERT_CHAT_ID)
+
+
+def _generate_admin_login_otp(length: int = 4) -> str:
+    return "".join(random.choices(string.digits, k=length))
+
+
+async def _send_admin_login_otp_to_telegram(*, otp_code: str, phone: str, identifier: str) -> None:
+    bot_token = _clean_env_value(settings.TELEGRAM_BOT_TOKEN)
+    chat_id = _resolve_admin_login_chat_id()
+
+    if not bot_token:
+        raise RuntimeError("Admin OTP bot token is missing. Set TELEGRAM_BOT_TOKEN in Railway.")
+    if not chat_id:
+        raise RuntimeError(
+            "Admin Telegram chat ID is missing. Set ADMIN_LOGIN_TELEGRAM_CHAT_ID in Railway."
+        )
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": (
+            "GamerzAdda Admin Login OTP\n"
+            f"OTP: {otp_code}\n"
+            "Valid for 5 minutes.\n"
+            f"Identifier: {identifier or '--'}\n"
+            f"Phone: {phone}\n"
+            "Do not share this code."
+        ),
+        "disable_web_page_preview": True,
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(url, json=payload)
+
+    if response.status_code >= 400:
+        logger.error(
+            "Admin OTP Telegram send failed. status=%s body=%s",
+            response.status_code,
+            (response.text or "")[:240],
+        )
+        raise RuntimeError("Failed to send OTP on Telegram")
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+
+    if isinstance(body, dict) and body.get("ok") is False:
+        logger.error("Admin OTP Telegram rejected by API: %s", body)
+        raise RuntimeError("Failed to send OTP on Telegram")
+
+
+async def _issue_admin_login_otp(*, identifier: str, phone: str) -> None:
+    otp_code = _generate_admin_login_otp(4)
+    phone_key = _admin_login_phone_key() or _normalize_signup_phone(phone)
+    _admin_login_otp_store[phone_key] = {
+        "otp_hash": hashlib.sha256(otp_code.encode("utf-8")).hexdigest(),
+        "expires_at": datetime.utcnow() + timedelta(minutes=5),
+        "attempts": 0,
+    }
+
+    try:
+        await _send_admin_login_otp_to_telegram(
+            otp_code=otp_code,
+            phone=phone_key,
+            identifier=(identifier or "").strip(),
+        )
+    except Exception:
+        _admin_login_otp_store.pop(phone_key, None)
+        raise
+
+
+def _verify_admin_login_otp(*, phone: str, otp_code: str) -> tuple[bool, str]:
+    phone_key = _admin_login_phone_key() or _normalize_signup_phone(phone)
+    otp_entry = _admin_login_otp_store.get(phone_key)
+    if not otp_entry:
+        return False, "missing"
+
+    if datetime.utcnow() > otp_entry.get("expires_at", datetime.utcnow()):
+        _admin_login_otp_store.pop(phone_key, None)
+        return False, "expired"
+
+    attempts = int(otp_entry.get("attempts", 0) or 0)
+    if attempts >= 5:
+        _admin_login_otp_store.pop(phone_key, None)
+        return False, "expired"
+
+    incoming_hash = hashlib.sha256((otp_code or "").strip().encode("utf-8")).hexdigest()
+    stored_hash = str(otp_entry.get("otp_hash") or "")
+    if not hmac.compare_digest(incoming_hash, stored_hash):
+        otp_entry["attempts"] = attempts + 1
+        if otp_entry["attempts"] >= 5:
+            _admin_login_otp_store.pop(phone_key, None)
+            return False, "expired"
+        _admin_login_otp_store[phone_key] = otp_entry
+        return False, "invalid"
+
+    _admin_login_otp_store.pop(phone_key, None)
+    return True, "ok"
 
 
 async def _build_unique_username(db: AsyncSession, base_username: str) -> str:
@@ -296,28 +416,41 @@ async def verify_otp(
     db: AsyncSession = Depends(get_db)
 ) -> Any:
     normalized_phone = _normalize_signup_phone(phone)
-    verification_id = _otp_store.get(normalized_phone)
-    if not verification_id:
-        raise HTTPException(status_code=400, detail="OTP expired or not requested.")
+    is_admin_phone = _is_admin_login_phone_value(normalized_phone)
 
-    from services import otp as otp_service
-    # Async verify with await
-    try:
-        is_valid = await otp_service.verify_otp(verification_id, otp)
-    except Exception as e:
-        logger.error(f"OTP verify provider error: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="OTP verification service is temporarily unavailable. Please retry in 30 seconds."
-        )
+    if is_admin_phone:
+        is_valid, reason = _verify_admin_login_otp(phone=normalized_phone, otp_code=otp)
+        if not is_valid:
+            if reason in {"missing", "expired"}:
+                raise HTTPException(status_code=400, detail="OTP expired or not requested. Please resend.")
+            raise HTTPException(status_code=400, detail="Invalid OTP")
+    else:
+        verification_id = _otp_store.get(normalized_phone)
+        if not verification_id:
+            raise HTTPException(status_code=400, detail="OTP expired or not requested.")
 
-    if not is_valid:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
+        from services import otp as otp_service
+        # Async verify with await
+        try:
+            is_valid = await otp_service.verify_otp(verification_id, otp)
+        except Exception as e:
+            logger.error(f"OTP verify provider error: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="OTP verification service is temporarily unavailable. Please retry in 30 seconds."
+            )
 
-    _otp_store.pop(normalized_phone, None)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail="Invalid OTP")
+
+        _otp_store.pop(normalized_phone, None)
     
     # Existing user?
-    result = await db.execute(select(User).where(User.phone_number == normalized_phone))
+    phone_candidates = list(_phone_variants(normalized_phone))
+    if phone_candidates:
+        result = await db.execute(select(User).where(User.phone_number.in_(phone_candidates)))
+    else:
+        result = await db.execute(select(User).where(User.phone_number == normalized_phone))
     db_user = result.scalar_one_or_none()
 
     if normalized_phone in _pending_signups:
@@ -475,6 +608,27 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    if _is_admin_web_login_request(request):
+        admin_phone = _admin_login_phone_key()
+        if not admin_phone:
+            raise HTTPException(status_code=503, detail="Admin login phone is not configured")
+
+        try:
+            await _issue_admin_login_otp(
+                identifier=raw_identifier,
+                phone=admin_phone,
+            )
+            _otp_store.pop(admin_phone, None)
+            logger.info("Admin login OTP sent on Telegram for %s", admin_phone)
+            return {
+                "message": "OTP sent on Telegram",
+                "phone": admin_phone,
+                "status": "pending_verification",
+            }
+        except Exception as e:
+            logger.error("ADMIN OTP SEND ERR LOGIN: %s", e)
+            raise HTTPException(status_code=503, detail=f"Failed to send admin OTP: {str(e)}")
+
     try:
         from services import otp as otp_service
         # Async call with await
@@ -499,6 +653,42 @@ async def send_otp(
     Supports existing users (login) and pending signups already present in memory.
     """
     normalized_phone = _normalize_signup_phone(phone)
+
+    if _is_admin_login_phone_value(normalized_phone):
+        admin_phone = _admin_login_phone_key() or normalized_phone
+        admin_phone_variants = list(_phone_variants(admin_phone))
+        if admin_phone_variants:
+            admin_res = await db.execute(
+                select(User.id).where(
+                    User.role == "ADMIN",
+                    User.phone_number.in_(admin_phone_variants),
+                )
+            )
+        else:
+            admin_res = await db.execute(
+                select(User.id).where(
+                    User.role == "ADMIN",
+                    User.phone_number == admin_phone,
+                )
+            )
+
+        if admin_res.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Admin account not found for configured phone")
+
+        try:
+            await _issue_admin_login_otp(
+                identifier=settings.ADMIN_LOGIN_IDENTIFIER or admin_phone,
+                phone=admin_phone,
+            )
+            _otp_store.pop(admin_phone, None)
+            return {
+                "message": "OTP sent on Telegram",
+                "phone": admin_phone,
+                "status": "pending_verification",
+            }
+        except Exception as e:
+            logger.error("ADMIN OTP SEND ERR RESEND: %s", e)
+            raise HTTPException(status_code=503, detail=f"Failed to resend admin OTP: {str(e)}")
 
     user_exists_res = await db.execute(select(User.id).where(User.phone_number == normalized_phone))
     user_exists = user_exists_res.scalar_one_or_none() is not None
