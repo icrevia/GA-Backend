@@ -49,6 +49,26 @@ def _matches_admin_login_identifier(input_identifier: str) -> bool:
         or (configured_phone and incoming_phone == configured_phone)
     )
 
+
+def _phone_variants(raw_phone: str) -> set[str]:
+    raw = (raw_phone or "").strip().replace(" ", "")
+    if not raw:
+        return set()
+
+    variants: set[str] = {raw}
+    normalized = _normalize_signup_phone(raw)
+    variants.add(normalized)
+
+    digits = "".join(ch for ch in normalized if ch.isdigit())
+    if len(digits) == 12 and digits.startswith("91"):
+        variants.add(digits[2:])
+        variants.add(f"+{digits}")
+    elif len(digits) == 10:
+        variants.add(digits)
+        variants.add(f"+91{digits}")
+
+    return {value for value in variants if value}
+
 @router.get("/signup-availability")
 @limiter.limit("60/minute")
 async def signup_availability(
@@ -233,23 +253,48 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
         if not _matches_admin_login_identifier(raw_identifier):
             raise HTTPException(status_code=403, detail="Invalid admin credentials")
 
+        configured_identifier_lower = configured_identifier.lower()
+        phone_variants = list(_phone_variants(settings.ADMIN_LOGIN_PHONE))
+
+        admin_match_conditions = [
+            func.lower(User.email) == configured_identifier_lower,
+            func.lower(User.username) == configured_identifier_lower,
+        ]
+        if phone_variants:
+            admin_match_conditions.append(User.phone_number.in_(phone_variants))
+
         result = await db.execute(
-            select(User).where(
-                User.phone_number == configured_phone,
+            select(User)
+            .where(
                 User.role == "ADMIN",
+                User.is_active == True,
+                or_(*admin_match_conditions),
             )
+            .order_by(User.id.asc())
         )
-        user = result.scalar_one_or_none()
+        user = result.scalars().first()
 
         if not user:
-            logger.error("Admin-web login blocked: no ADMIN user matched ADMIN_LOGIN_PHONE")
+            # Env credentials were valid but no direct email/username/phone match.
+            # Fall back to first active admin to avoid phone-format drift lockouts.
+            fallback_result = await db.execute(
+                select(User)
+                .where(User.role == "ADMIN", User.is_active == True)
+                .order_by(User.id.asc())
+            )
+            user = fallback_result.scalars().first()
+            if user:
+                logger.warning(
+                    "Admin-web login used fallback ADMIN user id=%s due env/db identifier mismatch",
+                    user.id,
+                )
+
+        if not user:
+            logger.error("Admin-web login blocked: no active ADMIN user exists")
             raise HTTPException(
                 status_code=403,
-                detail="Admin account is not provisioned for configured Railway credentials",
+                detail="No active admin account is provisioned",
             )
-
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="Admin account is disabled")
     else:
         result = await db.execute(
             select(User).where(
