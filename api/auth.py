@@ -69,6 +69,137 @@ def _phone_variants(raw_phone: str) -> set[str]:
 
     return {value for value in variants if value}
 
+
+def _admin_seed_from_identifier(configured_identifier: str, configured_phone: str) -> str:
+    raw_identifier = (configured_identifier or "").strip().lower()
+    if "@" in raw_identifier:
+        return raw_identifier.split("@", 1)[0]
+
+    digits = "".join(ch for ch in configured_phone if ch.isdigit())
+    if len(digits) >= 4:
+        return f"admin_{digits[-4:]}"
+    return "admin_env"
+
+
+def _sanitize_username(raw: str) -> str:
+    cleaned = "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in (raw or ""))
+    cleaned = cleaned.strip("._-")
+    if len(cleaned) < 3:
+        cleaned = "admin_env"
+    return cleaned[:32]
+
+
+def _sanitize_email_local_part(raw: str) -> str:
+    cleaned = "".join(ch if (ch.isalnum() or ch in "._+-") else "_" for ch in (raw or ""))
+    cleaned = cleaned.strip("._+-")
+    if not cleaned:
+        cleaned = "admin_env"
+    return cleaned[:48]
+
+
+async def _build_unique_username(db: AsyncSession, base_username: str) -> str:
+    base = _sanitize_username(base_username)
+    for idx in range(0, 50):
+        suffix = "" if idx == 0 else f"_{idx}"
+        candidate = f"{base[: max(1, 32 - len(suffix))]}{suffix}"
+        result = await db.execute(select(User.id).where(User.username == candidate))
+        if result.scalar_one_or_none() is None:
+            return candidate
+    return f"admin_{random.randint(1000, 9999)}"
+
+
+async def _build_unique_email(db: AsyncSession, preferred_email: str) -> str:
+    normalized = (preferred_email or "").strip().lower()
+    if "@" in normalized:
+        local_part, domain_part = normalized.split("@", 1)
+    else:
+        local_part, domain_part = normalized, "gamerzadda.local"
+
+    local_part = _sanitize_email_local_part(local_part)
+    domain_part = (domain_part or "gamerzadda.local").strip().strip(".") or "gamerzadda.local"
+
+    for idx in range(0, 50):
+        suffix = "" if idx == 0 else f"+{idx}"
+        local_candidate = f"{local_part[: max(1, 64 - len(suffix))]}{suffix}"
+        candidate = f"{local_candidate}@{domain_part}"
+        result = await db.execute(select(User.id).where(func.lower(User.email) == candidate.lower()))
+        if result.scalar_one_or_none() is None:
+            return candidate
+
+    return f"admin_{random.randint(1000, 9999)}@gamerzadda.local"
+
+
+async def _provision_or_activate_env_admin_user(
+    db: AsyncSession,
+    configured_identifier: str,
+    configured_phone: str,
+) -> User | None:
+    configured_identifier_lower = (configured_identifier or "").strip().lower()
+    phone_variants = list(_phone_variants(configured_phone))
+
+    lookup_conditions = [
+        func.lower(User.email) == configured_identifier_lower,
+        func.lower(User.username) == configured_identifier_lower,
+    ]
+    if phone_variants:
+        lookup_conditions.append(User.phone_number.in_(phone_variants))
+
+    existing_result = await db.execute(
+        select(User)
+        .where(or_(*lookup_conditions))
+        .order_by(User.id.asc())
+    )
+    existing_user = existing_result.scalars().first()
+
+    if existing_user:
+        changed = False
+        if existing_user.role != "ADMIN":
+            existing_user.role = "ADMIN"
+            changed = True
+        if not existing_user.is_active:
+            existing_user.is_active = True
+            changed = True
+        if configured_phone and not existing_user.phone_number:
+            existing_user.phone_number = configured_phone
+            changed = True
+
+        if changed:
+            await db.commit()
+            await db.refresh(existing_user)
+            logger.info("Admin-web login upgraded existing user id=%s to active ADMIN", existing_user.id)
+
+        return existing_user
+
+    username_seed = _admin_seed_from_identifier(configured_identifier, configured_phone)
+    preferred_email = (
+        configured_identifier_lower
+        if "@" in configured_identifier_lower
+        else f"{_sanitize_email_local_part(username_seed)}@gamerzadda.local"
+    )
+
+    username = await _build_unique_username(db, username_seed)
+    email = await _build_unique_email(db, preferred_email)
+
+    new_admin = User(
+        username=username,
+        email=email,
+        phone_number=configured_phone,
+        role="ADMIN",
+        is_active=True,
+        wallet_balance=Decimal("0.00"),
+    )
+    db.add(new_admin)
+
+    try:
+        await db.commit()
+        await db.refresh(new_admin)
+        logger.info("Admin-web login auto-provisioned ADMIN user id=%s", new_admin.id)
+        return new_admin
+    except Exception as exc:
+        await db.rollback()
+        logger.error("Failed to auto-provision ADMIN user from env credentials: %s", exc)
+        return None
+
 @router.get("/signup-availability")
 @limiter.limit("60/minute")
 async def signup_availability(
@@ -267,33 +398,29 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
             select(User)
             .where(
                 User.role == "ADMIN",
-                User.is_active == True,
                 or_(*admin_match_conditions),
             )
             .order_by(User.id.asc())
         )
         user = result.scalars().first()
 
-        if not user:
-            # Env credentials were valid but no direct email/username/phone match.
-            # Fall back to first active admin to avoid phone-format drift lockouts.
-            fallback_result = await db.execute(
-                select(User)
-                .where(User.role == "ADMIN", User.is_active == True)
-                .order_by(User.id.asc())
-            )
-            user = fallback_result.scalars().first()
-            if user:
-                logger.warning(
-                    "Admin-web login used fallback ADMIN user id=%s due env/db identifier mismatch",
-                    user.id,
-                )
+        if user and not user.is_active:
+            user.is_active = True
+            await db.commit()
+            await db.refresh(user)
 
         if not user:
-            logger.error("Admin-web login blocked: no active ADMIN user exists")
+            user = await _provision_or_activate_env_admin_user(
+                db,
+                configured_identifier=configured_identifier,
+                configured_phone=configured_phone,
+            )
+
+        if not user:
+            logger.error("Admin-web login blocked: unable to provision active ADMIN user")
             raise HTTPException(
                 status_code=403,
-                detail="No active admin account is provisioned",
+                detail="Admin account provisioning failed",
             )
     else:
         result = await db.execute(
