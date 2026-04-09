@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     LOGIN_FAILURE_BLOCK_THRESHOLD: int = 8
     LOGIN_FAILURE_BLOCK_SECONDS: int = 1800
 
+    # ── Admin panel login source (Railway env) ─────────────────────────────
+    # Admin-web login identifier and OTP phone must come from env vars,
+    # not database identifier matching.
+    ADMIN_LOGIN_IDENTIFIER: str = ""
+    ADMIN_LOGIN_PHONE: str = ""
+
     # ── Telegram security alerts ─────────────────────────────────────────────
     SECURITY_ALERTS_ENABLED: bool = False
     SECURITY_ALERT_ON_SUCCESS_LOGIN: bool = True
@@ -162,6 +168,20 @@ class Settings(BaseSettings):
                 file=sys.stderr
             )
             object.__setattr__(self, "SECURITY_ALERTS_ENABLED", False)
+
+        if self.ADMIN_LOGIN_IDENTIFIER and not self.ADMIN_LOGIN_PHONE:
+            print(
+                "[CONFIG WARNING] ADMIN_LOGIN_IDENTIFIER is set but ADMIN_LOGIN_PHONE is empty. "
+                "Admin-web login will be blocked until both are configured.",
+                file=sys.stderr,
+            )
+
+        if self.ADMIN_LOGIN_PHONE and not self.ADMIN_LOGIN_IDENTIFIER:
+            print(
+                "[CONFIG WARNING] ADMIN_LOGIN_PHONE is set but ADMIN_LOGIN_IDENTIFIER is empty. "
+                "Admin-web login will be blocked until both are configured.",
+                file=sys.stderr,
+            )
 
         if self.IP_GEO_LOOKUP_TIMEOUT_SECONDS <= 0:
             print(

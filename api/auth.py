@@ -31,6 +31,24 @@ def _normalize_signup_phone(raw_phone: str) -> str:
         phone = f"+91{phone}"
     return phone
 
+
+def _is_admin_web_login_request(request: Request) -> bool:
+    return (request.headers.get("x-login-source") or "").strip().lower() == "admin-web"
+
+
+def _matches_admin_login_identifier(input_identifier: str) -> bool:
+    configured_identifier = (settings.ADMIN_LOGIN_IDENTIFIER or "").strip().lower()
+    configured_phone = _normalize_signup_phone(settings.ADMIN_LOGIN_PHONE)
+
+    incoming_raw = (input_identifier or "").strip()
+    incoming_identifier = incoming_raw.lower()
+    incoming_phone = _normalize_signup_phone(incoming_raw)
+
+    return bool(
+        (configured_identifier and incoming_identifier == configured_identifier)
+        or (configured_phone and incoming_phone == configured_phone)
+    )
+
 @router.get("/signup-availability")
 @limiter.limit("60/minute")
 async def signup_availability(
@@ -191,20 +209,58 @@ async def verify_otp(
 @router.post("/login")
 @limiter.limit("10/minute")
 async def login(request: Request, login_data: LoginRequest, db: AsyncSession = Depends(get_db)) -> Any:
-    identifier = login_data.email.strip().lower()
+    raw_identifier = login_data.email.strip()
+    identifier = raw_identifier.lower()
     if identifier.isdigit() and len(identifier) == 10:
         identifier = f"+91{identifier}"
 
-    result = await db.execute(
-        select(User).where(
-            or_(
-                User.email == identifier,
-                User.username == login_data.email.strip(),
-                User.phone_number == identifier
+    user: User | None = None
+
+    if _is_admin_web_login_request(request):
+        configured_identifier = (settings.ADMIN_LOGIN_IDENTIFIER or "").strip()
+        configured_phone = _normalize_signup_phone(settings.ADMIN_LOGIN_PHONE)
+
+        if not configured_identifier or not configured_phone:
+            logger.error("Admin-web login blocked: ADMIN_LOGIN_IDENTIFIER/ADMIN_LOGIN_PHONE not configured")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Admin login is not configured. "
+                    "Set ADMIN_LOGIN_IDENTIFIER and ADMIN_LOGIN_PHONE in Railway variables."
+                ),
+            )
+
+        if not _matches_admin_login_identifier(raw_identifier):
+            raise HTTPException(status_code=403, detail="Invalid admin credentials")
+
+        result = await db.execute(
+            select(User).where(
+                User.phone_number == configured_phone,
+                User.role == "ADMIN",
             )
         )
-    )
-    user = result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
+
+        if not user:
+            logger.error("Admin-web login blocked: no ADMIN user matched ADMIN_LOGIN_PHONE")
+            raise HTTPException(
+                status_code=403,
+                detail="Admin account is not provisioned for configured Railway credentials",
+            )
+
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Admin account is disabled")
+    else:
+        result = await db.execute(
+            select(User).where(
+                or_(
+                    User.email == identifier,
+                    User.username == raw_identifier,
+                    User.phone_number == identifier
+                )
+            )
+        )
+        user = result.scalar_one_or_none()
 
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
