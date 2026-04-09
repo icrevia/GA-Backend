@@ -6,15 +6,18 @@ from slowapi.util import get_remote_address
 from core.database import get_db
 from core.config import settings
 from core.security import hash_password, verify_password, create_access_token
+from core.websockets import manager
 from models.user import User
 from schemas.user import UserCreate, UserResponse, LoginRequest
 from schemas.token import Token
 from typing import Any
 from decimal import Decimal
+from datetime import datetime
 import hashlib
 import logging
 import string
 import random
+from services.login_security import extract_client_ip
 
 # In-memory store
 _otp_store: dict[str, str] = {}
@@ -95,6 +98,18 @@ def _sanitize_email_local_part(raw: str) -> str:
     if not cleaned:
         cleaned = "admin_env"
     return cleaned[:48]
+
+
+def _resolve_login_device(request: Request) -> str:
+    preferred = (request.headers.get("x-device-name") or "").strip()
+    if preferred:
+        return preferred[:160]
+
+    user_agent = (request.headers.get("user-agent") or "").strip()
+    if user_agent:
+        return user_agent[:160]
+
+    return "Unknown Device"
 
 
 async def _build_unique_username(db: AsyncSession, base_username: str) -> str:
@@ -347,6 +362,21 @@ async def verify_otp(
 
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    client_ip = extract_client_ip(request)
+    device_name = _resolve_login_device(request)
+
+    await manager.force_logout_user(
+        db_user.id,
+        reason=f"Account logged in from {device_name} (IP {client_ip})."
+    )
+
+    db_user.token_version = (getattr(db_user, "token_version", 0) or 0) + 1
+    db_user.last_login_ip = (client_ip or "")[:64] or None
+    db_user.last_login_device = device_name
+    db_user.last_login_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(db_user)
 
     token_version = getattr(db_user, "token_version", 0) or 0
     user_payload = UserResponse.model_validate(db_user).model_dump(mode="json")

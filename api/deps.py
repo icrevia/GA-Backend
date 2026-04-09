@@ -12,6 +12,20 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login
 get_db = get_db_sync
 
 
+def _session_revoked_detail(user: User) -> str:
+    base = "Session ended because your account was logged in from another device."
+    device = (getattr(user, "last_login_device", None) or "").strip()
+    ip = (getattr(user, "last_login_ip", None) or "").strip()
+
+    if device and ip:
+        return f"{base} New login: {device} (IP: {ip}). Please log in again."
+    if device:
+        return f"{base} New login: {device}. Please log in again."
+    if ip:
+        return f"{base} New login IP: {ip}. Please log in again."
+    return f"{base} Please log in again."
+
+
 def get_current_user(
     db: Session = Depends(get_db_sync),
     token: str | None = Depends(oauth2_scheme),
@@ -44,7 +58,7 @@ def get_current_user(
     if int(token_version) != int(db_token_version):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session has been revoked. Please log in again.",
+            detail=_session_revoked_detail(user),
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -72,7 +86,10 @@ def get_user_for_support(
     token_version = payload.get("tv", 0)
     db_token_version = getattr(user, "token_version", 0) or 0
     if int(token_version) != int(db_token_version):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session revoked")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_session_revoked_detail(user)
+        )
 
     return user
 

@@ -35,6 +35,9 @@ class User(Base):
     # all existing tokens for a user (e.g. when banning or force-logout).
     # Added at startup via IF NOT EXISTS migration in main.py.
     token_version   = Column(Integer, default=0, nullable=False, server_default="0")
+    last_login_ip   = Column(String(64), nullable=True)
+    last_login_device = Column(String(160), nullable=True)
+    last_login_at   = Column(DateTime, nullable=True)
 
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())

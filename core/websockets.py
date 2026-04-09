@@ -161,5 +161,26 @@ class ConnectionManager:
                 except Exception:
                     pass
 
+    async def force_logout_user(self, user_id: int, reason: str = "Session revoked"):
+        """Close all sockets for a user with policy-violation code to trigger client logout."""
+        sockets = list(self.active_connections.get(user_id, []))
+        if not sockets:
+            return
+
+        safe_reason = (reason or "Session revoked")[:120]
+        for socket in sockets:
+            try:
+                await socket.close(code=1008, reason=safe_reason)
+            except Exception:
+                pass
+
+            if socket in self.admin_connections:
+                try:
+                    self.admin_connections.remove(socket)
+                except ValueError:
+                    pass
+
+        self.active_connections.pop(user_id, None)
+
 
 manager = ConnectionManager()
