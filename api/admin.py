@@ -1154,6 +1154,14 @@ def _serialize_promo(promo: PromoCode) -> dict:
     }
 
 
+def _promo_reward_reference(promo_id: int, user_id: int) -> str:
+    return f"PROMO_{promo_id}_{user_id}"
+
+
+def _promo_reversal_reference(reward_tx_id: int) -> str:
+    return f"PROMO_REVOKE_{reward_tx_id}"
+
+
 @router.get("/promos")
 def list_promos(
     db: Session = Depends(get_db),
@@ -1161,6 +1169,185 @@ def list_promos(
 ):
     promos = db.query(PromoCode).order_by(PromoCode.created_at.desc()).all()
     return [_serialize_promo(promo) for promo in promos]
+
+
+@router.get("/promos/{promo_id}/usages")
+def list_promo_usages(
+    promo_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    promo = db.query(PromoCode).filter(PromoCode.id == promo_id).first()
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo not found")
+
+    reference_prefix = f"PROMO_{promo_id}_"
+    reward_transactions = (
+        db.query(WalletTransaction)
+        .filter(
+            WalletTransaction.transaction_type == "PROMO_REWARD",
+            WalletTransaction.status == "SUCCESS",
+            WalletTransaction.reference_id.startswith(reference_prefix),
+        )
+        .order_by(WalletTransaction.created_at.desc())
+        .all()
+    )
+
+    # Keep only exact promo reference pattern to avoid accidental prefix matches.
+    reward_transactions = [
+        tx
+        for tx in reward_transactions
+        if (tx.reference_id or "") == _promo_reward_reference(promo_id, tx.user_id)
+    ]
+
+    user_ids = list({tx.user_id for tx in reward_transactions})
+    users_by_id = {
+        user.id: user
+        for user in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
+
+    reversal_references = [_promo_reversal_reference(tx.id) for tx in reward_transactions]
+    reversed_reference_set = set()
+    if reversal_references:
+        reversed_reference_set = {
+            row[0]
+            for row in db.query(WalletTransaction.reference_id)
+            .filter(
+                WalletTransaction.reference_id.in_(reversal_references),
+                WalletTransaction.status == "SUCCESS",
+            )
+            .all()
+        }
+
+    usages = []
+    for tx in reward_transactions:
+        user = users_by_id.get(tx.user_id)
+        reversal_reference = _promo_reversal_reference(tx.id)
+        amount = abs(Decimal(str(tx.amount or Decimal("0.00")))).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        usages.append(
+            {
+                "transaction_id": tx.id,
+                "reference_id": tx.reference_id,
+                "user_id": tx.user_id,
+                "username": user.username if user else "Unknown",
+                "email": user.email if user else None,
+                "wallet_balance": float(user.wallet_balance or 0) if user else 0,
+                "amount": float(amount),
+                "redeemed_at": tx.created_at,
+                "is_reversed": reversal_reference in reversed_reference_set,
+                "reversal_reference": reversal_reference,
+            }
+        )
+
+    return {
+        "promo": _serialize_promo(promo),
+        "usages": usages,
+    }
+
+
+@router.post("/promos/{promo_id}/usages/{transaction_id}/revoke")
+def revoke_promo_usage(
+    promo_id: int,
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    promo = db.query(PromoCode).filter(PromoCode.id == promo_id).with_for_update().first()
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo not found")
+
+    tx = db.query(WalletTransaction).filter(WalletTransaction.id == transaction_id).with_for_update().first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Promo usage transaction not found")
+
+    expected_reference = _promo_reward_reference(promo_id, tx.user_id)
+    if (
+        tx.transaction_type != "PROMO_REWARD"
+        or tx.status != "SUCCESS"
+        or (tx.reference_id or "") != expected_reference
+    ):
+        raise HTTPException(status_code=400, detail="Selected transaction does not belong to this promo usage")
+
+    reversal_reference = _promo_reversal_reference(tx.id)
+    existing_reversal = db.query(WalletTransaction.id).filter(
+        WalletTransaction.reference_id == reversal_reference,
+        WalletTransaction.status == "SUCCESS",
+    ).first()
+    if existing_reversal:
+        raise HTTPException(status_code=409, detail="Promo money already taken back for this user")
+
+    user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    reversal_amount = abs(Decimal(str(tx.amount or Decimal("0.00")))).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    if reversal_amount <= Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Promo transaction has invalid reward amount")
+
+    current_balance = Decimal(str(user.wallet_balance or Decimal("0.00"))).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    if current_balance < reversal_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User has insufficient wallet balance. Required Rs {reversal_amount:.2f}, available Rs {current_balance:.2f}",
+        )
+
+    user.wallet_balance = current_balance - reversal_amount
+    if int(promo.uses_count or 0) > 0:
+        promo.uses_count = int(promo.uses_count or 0) - 1
+
+    reversal_tx = WalletTransaction(
+        user_id=user.id,
+        amount=-reversal_amount,
+        transaction_type="PROMO_REVOKE",
+        status="SUCCESS",
+        reference_id=reversal_reference,
+        payment_mode="ADMIN_REVERSAL",
+        failure_reason=f"SOURCE_PROMO_TX:{tx.id};PROMO:{promo.code};ADMIN:{current_user.username}",
+    )
+
+    tx.failure_reason = f"{tx.failure_reason + '|' if tx.failure_reason else ''}REVERSED:{reversal_reference}"
+
+    db.add(user)
+    db.add(promo)
+    db.add(tx)
+    db.add(reversal_tx)
+    db.commit()
+    db.refresh(user)
+
+    try:
+        add_user_notification(
+            db,
+            user.id,
+            "Promo Reward Reversed",
+            f"Promo {promo.code} reward of Rs {reversal_amount:.2f} has been reversed by admin and deducted from your wallet.",
+            "WALLET",
+        )
+    except Exception:
+        pass
+
+    logger.warning(
+        "Promo reward reversed by admin=%s promo_id=%s tx_id=%s user_id=%s amount=%.2f",
+        current_user.username,
+        promo_id,
+        tx.id,
+        user.id,
+        float(reversal_amount),
+    )
+
+    return {
+        "message": "Promo money taken back from user wallet",
+        "promo_id": promo_id,
+        "user_id": user.id,
+        "reversal_reference": reversal_reference,
+        "deducted_amount": float(reversal_amount),
+        "wallet_balance": float(user.wallet_balance or 0),
+    }
 
 
 @router.post("/promos")
