@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from core.database import get_db_sync, get_db
+from core.database import get_db_sync, get_db as get_db_async
 from core.config import settings
 from core.security import decode_access_token
 from models.user import User
@@ -68,7 +68,7 @@ def get_current_user(
 
 
 async def get_current_user_async(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
     token: str | None = Depends(oauth2_scheme),
 ) -> User:
     if not token:
@@ -133,7 +133,7 @@ def get_user_for_support(
 
 
 async def get_user_for_support_async(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
     token: str | None = Depends(oauth2_scheme),
 ) -> User:
     """Special dependency for support — allows users to connect even if restricted/banned."""
