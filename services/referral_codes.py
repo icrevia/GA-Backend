@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import secrets
-import string
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,11 +8,79 @@ from sqlalchemy.orm import Session
 
 from models.user import User
 
-_PREFIX_LEN = 5
-_MIN_PREFIX_LEN = 4
-_SUFFIX_ATTEMPTS = ((3, 10), (4, 30), (5, 60), (6, 120))
-_ALPHABET = string.ascii_uppercase + string.digits
 _FALLBACK_PREFIX = "GAMER"
+_SEPARATOR = "-"
+_WORD_COUNT = 3
+_CANDIDATE_ATTEMPTS = 300
+_WORD_BANK = (
+    "ALPHA",
+    "ARROW",
+    "ASTRO",
+    "BLAZE",
+    "BOLT",
+    "BRAVO",
+    "CARGO",
+    "CHAMP",
+    "CLOUD",
+    "COMET",
+    "CRISP",
+    "CROWN",
+    "DART",
+    "DELTA",
+    "DUSK",
+    "ECHO",
+    "EMBER",
+    "FALCON",
+    "FLARE",
+    "FLASH",
+    "FROST",
+    "GHOST",
+    "GLIDE",
+    "GLOW",
+    "HAWK",
+    "HYPER",
+    "ION",
+    "JET",
+    "KNIGHT",
+    "LASER",
+    "LEGEND",
+    "LUNAR",
+    "MATRIX",
+    "METRO",
+    "NEXUS",
+    "NITRO",
+    "NOVA",
+    "OMEGA",
+    "ORBIT",
+    "PHANTOM",
+    "PHOENIX",
+    "PULSE",
+    "QUARK",
+    "QUEST",
+    "RAPTOR",
+    "RIDER",
+    "RIVAL",
+    "ROCKET",
+    "SCOUT",
+    "SHADOW",
+    "SKY",
+    "SNAP",
+    "SONIC",
+    "SPARK",
+    "SPIRIT",
+    "STORM",
+    "STRIKE",
+    "SWIFT",
+    "TANGO",
+    "THOR",
+    "TIGER",
+    "TITAN",
+    "TURBO",
+    "VORTEX",
+    "WAVE",
+    "WOLF",
+    "ZENITH",
+)
 
 
 def _normalize_username_prefix(username: str | None) -> str:
@@ -24,22 +91,34 @@ def _normalize_username_prefix(username: str | None) -> str:
     if cleaned[0].isdigit():
         cleaned = f"G{cleaned}"
 
-    prefix = cleaned[:_PREFIX_LEN]
-    if len(prefix) < _MIN_PREFIX_LEN:
-        prefix = (prefix + _FALLBACK_PREFIX)[:_MIN_PREFIX_LEN]
-    return prefix
+    return cleaned
 
 
 def is_username_aligned_referral_code(username: str | None, referral_code: str | None) -> bool:
     code = (referral_code or "").strip().upper()
     if not code:
         return False
-    return code.startswith(_normalize_username_prefix(username))
+
+    prefix = f"{_normalize_username_prefix(username)}{_SEPARATOR}"
+    if not code.startswith(prefix):
+        return False
+
+    parts = code.split(_SEPARATOR)
+    return len(parts) >= (_WORD_COUNT + 1) and all(part for part in parts)
 
 
-def _build_candidate(prefix: str, suffix_len: int) -> str:
-    suffix = "".join(secrets.choice(_ALPHABET) for _ in range(suffix_len))
-    return f"{prefix}{suffix}"
+def _build_candidate(prefix: str) -> str:
+    suffix_parts = [secrets.choice(_WORD_BANK) for _ in range(_WORD_COUNT)]
+    return f"{prefix}{_SEPARATOR}{_SEPARATOR.join(suffix_parts)}"
+
+
+def _build_fallback_candidate(prefix: str) -> str:
+    suffix_parts = [
+        secrets.choice(_WORD_BANK),
+        secrets.choice(_WORD_BANK),
+        f"{secrets.choice(_WORD_BANK)}{secrets.randbelow(1000):03d}",
+    ]
+    return f"{prefix}{_SEPARATOR}{_SEPARATOR.join(suffix_parts)}"
 
 
 def _is_available_sync(db: Session, candidate: str, user_id: int | None) -> bool:
@@ -63,14 +142,13 @@ def generate_unique_referral_code_sync(
 ) -> str:
     prefix = _normalize_username_prefix(username)
 
-    for suffix_len, attempts in _SUFFIX_ATTEMPTS:
-        for _ in range(attempts):
-            candidate = _build_candidate(prefix, suffix_len)
-            if _is_available_sync(db, candidate, user_id):
-                return candidate
+    for _ in range(_CANDIDATE_ATTEMPTS):
+        candidate = _build_candidate(prefix)
+        if _is_available_sync(db, candidate, user_id):
+            return candidate
 
     while True:
-        candidate = f"{prefix}{secrets.token_hex(4).upper()}"
+        candidate = _build_fallback_candidate(prefix)
         if _is_available_sync(db, candidate, user_id):
             return candidate
 
@@ -82,13 +160,12 @@ async def generate_unique_referral_code_async(
 ) -> str:
     prefix = _normalize_username_prefix(username)
 
-    for suffix_len, attempts in _SUFFIX_ATTEMPTS:
-        for _ in range(attempts):
-            candidate = _build_candidate(prefix, suffix_len)
-            if await _is_available_async(db, candidate, user_id):
-                return candidate
+    for _ in range(_CANDIDATE_ATTEMPTS):
+        candidate = _build_candidate(prefix)
+        if await _is_available_async(db, candidate, user_id):
+            return candidate
 
     while True:
-        candidate = f"{prefix}{secrets.token_hex(4).upper()}"
+        candidate = _build_fallback_candidate(prefix)
         if await _is_available_async(db, candidate, user_id):
             return candidate

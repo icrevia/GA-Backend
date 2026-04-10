@@ -31,11 +31,8 @@ def read_user_me(
         "phone_number": current_user.phone_number,
         "role": current_user.role,
         "wallet_balance": float(current_user.wallet_balance or 0),
-        "upi_id": current_user.upi_id,
         "profile_pic": current_user.profile_pic,
         "bio": current_user.bio,
-        "bgmi_id": current_user.bgmi_id,
-        "valorant_id": current_user.valorant_id,
         "freefire_id": current_user.freefire_id,
         "is_active": bool(current_user.is_active),
         "face_image_path": getattr(current_user, "face_image_path", None),
@@ -60,15 +57,9 @@ def update_user_me(
     if user_update.username is not None:
         current_user.username = user_update.username
 
-    if user_update.upi_id is not None:
-        current_user.upi_id = user_update.upi_id
     if user_update.bio is not None:
         cleaned_bio = user_update.bio.strip()
         current_user.bio = cleaned_bio or None
-    if user_update.bgmi_id is not None:
-        current_user.bgmi_id = user_update.bgmi_id
-    if user_update.valorant_id is not None:
-        current_user.valorant_id = user_update.valorant_id
     if user_update.freefire_id is not None:
         current_user.freefire_id = user_update.freefire_id
 
@@ -83,11 +74,8 @@ def update_user_me(
         "phone_number": current_user.phone_number,
         "role": current_user.role,
         "wallet_balance": float(current_user.wallet_balance or 0),
-        "upi_id": current_user.upi_id,
         "profile_pic": current_user.profile_pic,
         "bio": current_user.bio,
-        "bgmi_id": current_user.bgmi_id,
-        "valorant_id": current_user.valorant_id,
         "freefire_id": current_user.freefire_id,
         "is_active": bool(current_user.is_active),
         "face_image_path": getattr(current_user, "face_image_path", None),

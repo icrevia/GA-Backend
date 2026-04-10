@@ -222,11 +222,6 @@ def replace_withdraw_accounts(
             )
         )
 
-    if normalized_accounts:
-        current_user.upi_id = selected_upi_id or normalized_accounts[-1][1]
-    else:
-        current_user.upi_id = None
-    db.add(current_user)
     db.commit()
 
     return (
@@ -544,7 +539,6 @@ def request_withdrawal(
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
     user.wallet_balance -= req.amount
-    user.upi_id = normalized_upi_id
 
     existing_accounts = (
         db.query(WithdrawUpiAccount)

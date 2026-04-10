@@ -7,20 +7,16 @@ class User(Base):
     __tablename__ = "users"
 
     id              = Column(Integer, primary_key=True, index=True)
-    firebase_uid    = Column(String, unique=True, index=True, nullable=True)
     username        = Column(String, unique=True, index=True, nullable=False)
     email           = Column(String, unique=True, index=True, nullable=False)
     phone_number    = Column(String, unique=True, index=True, nullable=True)
     role            = Column(String, default="USER")   # USER or ADMIN
 
-    upi_id          = Column(String, nullable=True)
     profile_pic     = Column(String, nullable=True)
     bio             = Column(String(30), nullable=True)
 
 
     # Game IDs
-    bgmi_id         = Column(String, nullable=True)
-    valorant_id     = Column(String, nullable=True)
     freefire_id     = Column(String, nullable=True)
 
     # Numeric(12,2): exact decimal arithmetic — no floating-point rounding errors

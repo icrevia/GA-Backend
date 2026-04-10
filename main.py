@@ -59,6 +59,22 @@ async def lifespan(app: FastAPI):
             ]
             for query in queries:
                 await conn.execute(text(query))
+
+            # Best-effort cleanup: these legacy fields are no longer stored in users table.
+            # Keep failures non-fatal for engines that do not support DROP COLUMN IF EXISTS.
+            cleanup_queries = [
+                "DROP INDEX IF EXISTS ix_users_firebase_uid",
+                "ALTER TABLE users DROP COLUMN IF EXISTS firebase_uid",
+                "ALTER TABLE users DROP COLUMN IF EXISTS upi_id",
+                "ALTER TABLE users DROP COLUMN IF EXISTS bgmi_id",
+                "ALTER TABLE users DROP COLUMN IF EXISTS valorant_id",
+            ]
+            for query in cleanup_queries:
+                try:
+                    await conn.execute(text(query))
+                except Exception as cleanup_error:
+                    logger.info("Skipped optional users cleanup query '%s': %s", query, cleanup_error)
+
             await conn.commit()
             logger.info("DB sync & migration successful")
         except Exception as e:

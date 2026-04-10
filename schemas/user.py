@@ -47,11 +47,8 @@ class UserResponse(BaseModel):
     phone_number: Optional[str] = None
     role: str
     wallet_balance: float
-    upi_id: Optional[str] = None
     profile_pic: Optional[str] = None
     bio: Optional[str] = None
-    bgmi_id: Optional[str] = None
-    valorant_id: Optional[str] = None
     freefire_id: Optional[str] = None
     is_active: bool = True
     active_restrictions: List[UserRestrictionView] = Field(default_factory=list)
@@ -67,10 +64,7 @@ class UserUpdate(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=32)
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, pattern=r"^\+?[0-9]{10,15}$")
-    upi_id: Optional[str] = Field(None, max_length=50)
     bio: Optional[str] = Field(None, max_length=30)
-    bgmi_id: Optional[str] = Field(None, max_length=50)
-    valorant_id: Optional[str] = Field(None, max_length=50)
     freefire_id: Optional[str] = Field(None, max_length=50)
 
 

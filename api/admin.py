@@ -733,6 +733,16 @@ def list_pending_withdrawals(
     # FIXED: Bulk-load users to avoid N+1 queries
     user_ids = [tx.user_id for tx in pending]
     users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
+    latest_upi_by_user: dict[int, str] = {}
+    if user_ids:
+        withdraw_accounts = (
+            db.query(WithdrawUpiAccount)
+            .filter(WithdrawUpiAccount.user_id.in_(user_ids))
+            .order_by(WithdrawUpiAccount.id.desc())
+            .all()
+        )
+        for account in withdraw_accounts:
+            latest_upi_by_user.setdefault(account.user_id, account.upi_id)
 
     return [
         {
@@ -741,7 +751,7 @@ def list_pending_withdrawals(
             "username":   users[tx.user_id].username if tx.user_id in users else "Unknown",
             "amount":     abs(float(tx.amount)),
             "created_at": tx.created_at,
-            "upi_id":     tx.payu_txn_id or (users[tx.user_id].upi_id if tx.user_id in users else "N/A")
+            "upi_id":     tx.payu_txn_id or latest_upi_by_user.get(tx.user_id) or "N/A"
         }
         for tx in pending
     ]
@@ -855,9 +865,9 @@ def get_tournament_roster(
             "team_members":  team_members,
             "slot_no":       p.slot_no,
             "slot_label":    f"S{p.slot_no}" if p.slot_no else None,
-            "bgmi_id":       user_map[p.user_id].bgmi_id      if p.user_id in user_map else None,
+            "bgmi_id":       None,
             "freefire_id":   user_map[p.user_id].freefire_id  if p.user_id in user_map else None,
-            "valorant_id":   user_map[p.user_id].valorant_id  if p.user_id in user_map else None,
+            "valorant_id":   None,
         }
 
     return [_serialize_participant(p) for p in participants]
@@ -1449,11 +1459,11 @@ def _serialize_admin_user(user: User, match_stats: dict | None = None) -> dict:
         "phone_number": user.phone_number,
         "role": user.role,
         "wallet_balance": float(user.wallet_balance or 0),
-        "upi_id": user.upi_id,
+        "upi_id": None,
         "profile_pic": user.profile_pic,
         "bio": user.bio,
-        "bgmi_id": user.bgmi_id,
-        "valorant_id": user.valorant_id,
+        "bgmi_id": None,
+        "valorant_id": None,
         "freefire_id": user.freefire_id,
         "is_active": user.is_active,
         "referral_code": user.referral_code,
@@ -2062,7 +2072,8 @@ def list_all_transactions(
         username = u.username if u else "Unknown"
         email    = u.email    if u else ""
         phone    = u.phone_number if u else None
-        upi_id   = u.upi_id if u else None
+        user_accounts = withdraw_accounts_by_user.get(tx.user_id, [])
+        upi_id   = user_accounts[0].upi_id if user_accounts else None
         is_withdrawal = tx.transaction_type == "WITHDRAWAL"
 
         withdrawal_upi_id = None
@@ -2075,7 +2086,6 @@ def list_all_transactions(
             )
 
             matched_account = None
-            user_accounts = withdraw_accounts_by_user.get(tx.user_id, [])
             if withdrawal_upi_id:
                 normalized_withdraw_upi = str(withdrawal_upi_id).strip().lower()
                 for account in user_accounts:
@@ -2125,9 +2135,9 @@ def list_all_transactions(
             "user_is_active": u.is_active if u else None,
             "user_wallet_balance": float(u.wallet_balance) if (u and u.wallet_balance is not None) else None,
             "user_referral_code": u.referral_code if u else None,
-            "bgmi_id":        u.bgmi_id if u else None,
+            "bgmi_id":        None,
             "freefire_id":    u.freefire_id if u else None,
-            "valorant_id":    u.valorant_id if u else None,
+            "valorant_id":    None,
             "user_created_at": u.created_at if u else None,
             "user_updated_at": u.updated_at if u else None,
             "amount":         float(tx.amount),
