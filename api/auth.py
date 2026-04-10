@@ -132,9 +132,6 @@ def _build_banned_support_response(user: User, fallback_phone: str) -> dict[str,
 
 
 async def _is_blocked_for_login_support(db: AsyncSession, user: User) -> bool:
-    if user.role == "ADMIN":
-        return False
-
     if not bool(user.is_active):
         return True
 
