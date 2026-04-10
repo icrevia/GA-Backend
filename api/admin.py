@@ -7,7 +7,6 @@ import uuid
 import os
 import uuid
 import logging
-import re
 import hashlib
 import json
 import secrets
@@ -1069,9 +1068,6 @@ def delete_banner(
 # Promo management
 # ─────────────────────────────────────────────────────────────────
 
-_PROMO_CODE_AMOUNT_RE = re.compile(r"(\d+(?:\.\d{1,2})?)$")
-
-
 def _normalize_promo_code(code: str) -> str:
     cleaned = " ".join(code.strip().upper().split())
     normalized = cleaned.replace(" ", "_")
@@ -1081,26 +1077,9 @@ def _normalize_promo_code(code: str) -> str:
 
 
 def _resolve_promo_reward_amount(
-    normalized_code: str,
-    reward_amount: float | None,
-    discount: float | None,
+    reward_amount: float,
 ) -> Decimal:
-    raw_amount: str | None = None
-
-    if reward_amount is not None:
-        raw_amount = str(reward_amount)
-    elif discount is not None:
-        raw_amount = str(discount)
-    else:
-        match = _PROMO_CODE_AMOUNT_RE.search(normalized_code)
-        if match:
-            raw_amount = match.group(1)
-
-    if raw_amount is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide reward_amount or end promo code with amount (example: ADD100)",
-        )
+    raw_amount = str(reward_amount)
 
     amount = Decimal(raw_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if amount <= Decimal("0.00"):
@@ -1362,9 +1341,7 @@ def create_promo(
         raise HTTPException(status_code=400, detail="Promo code already exists")
 
     reward_amount = _resolve_promo_reward_amount(
-        normalized_code=code,
         reward_amount=payload.reward_amount,
-        discount=payload.discount,
     )
 
     promo = PromoCode(
