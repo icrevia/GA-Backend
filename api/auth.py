@@ -20,6 +20,7 @@ import string
 import random
 import httpx
 from services.login_security import extract_client_ip
+from services.referral_codes import generate_unique_referral_code_async
 
 # In-memory store
 _otp_store: dict[str, str] = {}
@@ -499,14 +500,11 @@ async def verify_otp(
 
     if normalized_phone in _pending_signups:
         pending_data = _pending_signups.pop(normalized_phone)
-        
-        def generate_code():
-            return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        
-        ref_code = generate_code()
-        # Ensure unique ref code
-        while (await db.execute(select(User).where(User.referral_code == ref_code))).scalar_one_or_none():
-            ref_code = generate_code()
+
+        ref_code = await generate_unique_referral_code_async(
+            db=db,
+            username=pending_data["username"],
+        )
 
         referrer = None
         if pending_data["referral_code"]:

@@ -9,6 +9,7 @@ from api.deps import get_current_user_referral
 from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
+from services.referral_codes import generate_unique_referral_code_sync
 from services.referral_rewards import (
     FIRST_DEPOSIT_MATCH_MULTIPLIER,
     REFERRAL_HIGH_BONUS_MAX,
@@ -97,21 +98,14 @@ def _ensure_referral_code(current_user: User, db: Session) -> str:
             db.refresh(current_user)
         return code
 
-    base_code = f"GA{current_user.id:06d}"
-    candidate = base_code
-    sequence = 1
-
-    while True:
-        owner = db.query(User.id).filter(User.referral_code == candidate).first()
-        if not owner or owner[0] == current_user.id:
-            break
-        candidate = f"{base_code}{sequence:02d}"
-        sequence += 1
-
-    current_user.referral_code = candidate
+    current_user.referral_code = generate_unique_referral_code_sync(
+        db=db,
+        username=current_user.username,
+        user_id=current_user.id,
+    )
     db.commit()
     db.refresh(current_user)
-    return candidate
+    return current_user.referral_code
 
 
 def _build_reward_policy() -> ReferralRewardPolicy:
