@@ -66,7 +66,8 @@ class DeveloperOtpStatusResponse(BaseModel):
 
 class PromoCreateRequest(BaseModel):
     code: str = Field(..., min_length=3, max_length=40)
-    discount: float = Field(..., gt=0)
+    reward_amount: Optional[float] = Field(default=None, gt=0)
+    discount: Optional[float] = Field(default=None, gt=0)
     max_uses: int = Field(100, ge=1, le=1_000_000)
     status: str = Field(default="ACTIVE")
     notes: Optional[str] = Field(default=None, max_length=300)
@@ -75,6 +76,7 @@ class PromoCreateRequest(BaseModel):
 
 class PromoUpdateRequest(BaseModel):
     code: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    reward_amount: Optional[float] = Field(default=None, gt=0)
     discount: Optional[float] = Field(default=None, gt=0)
     max_uses: Optional[int] = Field(default=None, ge=1, le=1_000_000)
     status: Optional[str] = None

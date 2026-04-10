@@ -7,6 +7,7 @@ import uuid
 import os
 import uuid
 import logging
+import re
 import hashlib
 import json
 import secrets
@@ -1068,6 +1069,8 @@ def delete_banner(
 # Promo management
 # ─────────────────────────────────────────────────────────────────
 
+_PROMO_CODE_AMOUNT_RE = re.compile(r"(\d+(?:\.\d{1,2})?)$")
+
 
 def _normalize_promo_code(code: str) -> str:
     cleaned = " ".join(code.strip().upper().split())
@@ -1075,6 +1078,35 @@ def _normalize_promo_code(code: str) -> str:
     if len(normalized) < 3:
         raise HTTPException(status_code=400, detail="Promo code must be at least 3 characters")
     return normalized[:40]
+
+
+def _resolve_promo_reward_amount(
+    normalized_code: str,
+    reward_amount: float | None,
+    discount: float | None,
+) -> Decimal:
+    raw_amount: str | None = None
+
+    if reward_amount is not None:
+        raw_amount = str(reward_amount)
+    elif discount is not None:
+        raw_amount = str(discount)
+    else:
+        match = _PROMO_CODE_AMOUNT_RE.search(normalized_code)
+        if match:
+            raw_amount = match.group(1)
+
+    if raw_amount is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide reward_amount or end promo code with amount (example: ADD100)",
+        )
+
+    amount = Decimal(raw_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if amount <= Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Promo reward amount must be greater than 0")
+
+    return amount
 
 
 def _coerce_promo_active(status: str | None) -> bool:
@@ -1105,10 +1137,12 @@ def _promo_status(promo: PromoCode) -> str:
 
 
 def _serialize_promo(promo: PromoCode) -> dict:
+    reward_amount = float(promo.discount_amount or 0)
     return {
         "id": promo.id,
         "code": promo.code,
-        "discount": float(promo.discount_amount or 0),
+        "reward_amount": reward_amount,
+        "discount": reward_amount,
         "uses": int(promo.uses_count or 0),
         "max_uses": int(promo.max_uses or 0),
         "status": _promo_status(promo),
@@ -1140,9 +1174,15 @@ def create_promo(
     if exists:
         raise HTTPException(status_code=400, detail="Promo code already exists")
 
+    reward_amount = _resolve_promo_reward_amount(
+        normalized_code=code,
+        reward_amount=payload.reward_amount,
+        discount=payload.discount,
+    )
+
     promo = PromoCode(
         code=code,
-        discount_amount=Decimal(str(payload.discount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        discount_amount=reward_amount,
         max_uses=int(payload.max_uses),
         is_active=_coerce_promo_active(payload.status),
         notes=payload.notes.strip() if payload.notes else None,
@@ -1174,8 +1214,9 @@ def update_promo(
             raise HTTPException(status_code=400, detail="Promo code already exists")
         promo.code = normalized_code
 
-    if payload.discount is not None:
-        promo.discount_amount = Decimal(str(payload.discount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if payload.reward_amount is not None or payload.discount is not None:
+        next_reward = payload.reward_amount if payload.reward_amount is not None else payload.discount
+        promo.discount_amount = Decimal(str(next_reward)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     if payload.max_uses is not None:
         if payload.max_uses < int(promo.uses_count or 0):
