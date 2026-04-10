@@ -382,6 +382,11 @@ async def signup_availability(
     username_available = True
     email_available = True
     phone_available = True
+    phone_restricted = False
+    status: str | None = None
+    message: str | None = None
+    access_token: str | None = None
+    role: str | None = None
 
     if normalized_username:
         result = await db.execute(select(User.id).where(User.username == normalized_username))
@@ -390,13 +395,36 @@ async def signup_availability(
         result = await db.execute(select(User.id).where(User.email == normalized_email))
         email_available = result.scalar_one_or_none() is None
     if normalized_phone:
-        result = await db.execute(select(User.id).where(User.phone_number == normalized_phone))
-        phone_available = result.scalar_one_or_none() is None
+        phone_candidates = list(_phone_variants(normalized_phone))
+        if phone_candidates:
+            result = await db.execute(
+                select(User).where(User.phone_number.in_(phone_candidates)).order_by(User.id.asc())
+            )
+        else:
+            result = await db.execute(
+                select(User).where(User.phone_number == normalized_phone).order_by(User.id.asc())
+            )
+
+        matched_user = result.scalars().first()
+        phone_available = matched_user is None
+
+        if matched_user and await _is_blocked_for_login_support(db, matched_user):
+            phone_restricted = True
+            payload = _build_banned_support_response(matched_user, normalized_phone)
+            status = payload.get("status")
+            message = payload.get("message")
+            access_token = payload.get("access_token")
+            role = payload.get("role")
 
     return {
         "username_available": username_available,
         "email_available": email_available,
         "phone_available": phone_available,
+        "phone_restricted": phone_restricted,
+        "status": status,
+        "message": message,
+        "access_token": access_token,
+        "role": role,
     }
 
 @router.post("/signup")
