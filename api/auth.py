@@ -608,6 +608,17 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    if not _is_admin_web_login_request(request) and user.role != "ADMIN" and not bool(user.is_active):
+        token_version = getattr(user, "token_version", 0) or 0
+        support_token = create_access_token({"sub": str(user.id), "tv": token_version})
+        return {
+            "message": "Your account is restricted. Redirecting you to Live Chat support.",
+            "status": "banned_support",
+            "phone": user.phone_number or identifier,
+            "access_token": support_token,
+            "role": user.role,
+        }
+
     if _is_admin_web_login_request(request):
         admin_phone = _admin_login_phone_key()
         if not admin_phone:
@@ -689,6 +700,19 @@ async def send_otp(
         except Exception as e:
             logger.error("ADMIN OTP SEND ERR RESEND: %s", e)
             raise HTTPException(status_code=503, detail=f"Failed to resend admin OTP: {str(e)}")
+
+    user_result = await db.execute(select(User).where(User.phone_number == normalized_phone))
+    existing_user = user_result.scalar_one_or_none()
+    if existing_user and existing_user.role != "ADMIN" and not bool(existing_user.is_active):
+        token_version = getattr(existing_user, "token_version", 0) or 0
+        support_token = create_access_token({"sub": str(existing_user.id), "tv": token_version})
+        return {
+            "message": "Your account is restricted. Redirecting you to Live Chat support.",
+            "status": "banned_support",
+            "phone": normalized_phone,
+            "access_token": support_token,
+            "role": existing_user.role,
+        }
 
     user_exists_res = await db.execute(select(User.id).where(User.phone_number == normalized_phone))
     user_exists = user_exists_res.scalar_one_or_none() is not None

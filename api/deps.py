@@ -22,6 +22,12 @@ get_db = get_db_sync
 
 
 def _session_revoked_detail(user: User) -> str:
+    if not bool(getattr(user, "is_active", True)):
+        return (
+            "Session ended because your account is restricted by admin. "
+            "Please contact support via Live Chat."
+        )
+
     base = "Session ended because your account was logged in from another device."
     device = (getattr(user, "last_login_device", None) or "").strip()
     ip = (getattr(user, "last_login_ip", None) or "").strip()

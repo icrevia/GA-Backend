@@ -1,10 +1,12 @@
+import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import json
 import logging
+from sqlalchemy import select
 
 from core.websockets import manager, ALLOWED_WS_EVENTS
 from core.security import decode_access_token
-from core.database import SyncSessionLocal
+from core.database import SessionLocal
 from models.user import User
 
 logger = logging.getLogger("GamerzAdda.ws")
@@ -44,46 +46,65 @@ def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, st
     return None, selected_protocol
 
 
-async def get_user_from_token(token: str):
-    """Decode JWT and return (user_id, is_admin) or (None, False)."""
+async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None]:
+    """Decode JWT and return (user_id, is_admin, username)."""
     if not token or token in ("null", "undefined", ""):
         logger.warning("WS Auth: Token is empty or null")
-        return None, False
+        return None, False, None
 
     try:
         payload = decode_access_token(token)
-        user_id = payload.get("sub")
-        if user_id is None:
-            logger.warning("WS Auth: No 'sub' in token payload")
-            return None, False
-
-        uid = int(user_id)
-        db = SyncSessionLocal()
-        try:
-            user = db.query(User).filter(User.id == uid).first()
-            if not user:
-                logger.warning(f"WS Auth: user_id={uid} not found in DB")
-                return None, False
-            if not user.is_active:
-                logger.warning(f"WS Auth: user_id={uid} is banned")
-                return None, False
-
-            token_version = payload.get("tv", 0)
-            db_token_version = getattr(user, "token_version", 0) or 0
-            if int(token_version) != int(db_token_version):
-                logger.warning(f"WS Auth: user_id={uid} token version mismatch")
-                return None, False
-
-            is_admin = (user.role == "ADMIN")
-            return uid, is_admin
-        except Exception as e:
-            logger.error(f"WS Auth DB Error: {e}")
-            return uid, False
-        finally:
-            db.close()
     except Exception as e:
         logger.warning(f"WS Auth Token Decode Error: {e}")
-        return None, False
+        return None, False, None
+
+    user_id = payload.get("sub")
+    if user_id is None:
+        logger.warning("WS Auth: No 'sub' in token payload")
+        return None, False, None
+
+    uid = int(user_id)
+
+    try:
+        async with SessionLocal() as db:
+            # Keep websocket auth responsive under pool pressure.
+            user_row = await asyncio.wait_for(
+                db.execute(
+                    select(
+                        User.id,
+                        User.role,
+                        User.username,
+                        User.is_active,
+                        User.token_version,
+                    ).where(User.id == uid)
+                ),
+                timeout=5,
+            )
+            row = user_row.first()
+
+        if not row:
+            logger.warning(f"WS Auth: user_id={uid} not found in DB")
+            return None, False, None
+
+        token_version = payload.get("tv", 0)
+        db_token_version = row.token_version or 0
+        if not row.is_active:
+            logger.warning(f"WS Auth: user_id={uid} is banned")
+            return None, False, None
+
+        if int(token_version) != int(db_token_version):
+            logger.warning(f"WS Auth: user_id={uid} token version mismatch")
+            return None, False, None
+
+        is_admin = (row.role == "ADMIN")
+        username = row.username
+        return uid, is_admin, username
+    except asyncio.TimeoutError:
+        logger.warning("WS Auth DB timeout while checking token")
+        return None, False, None
+    except Exception as e:
+        logger.error(f"WS Auth DB Error: {e}")
+        return None, False, None
 
 
 @router.websocket("/ws")
@@ -93,23 +114,33 @@ async def websocket_endpoint(websocket: WebSocket):
     # Accept first to avoid ASGI proxy rejections, then verify token
     await websocket.accept(subprotocol=selected_protocol)
 
-    user_id, is_admin = await get_user_from_token(token)
+    user_id, is_admin, username = await get_user_from_token(token)
     if not user_id:
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": "Authentication failed. Invalid or missing token."
-        }))
-        await websocket.close(code=1008)
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "Authentication failed. Invalid or missing token."
+            }))
+        except Exception:
+            pass
+        try:
+            await websocket.close(code=1008)
+        except Exception:
+            pass
         return
 
     await manager.connect(user_id, websocket, is_admin=is_admin)
 
     # Notify the connecting client that they're registered
-    await websocket.send_text(json.dumps({
-        "type": "connected",
-        "user_id": user_id,
-        "is_admin": is_admin
-    }))
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "connected",
+            "user_id": user_id,
+            "is_admin": is_admin
+        }))
+    except Exception:
+        manager.disconnect(user_id, websocket)
+        return
 
     try:
         while True:
@@ -150,16 +181,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
             else:
                 msg["from_user_id"] = user_id
-
-                # Fetch username for admin-side display
-                db = SyncSessionLocal()
-                try:
-                    user = db.query(User).filter(User.id == user_id).first()
-                    msg["from_user_name"] = user.username if user else f"User #{user_id}"
-                finally:
-                    db.close()
+                msg["from_user_name"] = username or f"User #{user_id}"
 
                 await manager.broadcast_to_admins(msg)
 
     except WebSocketDisconnect:
+        manager.disconnect(user_id, websocket)
+    except Exception as e:
+        logger.warning(f"WS runtime error for user_id={user_id}: {e}")
         manager.disconnect(user_id, websocket)
