@@ -20,10 +20,6 @@ import string
 import random
 import httpx
 from services.login_security import extract_client_ip
-from services.restrictions import (
-    RESTRICTION_SCOPE_FULL_APP,
-    get_active_restrictions_for_user_async,
-)
 
 # In-memory store
 _otp_store: dict[str, str] = {}
@@ -132,15 +128,7 @@ def _build_banned_support_response(user: User, fallback_phone: str) -> dict[str,
 
 
 async def _is_blocked_for_login_support(db: AsyncSession, user: User) -> bool:
-    if not bool(user.is_active):
-        return True
-
-    full_app_restrictions = await get_active_restrictions_for_user_async(
-        db,
-        user.id,
-        scope=RESTRICTION_SCOPE_FULL_APP,
-    )
-    return bool(full_app_restrictions)
+    return not bool(user.is_active)
 
 
 def _clean_env_value(value: str | None) -> str:

@@ -143,8 +143,6 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    _enforce_full_app_restriction(db, user)
-
     return user
 
 
@@ -180,8 +178,6 @@ async def get_current_user_async(
             detail=_session_revoked_detail(user),
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    await _enforce_full_app_restriction_async(db, user)
 
     return user
 
@@ -254,6 +250,7 @@ def get_current_user_wallet(
     db: Session = Depends(get_db_sync),
     current_user: User = Depends(get_current_user),
 ) -> User:
+    _enforce_full_app_restriction(db, current_user)
     _enforce_page_restriction(db, current_user, "WALLET")
     return current_user
 
@@ -262,6 +259,7 @@ def get_current_user_tournaments(
     db: Session = Depends(get_db_sync),
     current_user: User = Depends(get_current_user),
 ) -> User:
+    _enforce_full_app_restriction(db, current_user)
     _enforce_page_restriction(db, current_user, "TOURNAMENTS")
     return current_user
 
@@ -270,6 +268,7 @@ def get_current_user_referral(
     db: Session = Depends(get_db_sync),
     current_user: User = Depends(get_current_user),
 ) -> User:
+    _enforce_full_app_restriction(db, current_user)
     _enforce_page_restriction(db, current_user, "REFERRAL")
     return current_user
 
@@ -278,6 +277,7 @@ def get_current_user_profile(
     db: Session = Depends(get_db_sync),
     current_user: User = Depends(get_current_user),
 ) -> User:
+    _enforce_full_app_restriction(db, current_user)
     _enforce_page_restriction(db, current_user, "PROFILE")
     return current_user
 
@@ -286,5 +286,6 @@ async def get_current_user_profile_async(
     db: AsyncSession = Depends(get_db_async),
     current_user: User = Depends(get_current_user_async),
 ) -> User:
+    await _enforce_full_app_restriction_async(db, current_user)
     await _enforce_page_restriction_async(db, current_user, "PROFILE")
     return current_user
