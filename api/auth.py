@@ -20,6 +20,10 @@ import string
 import random
 import httpx
 from services.login_security import extract_client_ip
+from services.restrictions import (
+    RESTRICTION_SCOPE_FULL_APP,
+    get_active_restrictions_for_user_async,
+)
 
 # In-memory store
 _otp_store: dict[str, str] = {}
@@ -113,6 +117,33 @@ def _resolve_login_device(request: Request) -> str:
         return user_agent[:160]
 
     return "Unknown Device"
+
+
+def _build_banned_support_response(user: User, fallback_phone: str) -> dict[str, str]:
+    token_version = getattr(user, "token_version", 0) or 0
+    support_token = create_access_token({"sub": str(user.id), "tv": token_version})
+    return {
+        "message": "Your account is restricted. Redirecting you to Live Chat support.",
+        "status": "banned_support",
+        "phone": (user.phone_number or fallback_phone or "").strip(),
+        "access_token": support_token,
+        "role": (user.role or "USER").strip() or "USER",
+    }
+
+
+async def _is_blocked_for_login_support(db: AsyncSession, user: User) -> bool:
+    if user.role == "ADMIN":
+        return False
+
+    if not bool(user.is_active):
+        return True
+
+    full_app_restrictions = await get_active_restrictions_for_user_async(
+        db,
+        user.id,
+        scope=RESTRICTION_SCOPE_FULL_APP,
+    )
+    return bool(full_app_restrictions)
 
 
 def _clean_env_value(value: str | None) -> str:
@@ -608,16 +639,9 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if not _is_admin_web_login_request(request) and user.role != "ADMIN" and not bool(user.is_active):
-        token_version = getattr(user, "token_version", 0) or 0
-        support_token = create_access_token({"sub": str(user.id), "tv": token_version})
-        return {
-            "message": "Your account is restricted. Redirecting you to Live Chat support.",
-            "status": "banned_support",
-            "phone": user.phone_number or identifier,
-            "access_token": support_token,
-            "role": user.role,
-        }
+    if not _is_admin_web_login_request(request):
+        if await _is_blocked_for_login_support(db, user):
+            return _build_banned_support_response(user, identifier)
 
     if _is_admin_web_login_request(request):
         admin_phone = _admin_login_phone_key()
@@ -701,18 +725,14 @@ async def send_otp(
             logger.error("ADMIN OTP SEND ERR RESEND: %s", e)
             raise HTTPException(status_code=503, detail=f"Failed to resend admin OTP: {str(e)}")
 
-    user_result = await db.execute(select(User).where(User.phone_number == normalized_phone))
+    phone_candidates = list(_phone_variants(normalized_phone))
+    if phone_candidates:
+        user_result = await db.execute(select(User).where(User.phone_number.in_(phone_candidates)))
+    else:
+        user_result = await db.execute(select(User).where(User.phone_number == normalized_phone))
     existing_user = user_result.scalar_one_or_none()
-    if existing_user and existing_user.role != "ADMIN" and not bool(existing_user.is_active):
-        token_version = getattr(existing_user, "token_version", 0) or 0
-        support_token = create_access_token({"sub": str(existing_user.id), "tv": token_version})
-        return {
-            "message": "Your account is restricted. Redirecting you to Live Chat support.",
-            "status": "banned_support",
-            "phone": normalized_phone,
-            "access_token": support_token,
-            "role": existing_user.role,
-        }
+    if existing_user and await _is_blocked_for_login_support(db, existing_user):
+        return _build_banned_support_response(existing_user, normalized_phone)
 
     user_exists_res = await db.execute(select(User.id).where(User.phone_number == normalized_phone))
     user_exists = user_exists_res.scalar_one_or_none() is not None
