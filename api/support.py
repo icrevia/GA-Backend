@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 from sqlalchemy import and_, func, select, update
 from pydantic import BaseModel, Field
 from typing import List, Tuple
@@ -33,14 +32,6 @@ class AdminReplyRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
 
 
-class AttendSessionRequest(BaseModel):
-    session_id: int
-
-
-class EndSessionRequest(BaseModel):
-    session_id: int
-
-
 class SendMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
 
@@ -68,42 +59,16 @@ async def _get_or_create_user_support_session(db: AsyncSession, user_id: int) ->
     return session, [session]
 
 
-async def _set_user_support_attendance(
-    db: AsyncSession,
-    user_id: int,
-    admin_id: int | None,
-    requires_admin: bool | None = None,
-) -> None:
-    updates_payload = {
-        "attended_by_admin_id": admin_id,
-        "attended_at": now_ist() if admin_id is not None else None,
-    }
-    if requires_admin is not None:
-        updates_payload["requires_admin"] = requires_admin
-
+async def _clear_user_support_flags(db: AsyncSession, user_id: int) -> None:
     await db.execute(
         update(ChatSession)
         .where(ChatSession.user_id == user_id)
-        .values(**updates_payload)
-    )
-
-
-async def _get_attending_admin_for_user(db: AsyncSession, user_id: int) -> User | None:
-    attending_admin_result = await db.execute(
-        select(ChatSession.attended_by_admin_id)
-        .where(
-            ChatSession.user_id == user_id,
-            ChatSession.attended_by_admin_id.isnot(None),
+        .values(
+            requires_admin=False,
+            attended_by_admin_id=None,
+            attended_at=None,
         )
-        .order_by(ChatSession.attended_at.desc(), ChatSession.id.desc())
-        .limit(1)
     )
-    attending_admin_id = attending_admin_result.scalar_one_or_none()
-    if not attending_admin_id:
-        return None
-
-    admin_user_result = await db.execute(select(User).where(User.id == int(attending_admin_id)))
-    return admin_user_result.scalar_one_or_none()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -208,25 +173,17 @@ async def get_sessions(
         .subquery()
     )
 
-    chat_user = aliased(User)
-    attending_admin = aliased(User)
-
     rows_result = await db.execute(
         select(
             ChatSession.id.label("session_id"),
             ChatSession.user_id.label("user_id"),
             ChatSession.created_at.label("created_at"),
-            ChatSession.requires_admin.label("requires_admin"),
-            ChatSession.attended_by_admin_id.label("attended_by_admin_id"),
-            ChatSession.attended_at.label("attended_at"),
-            chat_user.username.label("username"),
-            chat_user.email.label("email"),
-            attending_admin.username.label("attended_by_admin_name"),
+            User.username.label("username"),
+            User.email.label("email"),
             latest_message_sq.c.content.label("last_message"),
             latest_message_sq.c.timestamp.label("last_timestamp"),
         )
-        .join(chat_user, chat_user.id == ChatSession.user_id)
-        .outerjoin(attending_admin, attending_admin.id == ChatSession.attended_by_admin_id)
+        .join(User, User.id == ChatSession.user_id)
         .outerjoin(
             latest_message_sq,
             and_(
@@ -235,7 +192,6 @@ async def get_sessions(
             ),
         )
         .order_by(
-            func.coalesce(ChatSession.requires_admin, False).desc(),
             func.coalesce(latest_message_sq.c.timestamp, ChatSession.created_at).desc(),
         )
     )
@@ -254,11 +210,11 @@ async def get_sessions(
                 (row.last_timestamp or row.created_at).isoformat()
                 if (row.last_timestamp or row.created_at) else None
             ),
-            "requires_admin": bool(row.requires_admin),
-            "is_attended": bool(row.attended_by_admin_id),
-            "attended_at": row.attended_at.isoformat() if row.attended_at else None,
-            "attended_by_admin_id": row.attended_by_admin_id,
-            "attended_by_admin_name": row.attended_by_admin_name,
+            "requires_admin": False,
+            "is_attended": False,
+            "attended_at": None,
+            "attended_by_admin_id": None,
+            "attended_by_admin_name": None,
             "unread": 0,
         }
         for row in rows
@@ -271,7 +227,6 @@ async def get_my_chat(
     current_user: User = Depends(get_user_for_support_async)
 ):
     session, all_sessions = await _get_or_create_user_support_session(db, current_user.id)
-    attending_admin = await _get_attending_admin_for_user(db, current_user.id)
     session_ids = [s.id for s in all_sessions]
 
     messages_result = await db.execute(
@@ -283,10 +238,10 @@ async def get_my_chat(
 
     return {
         "session_id": session.id,
-        "requires_admin": any(bool(s.requires_admin) for s in all_sessions),
-        "is_attended": attending_admin is not None,
-        "attended_by_admin_id": attending_admin.id if attending_admin else None,
-        "attended_by_admin_name": attending_admin.username if attending_admin else None,
+        "requires_admin": False,
+        "is_attended": False,
+        "attended_by_admin_id": None,
+        "attended_by_admin_name": None,
         "messages": [
             {
                 "id":        m.id,
@@ -321,6 +276,7 @@ async def send_message(
         is_admin=(current_user.role == "ADMIN")
     )
     db.add(new_msg)
+    await _clear_user_support_flags(db, session.user_id)
     await db.commit()
     await db.refresh(new_msg)
 
@@ -336,35 +292,30 @@ async def send_message(
     await manager.broadcast(msg_data)
 
     if current_user.role == "ADMIN":
-        return {"status": "success", "escalated_to_admin": False}
-
-    attending_admin = await _get_attending_admin_for_user(db, session.user_id)
-    await _set_user_support_attendance(
-        db,
-        user_id=session.user_id,
-        admin_id=attending_admin.id if attending_admin else None,
-        requires_admin=attending_admin is None,
-    )
-    await db.commit()
-
-    if attending_admin is None:
-        escalation_event = {
-            "type": "support_escalation",
-            "session_id": session.id,
-            "user_id": session.user_id,
-            "from_user_id": session.user_id,
-            "from_user_name": current_user.username,
-            "message_preview": clean_message[:180],
-            "reason": "user_message",
-            "timestamp": now_ist().isoformat(),
+        return {
+            "status": "success",
+            "escalated_to_admin": False,
+            "attended_by_admin_id": None,
+            "attended_by_admin_name": None,
         }
-        await manager.broadcast_to_admins(escalation_event)
+
+    escalation_event = {
+        "type": "support_escalation",
+        "session_id": session.id,
+        "user_id": session.user_id,
+        "from_user_id": session.user_id,
+        "from_user_name": current_user.username,
+        "message_preview": clean_message[:180],
+        "reason": "user_message",
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.broadcast_to_admins(escalation_event)
 
     return {
         "status": "success",
-        "escalated_to_admin": attending_admin is None,
-        "attended_by_admin_id": attending_admin.id if attending_admin else None,
-        "attended_by_admin_name": attending_admin.username if attending_admin else None,
+        "escalated_to_admin": True,
+        "attended_by_admin_id": None,
+        "attended_by_admin_name": None,
     }
 
 
@@ -411,162 +362,6 @@ async def log_call(
     return {"status": "success"}
 
 
-@router.post("/admin/attend")
-async def admin_attend_session(
-    request: AttendSessionRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user_async)
-):
-    if current_user.role != "ADMIN":
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    session_result = await db.execute(select(ChatSession).where(ChatSession.id == request.session_id))
-    session = session_result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    existing_attender = await _get_attending_admin_for_user(db, session.user_id)
-    if existing_attender and existing_attender.id != current_user.id:
-        raise HTTPException(
-            status_code=409,
-            detail=f"This chat is currently attended by Agent {existing_attender.username}.",
-        )
-
-    primary_session, _ = await _get_or_create_user_support_session(db, session.user_id)
-
-    await _set_user_support_attendance(
-        db,
-        user_id=session.user_id,
-        admin_id=current_user.id,
-        requires_admin=False,
-    )
-
-    join_message = ChatMessage(
-        session_id=primary_session.id,
-        sender_id=current_user.id,
-        content=f"Agent {current_user.username} has joined this chat. Please talk to him.",
-        is_admin=True,
-    )
-    db.add(join_message)
-    await db.commit()
-    await db.refresh(join_message)
-
-    join_chat_payload = {
-        "type": "chat_message",
-        "id": join_message.id,
-        "session_id": primary_session.id,
-        "user_id": session.user_id,
-        "content": join_message.content,
-        "is_admin": True,
-        "timestamp": now_ist().isoformat(),
-    }
-    await manager.send_personal_message(join_chat_payload, session.user_id)
-    await manager.broadcast_to_admins(join_chat_payload)
-
-    attend_event = {
-        "type": "support_attended",
-        "session_id": primary_session.id,
-        "user_id": session.user_id,
-        "attended_by_admin_id": current_user.id,
-        "attended_by_admin_name": current_user.username,
-        "timestamp": now_ist().isoformat(),
-    }
-    await manager.broadcast_to_admins(attend_event)
-
-    return {
-        "status": "success",
-        "session_id": primary_session.id,
-        "user_id": session.user_id,
-        "attended_by_admin_id": current_user.id,
-        "attended_by_admin_name": current_user.username,
-    }
-
-
-@router.post("/admin/end")
-async def admin_end_session(
-    request: EndSessionRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user_async)
-):
-    if current_user.role != "ADMIN":
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    session_result = await db.execute(select(ChatSession).where(ChatSession.id == request.session_id))
-    session = session_result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    primary_session, _ = await _get_or_create_user_support_session(db, session.user_id)
-    attending_admin = await _get_attending_admin_for_user(db, session.user_id)
-
-    if attending_admin and attending_admin.id != current_user.id:
-        raise HTTPException(
-            status_code=409,
-            detail=f"This chat is currently attended by Agent {attending_admin.username}.",
-        )
-
-    if not attending_admin:
-        return {
-            "status": "success",
-            "session_id": primary_session.id,
-            "user_id": session.user_id,
-            "ended_by_admin_id": None,
-            "ended_by_admin_name": None,
-            "already_ended": True,
-        }
-
-    await _set_user_support_attendance(
-        db,
-        user_id=session.user_id,
-        admin_id=None,
-        requires_admin=False,
-    )
-
-    leave_message = ChatMessage(
-        session_id=primary_session.id,
-        sender_id=current_user.id,
-        content=(
-            f"Agent {current_user.username} has ended this live support session. "
-            "Please send your message; next available agent will join shortly."
-        ),
-        is_admin=True,
-    )
-    db.add(leave_message)
-    await db.commit()
-    await db.refresh(leave_message)
-
-    leave_chat_payload = {
-        "type": "chat_message",
-        "id": leave_message.id,
-        "session_id": primary_session.id,
-        "user_id": session.user_id,
-        "content": leave_message.content,
-        "is_admin": True,
-        "timestamp": now_ist().isoformat(),
-    }
-    await manager.send_personal_message(leave_chat_payload, session.user_id)
-    await manager.broadcast_to_admins(leave_chat_payload)
-
-    end_event = {
-        "type": "support_unattended",
-        "session_id": primary_session.id,
-        "user_id": session.user_id,
-        "ended_by_admin_id": current_user.id,
-        "ended_by_admin_name": current_user.username,
-        "timestamp": now_ist().isoformat(),
-    }
-    await manager.broadcast_to_admins(end_event)
-
-    return {
-        "status": "success",
-        "session_id": primary_session.id,
-        "user_id": session.user_id,
-        "ended_by_admin_id": current_user.id,
-        "ended_by_admin_name": current_user.username,
-        "already_ended": False,
-    }
-
-
 @router.post("/admin/reply")
 async def admin_reply(
     request: AdminReplyRequest,
@@ -588,12 +383,6 @@ async def admin_reply(
         raise HTTPException(status_code=404, detail="Session not found")
 
     primary_session, _ = await _get_or_create_user_support_session(db, session.user_id)
-    attending_admin = await _get_attending_admin_for_user(db, session.user_id)
-    if attending_admin and attending_admin.id != current_user.id:
-        raise HTTPException(
-            status_code=409,
-            detail=f"This chat is currently attended by Agent {attending_admin.username}.",
-        )
 
     new_msg = ChatMessage(
         session_id=primary_session.id,
@@ -601,13 +390,8 @@ async def admin_reply(
         content=clean_message,
         is_admin=True
     )
-    await _set_user_support_attendance(
-        db,
-        user_id=session.user_id,
-        admin_id=current_user.id,
-        requires_admin=False,
-    )
     db.add(new_msg)
+    await _clear_user_support_flags(db, session.user_id)
     await db.commit()
     await db.refresh(new_msg)
 
@@ -618,7 +402,8 @@ async def admin_reply(
         "user_id":    session.user_id,
         "content":    new_msg.content,
         "is_admin":   True,
-        "timestamp":  now_ist().isoformat()
+        "timestamp":  new_msg.timestamp.isoformat() if new_msg.timestamp else now_ist().isoformat()
     }
     await manager.send_personal_message(msg_data, session.user_id)
+    await manager.broadcast_to_admins(msg_data)
     return {"status": "success"}
