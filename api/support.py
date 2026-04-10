@@ -145,7 +145,7 @@ async def get_session_messages(
         {
             "id":        m.id,
             "content":   m.content,
-            "is_admin":  m.is_admin,
+            "is_admin":  (m.sender_id != session.user_id),
             "timestamp": m.timestamp.isoformat() if m.timestamp else None
         }
         for m in messages
@@ -246,7 +246,7 @@ async def get_my_chat(
             {
                 "id":        m.id,
                 "content":   m.content,
-                "is_admin":  m.is_admin,
+                "is_admin":  (m.sender_id != session.user_id),
                 "timestamp": m.timestamp.isoformat() if m.timestamp else None
             }
             for m in messages
@@ -273,7 +273,8 @@ async def send_message(
         session_id=session.id,
         sender_id=current_user.id,
         content=clean_message,
-        is_admin=(current_user.role == "ADMIN")
+        # /support/send is a user-facing endpoint; always persist as user message
+        is_admin=False
     )
     db.add(new_msg)
     await _clear_user_support_flags(db, session.user_id)
@@ -287,17 +288,9 @@ async def send_message(
         "user_id":    session.user_id,
         "content":    new_msg.content,
         "is_admin":   new_msg.is_admin,
-        "timestamp":  now_ist().isoformat()
+        "timestamp":  new_msg.timestamp.isoformat() if new_msg.timestamp else now_ist().isoformat()
     }
     await manager.broadcast(msg_data)
-
-    if current_user.role == "ADMIN":
-        return {
-            "status": "success",
-            "escalated_to_admin": False,
-            "attended_by_admin_id": None,
-            "attended_by_admin_name": None,
-        }
 
     escalation_event = {
         "type": "support_escalation",
@@ -350,8 +343,8 @@ async def log_call(
         "session_id": session.id,
         "user_id":    target_user_id,
         "content":    content,
-        "is_admin":   new_msg.is_admin,
-        "timestamp":  now_ist().isoformat()
+        "is_admin":   (new_msg.sender_id != target_user_id),
+        "timestamp":  new_msg.timestamp.isoformat() if new_msg.timestamp else now_ist().isoformat()
     }
 
     if current_user.role == "ADMIN":
