@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
-from typing import Optional
+from typing import Optional, List
 import re
+from datetime import datetime
 
 
 class UserCreate(BaseModel):
@@ -29,6 +30,16 @@ class LoginRequest(BaseModel):
 
 
 
+class UserRestrictionView(BaseModel):
+    id: int
+    scope: str
+    page_key: Optional[str] = None
+    reason: Optional[str] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
 class UserResponse(BaseModel):
     id: int
     username: str
@@ -43,6 +54,7 @@ class UserResponse(BaseModel):
     valorant_id: Optional[str] = None
     freefire_id: Optional[str] = None
     is_active: bool = True
+    active_restrictions: List[UserRestrictionView] = Field(default_factory=list)
 
     # Path to stored face image (if enrolled)
     face_image_path: Optional[str] = None
@@ -71,6 +83,16 @@ class SecureContactUpdate(BaseModel):
         if self.email is None and self.phone_number is None:
             raise ValueError("Provide at least one field: email or phone_number")
         return self
+
+
+class UserRestrictionView(BaseModel):
+    id: int
+    scope: str
+    page_key: Optional[str] = None
+    reason: Optional[str] = None
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
 
 
 

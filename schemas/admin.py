@@ -22,6 +22,19 @@ class NotificationSendRequest(BaseModel):
 class UserStatusUpdate(BaseModel):
     is_active: bool
 
+
+class RestrictionCreateRequest(BaseModel):
+    user_id: int = Field(..., ge=1)
+    scope: str = Field(..., min_length=4, max_length=20)
+    page_key: Optional[str] = Field(default=None, max_length=64)
+    reason: Optional[str] = Field(default=None, max_length=300)
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+
+
+class RestrictionUnlockRequest(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=300)
+
 class TournamentRoomUpdate(BaseModel):
     room_id: str
     room_password: Optional[str] = None

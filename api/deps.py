@@ -7,6 +7,13 @@ from core.database import get_db_sync, get_db as get_db_async
 from core.config import settings
 from core.security import decode_access_token
 from models.user import User
+from services.restrictions import (
+    RESTRICTION_SCOPE_FULL_APP,
+    RESTRICTION_SCOPE_PAGE,
+    build_restriction_detail,
+    get_active_restrictions_for_user,
+    get_active_restrictions_for_user_async,
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
@@ -26,6 +33,72 @@ def _session_revoked_detail(user: User) -> str:
     if ip:
         return f"{base} New login IP: {ip}. Please log in again."
     return f"{base} Please log in again."
+
+
+def _enforce_full_app_restriction(db: Session, user: User) -> None:
+    if user.role == "ADMIN":
+        return
+
+    active_full_app_restrictions = get_active_restrictions_for_user(
+        db,
+        user.id,
+        scope=RESTRICTION_SCOPE_FULL_APP,
+    )
+    if active_full_app_restrictions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=build_restriction_detail(active_full_app_restrictions[0]),
+        )
+
+
+def _enforce_page_restriction(db: Session, user: User, page_key: str) -> None:
+    if user.role == "ADMIN":
+        return
+
+    active_page_restrictions = get_active_restrictions_for_user(
+        db,
+        user.id,
+        scope=RESTRICTION_SCOPE_PAGE,
+        page_key=page_key,
+    )
+    if active_page_restrictions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=build_restriction_detail(active_page_restrictions[0]),
+        )
+
+
+async def _enforce_full_app_restriction_async(db: AsyncSession, user: User) -> None:
+    if user.role == "ADMIN":
+        return
+
+    active_full_app_restrictions = await get_active_restrictions_for_user_async(
+        db,
+        user.id,
+        scope=RESTRICTION_SCOPE_FULL_APP,
+    )
+    if active_full_app_restrictions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=build_restriction_detail(active_full_app_restrictions[0]),
+        )
+
+
+async def _enforce_page_restriction_async(db: AsyncSession, user: User, page_key: str) -> None:
+    if user.role == "ADMIN":
+        return
+
+    active_page_restrictions = await get_active_restrictions_for_user_async(
+        db,
+        user.id,
+        scope=RESTRICTION_SCOPE_PAGE,
+        page_key=page_key,
+    )
+    if active_page_restrictions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=build_restriction_detail(active_page_restrictions[0]),
+        )
 
 
 def get_current_user(
@@ -64,6 +137,8 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    _enforce_full_app_restriction(db, user)
+
     return user
 
 
@@ -99,6 +174,8 @@ async def get_current_user_async(
             detail=_session_revoked_detail(user),
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    await _enforce_full_app_restriction_async(db, user)
 
     return user
 
@@ -164,4 +241,44 @@ async def get_user_for_support_async(
 def get_current_active_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user
+
+
+def get_current_user_wallet(
+    db: Session = Depends(get_db_sync),
+    current_user: User = Depends(get_current_user),
+) -> User:
+    _enforce_page_restriction(db, current_user, "WALLET")
+    return current_user
+
+
+def get_current_user_tournaments(
+    db: Session = Depends(get_db_sync),
+    current_user: User = Depends(get_current_user),
+) -> User:
+    _enforce_page_restriction(db, current_user, "TOURNAMENTS")
+    return current_user
+
+
+def get_current_user_referral(
+    db: Session = Depends(get_db_sync),
+    current_user: User = Depends(get_current_user),
+) -> User:
+    _enforce_page_restriction(db, current_user, "REFERRAL")
+    return current_user
+
+
+def get_current_user_profile(
+    db: Session = Depends(get_db_sync),
+    current_user: User = Depends(get_current_user),
+) -> User:
+    _enforce_page_restriction(db, current_user, "PROFILE")
+    return current_user
+
+
+async def get_current_user_profile_async(
+    db: AsyncSession = Depends(get_db_async),
+    current_user: User = Depends(get_current_user_async),
+) -> User:
+    await _enforce_page_restriction_async(db, current_user, "PROFILE")
     return current_user

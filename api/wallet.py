@@ -8,7 +8,7 @@ import uuid
 import html
 import logging
 
-from api.deps import get_current_user, get_current_active_admin
+from api.deps import get_current_user_wallet
 from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
@@ -64,14 +64,14 @@ def _is_promo_expired(promo: PromoCode) -> bool:
 # ─────────────────────────────────────────────────────────────────
 
 @router.get("/balance", response_model=WalletBalanceResponse)
-def get_balance(current_user: User = Depends(get_current_user)):
+def get_balance(current_user: User = Depends(get_current_user_wallet)):
     return {"balance": current_user.wallet_balance}
 
 
 @router.get("/transactions", response_model=List[WalletTransactionResponse])
 def get_transactions(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_wallet)
 ):
     return (
         db.query(WalletTransaction)
@@ -84,7 +84,7 @@ def get_transactions(
 @router.get("/withdraw/accounts", response_model=List[WithdrawUpiAccountResponse])
 def get_withdraw_accounts(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_wallet)
 ):
     return (
         db.query(WithdrawUpiAccount)
@@ -98,7 +98,7 @@ def get_withdraw_accounts(
 def redeem_promo_code(
     req: PromoRedeemRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_wallet)
 ):
     normalized_code = _normalize_promo_code(req.code)
     if len(normalized_code) < 3:
@@ -179,7 +179,7 @@ def redeem_promo_code(
 def replace_withdraw_accounts(
     req: WithdrawUpiAccountListRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_wallet)
 ):
     if len(req.accounts) > MAX_WITHDRAW_UPI_ACCOUNTS:
         raise HTTPException(
@@ -244,7 +244,7 @@ def replace_withdraw_accounts(
 def init_add_money(
     req: AddMoneyRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_wallet)
 ):
     if req.amount < 1:
         raise HTTPException(status_code=400, detail="Minimum recharge amount is ₹1")
@@ -453,7 +453,7 @@ async def pay0_callback_handler(
 def get_payment_status(
     txnid: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_wallet)
 ):
     """
     Polls the database for the final status of a transaction.
@@ -504,7 +504,7 @@ def get_payment_status(
 def request_withdrawal(
     req: WithdrawalRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_wallet)
 ):
     if req.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")

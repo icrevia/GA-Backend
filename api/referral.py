@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api.deps import get_current_user
+from api.deps import get_current_user_referral
 from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
@@ -240,7 +240,7 @@ def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
 
 @router.get("/stats", response_model=ReferralStats)
 def get_referral_stats(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_referral),
     db: Session = Depends(get_db)
 ) -> Any:
     return _build_referral_stats(current_user, db)
@@ -249,7 +249,7 @@ def get_referral_stats(
 @router.post("/missions/{mission_key}/claim", response_model=MissionClaimResponse)
 def claim_referral_mission(
     mission_key: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_referral),
     db: Session = Depends(get_db),
 ) -> Any:
     normalized_key = mission_key.strip().upper()

@@ -4,7 +4,7 @@ from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
 from typing import List
 
-from api.deps import get_current_user, get_current_active_admin
+from api.deps import get_current_user_tournaments, get_current_active_admin
 from core.database import get_db_sync as get_db
 from models.user import User
 from models.tournament import Tournament
@@ -204,7 +204,10 @@ def _next_available_slot(db: Session, tournament_id: int, max_slots: int) -> int
 
 
 @router.get("/", response_model=List[TournamentResponse])
-def get_upcoming_tournaments(db: Session = Depends(get_db)):
+def get_upcoming_tournaments(
+    db: Session = Depends(get_db),
+    _current_user: User = Depends(get_current_user_tournaments),
+):
     tournaments = db.query(Tournament).filter(
         or_(Tournament.status == "UPCOMING", Tournament.status == "LIVE")
     ).order_by(Tournament.match_time.asc()).all()
@@ -252,7 +255,7 @@ def join_tournament(
     tournament_id: int,
     request: TournamentJoinRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_tournaments)
 ):
     # FIXED: Lock the tournament row first to eliminate the slot race condition
     tournament = db.query(Tournament).filter(
@@ -354,7 +357,7 @@ def join_tournament(
 def get_tournament_slots(
     tournament_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_tournaments),
 ):
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
@@ -377,7 +380,7 @@ def get_tournament_slots(
 @router.get("/my", response_model=List[TournamentResponse])
 def get_my_tournaments(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_tournaments)
 ):
     participants = db.query(TournamentParticipant).filter(
         TournamentParticipant.user_id == current_user.id
@@ -401,7 +404,7 @@ def get_my_tournaments(
 def get_tournament(
     tournament_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_tournaments)
 ):
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:

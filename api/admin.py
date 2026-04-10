@@ -20,6 +20,7 @@ from core.config import settings
 from models.user import User
 from models.banner import HomeBanner
 from models.promo import PromoCode
+from models.restriction import UserRestriction
 from models.tournament import Tournament
 from models.wallet import WalletTransaction
 from models.config import SystemConfig
@@ -28,6 +29,19 @@ from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
 from models.withdraw_upi_account import WithdrawUpiAccount
 from services.notifications import add_user_notification
+from services.restrictions import (
+    RESTRICTION_SCOPE_FULL_APP,
+    RESTRICTION_SCOPE_PAGE,
+    VALID_RESTRICTION_PAGE_KEYS,
+    build_restriction_detail,
+    get_active_restrictions_for_user,
+    is_restriction_currently_active,
+    normalize_restriction_page_key,
+    normalize_restriction_scope,
+    serialize_user_restriction,
+    to_naive,
+    utcnow_naive,
+)
 from services.match_stats import (
     compute_match_stats_for_user,
     compute_match_stats_for_user_ids,
@@ -39,6 +53,8 @@ from schemas.admin import (
     SystemConfigUpdate,
     NotificationSendRequest,
     UserStatusUpdate,
+    RestrictionCreateRequest,
+    RestrictionUnlockRequest,
     TournamentRoomUpdate,
     TournamentConclude,
     TournamentCreateAdmin,
@@ -1509,6 +1525,293 @@ def update_user_status(
     return {"message": f"User {user.username} is now {status_str}"}
 
 
+_RESTRICTION_PAGE_LABELS = {
+    "HOME": "Home",
+    "TOURNAMENTS": "Tournaments",
+    "WALLET": "Wallet",
+    "SPIN": "Spin",
+    "REFERRAL": "Referral",
+    "PROFILE": "Profile",
+    "SUPPORT": "Support",
+}
+
+
+def _serialize_admin_restriction_entry(
+    restriction: UserRestriction,
+    users_by_id: dict[int, User],
+    admins_by_id: dict[int, User],
+) -> dict:
+    payload = serialize_user_restriction(restriction)
+    user = users_by_id.get(restriction.user_id)
+    creator = admins_by_id.get(restriction.created_by_admin_id or 0)
+    lifter = admins_by_id.get(restriction.lifted_by_admin_id or 0)
+
+    payload.update({
+        "user_id": restriction.user_id,
+        "username": user.username if user else None,
+        "email": user.email if user else None,
+        "user_is_active": bool(user.is_active) if user else None,
+        "is_active": bool(restriction.is_active),
+        "is_currently_active": is_restriction_currently_active(restriction),
+        "created_by_admin_id": restriction.created_by_admin_id,
+        "created_by_admin": creator.username if creator else None,
+        "lifted_by_admin_id": restriction.lifted_by_admin_id,
+        "lifted_by_admin": lifter.username if lifter else None,
+        "lifted_at": restriction.lifted_at,
+        "lift_note": restriction.lift_note,
+        "page_label": _RESTRICTION_PAGE_LABELS.get(payload.get("page_key") or "", payload.get("page_key")),
+    })
+    return payload
+
+
+@router.get("/restrictions/page-keys")
+def list_restriction_page_keys(
+    current_user: User = Depends(get_current_active_admin),
+):
+    return [
+        {"key": key, "label": _RESTRICTION_PAGE_LABELS.get(key, key)}
+        for key in sorted(VALID_RESTRICTION_PAGE_KEYS)
+    ]
+
+
+@router.get("/restrictions")
+def list_user_restrictions(
+    query: str = "",
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    restrictions_query = db.query(UserRestriction)
+    if not include_inactive:
+        restrictions_query = restrictions_query.filter(UserRestriction.is_active == True)
+
+    restrictions = restrictions_query.order_by(UserRestriction.created_at.desc()).all()
+
+    user_ids = {r.user_id for r in restrictions}
+    admin_ids = {
+        admin_id
+        for r in restrictions
+        for admin_id in (r.created_by_admin_id, r.lifted_by_admin_id)
+        if admin_id
+    }
+
+    users_by_id = {
+        u.id: u
+        for u in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
+    admins_by_id = {
+        u.id: u
+        for u in db.query(User).filter(User.id.in_(admin_ids)).all()
+    } if admin_ids else {}
+
+    filtered = restrictions
+    q = (query or "").strip().lower()
+    if q:
+        def _matches(r: UserRestriction) -> bool:
+            user = users_by_id.get(r.user_id)
+            if str(r.user_id) == q:
+                return True
+            if user and q in (user.username or "").lower():
+                return True
+            if user and q in (user.email or "").lower():
+                return True
+            return False
+
+        filtered = [r for r in restrictions if _matches(r)]
+
+    return [
+        _serialize_admin_restriction_entry(r, users_by_id, admins_by_id)
+        for r in filtered
+    ]
+
+
+@router.get("/users/{user_id}/restrictions")
+def list_user_restrictions_for_user(
+    user_id: int,
+    include_inactive: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    q = db.query(UserRestriction).filter(UserRestriction.user_id == user_id)
+    if not include_inactive:
+        q = q.filter(UserRestriction.is_active == True)
+    restrictions = q.order_by(UserRestriction.created_at.desc()).all()
+
+    admins_by_id = {
+        admin.id: admin
+        for admin in db.query(User).filter(
+            User.id.in_({
+                admin_id
+                for r in restrictions
+                for admin_id in (r.created_by_admin_id, r.lifted_by_admin_id)
+                if admin_id
+            })
+        ).all()
+    } if restrictions else {}
+
+    users_by_id = {user.id: user}
+    return [
+        _serialize_admin_restriction_entry(r, users_by_id, admins_by_id)
+        for r in restrictions
+    ]
+
+
+@router.post("/restrictions")
+def create_user_restriction(
+    payload: RestrictionCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    user = db.query(User).filter(User.id == payload.user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role == "ADMIN":
+        raise HTTPException(status_code=400, detail="Admin accounts cannot be restricted from this endpoint")
+
+    try:
+        scope = normalize_restriction_scope(payload.scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        page_key = normalize_restriction_page_key(payload.page_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if scope == RESTRICTION_SCOPE_PAGE and not page_key:
+        raise HTTPException(status_code=400, detail="page_key is required when scope=PAGE")
+    if scope == RESTRICTION_SCOPE_FULL_APP:
+        page_key = None
+
+    starts_at = to_naive(payload.starts_at) or utcnow_naive()
+    ends_at = to_naive(payload.ends_at)
+    if ends_at and ends_at <= starts_at:
+        raise HTTPException(status_code=400, detail="ends_at must be after starts_at")
+
+    if scope == RESTRICTION_SCOPE_FULL_APP:
+        already_active = get_active_restrictions_for_user(
+            db,
+            user.id,
+            scope=RESTRICTION_SCOPE_FULL_APP,
+        )
+    else:
+        already_active = get_active_restrictions_for_user(
+            db,
+            user.id,
+            scope=RESTRICTION_SCOPE_PAGE,
+            page_key=page_key,
+        )
+    if already_active:
+        raise HTTPException(status_code=409, detail="An active restriction already exists for this target")
+
+    restriction = UserRestriction(
+        user_id=user.id,
+        scope=scope,
+        page_key=page_key,
+        reason=(payload.reason or "").strip() or None,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        is_active=True,
+        created_by_admin_id=current_user.id,
+    )
+
+    db.add(restriction)
+    db.commit()
+    db.refresh(restriction)
+
+    try:
+        add_user_notification(
+            db,
+            user.id,
+            "Access Restriction Applied",
+            build_restriction_detail(restriction),
+            "SYSTEM",
+        )
+    except Exception:
+        pass
+
+    logger.info(
+        "Restriction created by admin=%s user_id=%s scope=%s page=%s ends_at=%s",
+        current_user.username,
+        user.id,
+        scope,
+        page_key,
+        ends_at.isoformat() if ends_at else None,
+    )
+
+    return {
+        "message": "Restriction added successfully",
+        "restriction": _serialize_admin_restriction_entry(
+            restriction,
+            users_by_id={user.id: user},
+            admins_by_id={current_user.id: current_user},
+        ),
+    }
+
+
+@router.post("/restrictions/{restriction_id}/unlock")
+def unlock_user_restriction(
+    restriction_id: int,
+    payload: RestrictionUnlockRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    restriction = db.query(UserRestriction).filter(
+        UserRestriction.id == restriction_id
+    ).with_for_update().first()
+    if not restriction:
+        raise HTTPException(status_code=404, detail="Restriction not found")
+
+    if not restriction.is_active:
+        return {"message": "Restriction already unlocked"}
+
+    restriction.is_active = False
+    restriction.lifted_by_admin_id = current_user.id
+    restriction.lifted_at = utcnow_naive()
+    restriction.lift_note = (payload.note or "").strip() or None
+
+    user = db.query(User).filter(User.id == restriction.user_id).with_for_update().first()
+    if user and not user.is_active:
+        has_other_full_app_restriction = bool(
+            get_active_restrictions_for_user(
+                db,
+                user.id,
+                scope=RESTRICTION_SCOPE_FULL_APP,
+            )
+        )
+        if not has_other_full_app_restriction:
+            user.is_active = True
+            db.add(user)
+
+    db.add(restriction)
+    db.commit()
+    db.refresh(restriction)
+
+    if user:
+        try:
+            add_user_notification(
+                db,
+                user.id,
+                "Restriction Lifted",
+                "An admin has removed your account restriction.",
+                "SYSTEM",
+            )
+        except Exception:
+            pass
+
+    logger.info(
+        "Restriction unlocked by admin=%s restriction_id=%s user_id=%s",
+        current_user.username,
+        restriction.id,
+        restriction.user_id,
+    )
+    return {"message": "Restriction unlocked successfully"}
+
+
 @router.delete("/users/{user_id}")
 def delete_user_account(
     user_id: int,
@@ -2027,7 +2330,15 @@ def get_banned_users(
 ):
     users = db.query(User).filter(User.is_active == False).all()
     return [
-        {"id": u.id, "username": u.username, "email": u.email, "balance": float(u.wallet_balance)}
+        {
+            "id": u.id,
+            "username": u.username,
+            "email": u.email,
+            "role": u.role,
+            "is_active": bool(u.is_active),
+            "balance": float(u.wallet_balance),
+            "created_at": u.created_at,
+        }
         for u in users
     ]
 @router.post("/transactions/reject-all-pending")
