@@ -9,7 +9,10 @@ from api.deps import get_current_user_referral
 from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
-from services.referral_codes import generate_unique_referral_code_sync
+from services.referral_codes import (
+    generate_unique_referral_code_sync,
+    is_username_aligned_referral_code,
+)
 from services.referral_rewards import (
     FIRST_DEPOSIT_MATCH_MULTIPLIER,
     REFERRAL_HIGH_BONUS_MAX,
@@ -91,7 +94,9 @@ def _get_activated_referral_user_ids(db: Session, user_id: int) -> set[int]:
 
 def _ensure_referral_code(current_user: User, db: Session) -> str:
     code = (current_user.referral_code or "").strip().upper()
-    if code:
+    should_regenerate = not is_username_aligned_referral_code(current_user.username, code)
+
+    if code and not should_regenerate:
         if current_user.referral_code != code:
             current_user.referral_code = code
             db.commit()

@@ -30,6 +30,13 @@ def _normalize_username_prefix(username: str | None) -> str:
     return prefix
 
 
+def is_username_aligned_referral_code(username: str | None, referral_code: str | None) -> bool:
+    code = (referral_code or "").strip().upper()
+    if not code:
+        return False
+    return code.startswith(_normalize_username_prefix(username))
+
+
 def _build_candidate(prefix: str, suffix_len: int) -> str:
     suffix = "".join(secrets.choice(_ALPHABET) for _ in range(suffix_len))
     return f"{prefix}{suffix}"
