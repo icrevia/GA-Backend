@@ -527,19 +527,6 @@ async def verify_otp(
         await db.commit()
         await db.refresh(db_user)
 
-        # Referrer bonus?
-        if referrer:
-            referrer.wallet_balance = (referrer.wallet_balance or 0) + Decimal("2.00")
-            from models.wallet import WalletTransaction
-            db.add(WalletTransaction(
-                user_id=referrer.id,
-                amount=Decimal("2.00"),
-                transaction_type="REFERRAL_REWARD",
-                status="SUCCESS",
-                reference_id=f"REF_SIGNUP_{db_user.id}"
-            ))
-            await db.commit()
-
         # Assign avatar
         db_user.profile_pic = f"{settings.APP_URL}/static/avatars/avatar{(db_user.id % 5) + 1}.png"
         await db.commit()

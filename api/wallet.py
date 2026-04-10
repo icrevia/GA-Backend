@@ -28,6 +28,7 @@ from schemas.wallet import (
 )
 from core.config import settings
 from services.notifications import add_user_notification
+from services.referral_rewards import maybe_credit_referrer_for_first_successful_deposit
 from core.websockets import manager as ws_manager
 
 logger = logging.getLogger("GamerzAdda.wallet")
@@ -406,6 +407,17 @@ async def pay0_callback_handler(
             tx.gateway_payment_id = status_res.get("utr") or form_data.get("utr")
             user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
             user.wallet_balance += tx.amount
+            referral_bonus = maybe_credit_referrer_for_first_successful_deposit(
+                db=db,
+                referred_user=user,
+                deposit_tx=tx,
+            )
+            if referral_bonus is not None:
+                logger.info(
+                    "Referral first-deposit bonus credited | ref_user=%s amount=%s",
+                    user.id,
+                    referral_bonus,
+                )
             db.add(user)
             
             add_user_notification(
@@ -475,6 +487,17 @@ def get_payment_status(
                 tx.gateway_order_id = status_res.get("order_id") or tx.gateway_order_id or txnid
                 user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
                 user.wallet_balance += tx.amount
+                referral_bonus = maybe_credit_referrer_for_first_successful_deposit(
+                    db=db,
+                    referred_user=user,
+                    deposit_tx=tx,
+                )
+                if referral_bonus is not None:
+                    logger.info(
+                        "Referral first-deposit bonus credited via status poll | ref_user=%s amount=%s",
+                        user.id,
+                        referral_bonus,
+                    )
                 db.commit()
             else:
                 tx.status = "FAILED"
