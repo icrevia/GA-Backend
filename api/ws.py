@@ -18,11 +18,6 @@ def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, st
     - Authorization: Bearer <jwt>
     - Sec-WebSocket-Protocol: GamerzAdda.v1, token.<jwt>
     """
-    auth_header = websocket.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-        return token or None, None
-
     raw_protocols = websocket.headers.get("sec-websocket-protocol", "")
     protocols = [p.strip() for p in raw_protocols.split(",") if p.strip()]
 
@@ -36,6 +31,11 @@ def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, st
         if proto.lower().startswith("token."):
             token = proto[len("token."):].strip()
             return token or None, selected_protocol
+
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        return token or None, selected_protocol
 
     token_qs = websocket.query_params.get("token")
     if token_qs and token_qs not in ("null", "undefined", ""):
