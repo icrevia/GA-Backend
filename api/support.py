@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy import and_, func, select, update
@@ -10,103 +10,11 @@ from models.support import ChatSession, ChatMessage
 from models.user import User
 from core.websockets import manager
 from datetime import datetime, timezone, timedelta
-from collections import deque
-from threading import Lock
 import logging
-import re
 
 logger = logging.getLogger("GamerzAdda.support")
 IST = timezone(timedelta(hours=5, minutes=30))
 MAX_SUPPORT_MESSAGE_LENGTH = 1000
-SUPPORT_RATE_LIMIT_WINDOW_SECONDS = 60
-SUPPORT_RATE_LIMIT_PER_MIN_USER = 20
-SUPPORT_RATE_LIMIT_PER_MIN_ADMIN = 60
-SUPPORT_RATE_LIMIT_PER_MIN_IP = 120
-
-_SUPPORT_IP_BUCKETS: dict[str, deque[datetime]] = {}
-_SUPPORT_IP_BUCKETS_LOCK = Lock()
-
-SUPPORT_BOT_ESCALATION_KEYWORDS = (
-    "human",
-    "agent",
-    "admin",
-    "representative",
-    "not solved",
-    "not helpful",
-    "didnt help",
-    "didn't help",
-    "escalate",
-    "complaint",
-)
-
-SUPPORT_BOT_GREETING_KEYWORDS = (
-    "hi",
-    "hii",
-    "hello",
-    "hey",
-    "namaste",
-    "namaskar",
-)
-
-SUPPORT_BOT_HELP_KEYWORDS = (
-    "help",
-    "madad",
-    "support",
-    "issue",
-    "problem",
-)
-
-SUPPORT_BOT_MENU_RESPONSE = (
-    "Hi! Main aapki help kar sakta hoon. Please issue type ke saath details bheje:\n"
-    "1) Add money/payment not credited: amount + UTR\n"
-    "2) Withdrawal pending: amount + request time\n"
-    "3) Tournament join/match issue: tournament name + screenshot/error text\n"
-    "4) Login/OTP issue: exact error message\n"
-    "Direct human support ke liye type kare: human"
-)
-
-SUPPORT_BOT_INTENTS = (
-    {
-        "intent": "wallet_add",
-        "keywords": ("add money", "deposit", "payment", "upi", "utr", "transaction", "credited"),
-        "response": (
-            "I can help with add-money issues. Please share the amount, transaction time, and UTR/transaction ID. "
-            "If money is deducted but not credited, I will keep this chat ready for priority admin review."
-        ),
-    },
-    {
-        "intent": "withdrawal",
-        "keywords": ("withdraw", "withdrawal", "cashout", "payout"),
-        "response": (
-            "For withdrawal checks, please share amount and request time. "
-            "If it is pending longer than usual, an admin will review this session first."
-        ),
-    },
-    {
-        "intent": "tournament",
-        "keywords": ("tournament", "join", "match", "entry fee", "room id"),
-        "response": (
-            "For tournament issues, please share tournament name and screenshot/error text. "
-            "Quick checks: stable internet, latest app version, and sufficient wallet balance."
-        ),
-    },
-    {
-        "intent": "login",
-        "keywords": ("login", "otp", "password", "signin", "sign in", "account locked"),
-        "response": (
-            "For login problems, please retry OTP after 60 seconds and confirm network is stable. "
-            "If still blocked, share your registered email/phone format (masked) and exact error message."
-        ),
-    },
-    {
-        "intent": "referral",
-        "keywords": ("referral", "invite", "code", "bonus"),
-        "response": (
-            "Referral rewards are added after eligible completion criteria. "
-            "Please share referral code and referred username so support can verify quickly."
-        ),
-    },
-)
 
 
 def now_ist() -> datetime:
@@ -135,96 +43,6 @@ class EndSessionRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
-
-
-def _extract_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
-
-    return request.client.host if request.client else "unknown"
-
-
-def _check_ip_rate_limit(client_ip: str) -> bool:
-    now = datetime.now(timezone.utc)
-    window_start = now - timedelta(seconds=SUPPORT_RATE_LIMIT_WINDOW_SECONDS)
-
-    with _SUPPORT_IP_BUCKETS_LOCK:
-        bucket = _SUPPORT_IP_BUCKETS.setdefault(client_ip, deque())
-
-        while bucket and bucket[0] < window_start:
-            bucket.popleft()
-
-        if len(bucket) >= SUPPORT_RATE_LIMIT_PER_MIN_IP:
-            return False
-
-        bucket.append(now)
-
-    return True
-
-
-def _contains_any_keyword(text: str, keywords: tuple[str, ...]) -> bool:
-    normalized_text = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
-    words = set(normalized_text.split())
-
-    for keyword in keywords:
-        normalized_keyword = re.sub(r"[^a-z0-9]+", " ", keyword.lower()).strip()
-        if not normalized_keyword:
-            continue
-
-        if " " in normalized_keyword:
-            if normalized_keyword in normalized_text:
-                return True
-        elif normalized_keyword in words:
-            return True
-
-    return False
-
-
-def _build_support_bot_reply(message: str) -> Tuple[str, bool, str]:
-    normalized = " ".join(message.lower().split())
-    words = [part for part in re.sub(r"[^a-z0-9]+", " ", normalized).split() if part]
-
-    if _contains_any_keyword(normalized, SUPPORT_BOT_ESCALATION_KEYWORDS):
-        return (
-            "I am connecting you with a human support specialist right now. Please stay online.",
-            True,
-            "user_requested_human",
-        )
-
-    # Greeting and very short openers should get a guided menu, not escalation.
-    if _contains_any_keyword(normalized, SUPPORT_BOT_GREETING_KEYWORDS) or (len(words) <= 2 and len(normalized) <= 12):
-        return (SUPPORT_BOT_MENU_RESPONSE, False, "greeting_or_short_message")
-
-    if _contains_any_keyword(normalized, SUPPORT_BOT_HELP_KEYWORDS):
-        return (SUPPORT_BOT_MENU_RESPONSE, False, "help_menu")
-
-    for intent_data in SUPPORT_BOT_INTENTS:
-        if _contains_any_keyword(normalized, intent_data["keywords"]):
-            return (intent_data["response"], False, intent_data["intent"])
-
-    return (
-        "I have alerted our human support team. Faster resolution ke liye please issue type, amount/UTR (if payment), and error/screenshot text share kare.",
-        True,
-        "bot_not_confident",
-    )
-
-
-async def _resolve_bot_sender_id(db: AsyncSession, fallback_user_id: int) -> int:
-    admin_user_result = await db.execute(
-        select(User.id)
-        .where(User.role == "ADMIN", User.is_active.is_(True))
-        .order_by(User.id.asc())
-        .limit(1)
-    )
-    admin_user_id = admin_user_result.scalar_one_or_none()
-    if admin_user_id:
-        return int(admin_user_id)
-    return fallback_user_id
 
 
 async def _get_or_create_user_support_session(db: AsyncSession, user_id: int) -> Tuple[ChatSession, List[ChatSession]]:
@@ -485,7 +303,6 @@ async def get_my_chat(
 @router.post("/send")
 async def send_message(
     body: SendMessageRequest,
-    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_user_for_support_async)
 ):
@@ -494,22 +311,6 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     if len(clean_message) > MAX_SUPPORT_MESSAGE_LENGTH:
         raise HTTPException(status_code=400, detail=f"Message is too long (max {MAX_SUPPORT_MESSAGE_LENGTH} characters)")
-
-    window_start = datetime.now(timezone.utc) - timedelta(seconds=SUPPORT_RATE_LIMIT_WINDOW_SECONDS)
-    max_allowed = SUPPORT_RATE_LIMIT_PER_MIN_ADMIN if current_user.role == "ADMIN" else SUPPORT_RATE_LIMIT_PER_MIN_USER
-    recent_count_result = await db.execute(
-        select(func.count(ChatMessage.id)).where(
-            ChatMessage.sender_id == current_user.id,
-            ChatMessage.timestamp >= window_start,
-        )
-    )
-    recent_count = int(recent_count_result.scalar() or 0)
-    if recent_count >= max_allowed:
-        raise HTTPException(status_code=429, detail="Too many messages. Please slow down.")
-
-    client_ip = _extract_client_ip(request)
-    if not _check_ip_rate_limit(client_ip):
-        raise HTTPException(status_code=429, detail="Too many requests from this network. Please slow down.")
 
     session, _ = await _get_or_create_user_support_session(db, current_user.id)
 
@@ -537,67 +338,16 @@ async def send_message(
     if current_user.role == "ADMIN":
         return {"status": "success", "escalated_to_admin": False}
 
-    # When a human agent is actively attending this user, pause bot auto-replies.
     attending_admin = await _get_attending_admin_for_user(db, session.user_id)
-    if attending_admin:
-        await _set_user_support_attendance(
-            db,
-            user_id=session.user_id,
-            admin_id=attending_admin.id,
-            requires_admin=False,
-        )
-        await db.commit()
-        return {
-            "status": "success",
-            "escalated_to_admin": False,
-            "bot_reason": "human_attending",
-            "attended_by_admin_id": attending_admin.id,
-            "attended_by_admin_name": attending_admin.username,
-        }
-
-    bot_reply, should_escalate, escalation_reason = _build_support_bot_reply(clean_message)
-    bot_sender_id = await _resolve_bot_sender_id(db, current_user.id)
-
-    bot_msg = ChatMessage(
-        session_id=session.id,
-        sender_id=bot_sender_id,
-        content=bot_reply,
-        is_admin=True,
+    await _set_user_support_attendance(
+        db,
+        user_id=session.user_id,
+        admin_id=attending_admin.id if attending_admin else None,
+        requires_admin=attending_admin is None,
     )
-
-    if should_escalate:
-        await _set_user_support_attendance(
-            db,
-            user_id=session.user_id,
-            admin_id=None,
-            requires_admin=True,
-        )
-
-    db.add(bot_msg)
     await db.commit()
-    await db.refresh(bot_msg)
 
-    bot_data = {
-        "type": "chat_message",
-        "id": bot_msg.id,
-        "session_id": session.id,
-        "user_id": session.user_id,
-        "content": bot_msg.content,
-        "is_admin": True,
-        "timestamp": now_ist().isoformat(),
-    }
-    user_delivery_ok = await manager.send_personal_message(bot_data, session.user_id)
-    await manager.broadcast_to_admins(bot_data)
-    logger.info(
-        "Support bot reply generated: session_id=%s user_id=%s reason=%s escalated=%s delivered_to_user_ws=%s",
-        session.id,
-        session.user_id,
-        escalation_reason,
-        should_escalate,
-        user_delivery_ok,
-    )
-
-    if should_escalate:
+    if attending_admin is None:
         escalation_event = {
             "type": "support_escalation",
             "session_id": session.id,
@@ -605,15 +355,16 @@ async def send_message(
             "from_user_id": session.user_id,
             "from_user_name": current_user.username,
             "message_preview": clean_message[:180],
-            "reason": escalation_reason,
+            "reason": "user_message",
             "timestamp": now_ist().isoformat(),
         }
         await manager.broadcast_to_admins(escalation_event)
 
     return {
         "status": "success",
-        "escalated_to_admin": should_escalate,
-        "bot_reason": escalation_reason,
+        "escalated_to_admin": attending_admin is None,
+        "attended_by_admin_id": attending_admin.id if attending_admin else None,
+        "attended_by_admin_name": attending_admin.username if attending_admin else None,
     }
 
 
@@ -776,7 +527,7 @@ async def admin_end_session(
         sender_id=current_user.id,
         content=(
             f"Agent {current_user.username} has ended this live support session. "
-            "AI assistant is active again. Human support ke liye 'human' type kare."
+            "Please send your message; next available agent will join shortly."
         ),
         is_admin=True,
     )
@@ -838,9 +589,7 @@ async def admin_reply(
 
     primary_session, _ = await _get_or_create_user_support_session(db, session.user_id)
     attending_admin = await _get_attending_admin_for_user(db, session.user_id)
-    if not attending_admin:
-        raise HTTPException(status_code=409, detail="Click Attend Now before replying to this chat.")
-    if attending_admin.id != current_user.id:
+    if attending_admin and attending_admin.id != current_user.id:
         raise HTTPException(
             status_code=409,
             detail=f"This chat is currently attended by Agent {attending_admin.username}.",
