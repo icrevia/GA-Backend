@@ -28,14 +28,18 @@ def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, st
 
     selected_protocol = None
     for proto in protocols:
-        if proto.lower() == "GamerzAdda.v1":
-            selected_protocol = proto
+        if proto.lower() == "gamerzadda.v1":
+            selected_protocol = "gamerzadda.v1"
             break
 
     for proto in protocols:
         if proto.lower().startswith("token."):
             token = proto[len("token."):].strip()
             return token or None, selected_protocol
+
+    token_qs = websocket.query_params.get("token")
+    if token_qs and token_qs not in ("null", "undefined", ""):
+        return token_qs.strip(), selected_protocol
 
     return None, selected_protocol
 
