@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.config import settings
-from core.database import Base
+from core.database import Base, sync_url as _sync_url
 import models
 
 # add your model's MetaData object here
@@ -44,7 +44,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = settings.DATABASE_URL
+    url = _sync_url
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -64,7 +64,7 @@ def run_migrations_online() -> None:
 
     """
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = settings.DATABASE_URL
+    configuration["sqlalchemy.url"] = _sync_url
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",

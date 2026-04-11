@@ -43,6 +43,10 @@ class ParticipantResponse(BaseModel):
     slot_no: Optional[int] = None
     slot_label: Optional[str] = None
     team_members: list[TournamentTeamMember] = []
+    # Team-based fields
+    team_name: Optional[str] = None
+    team_join_code: Optional[str] = None
+    is_team_captain: bool = False
 
     class Config:
         from_attributes = True
@@ -68,6 +72,10 @@ class TournamentJoinResponse(BaseModel):
     slot_no: int
     slot_label: str
     team_members: list[TournamentTeamMember] = []
+    # Team-based — only populated on CREATE
+    team_join_code: Optional[str] = None
+    team_name: Optional[str] = None
+    is_team_captain: bool = False
 
 
 class TournamentSlotResponse(BaseModel):
@@ -83,6 +91,10 @@ class TournamentSlotResponse(BaseModel):
     account_level: Optional[int] = None
     team_members: list[TournamentTeamMember] = []
     is_mine: bool = False
+    # Team-based fields
+    team_name: Optional[str] = None
+    team_join_code: Optional[str] = None
+    is_team_captain: bool = False
 
 
 class TournamentSlotsBoardResponse(BaseModel):
@@ -94,8 +106,23 @@ class TournamentSlotsBoardResponse(BaseModel):
     slots: list[TournamentSlotResponse]
 
 class TournamentJoinRequest(BaseModel):
+    # action: "CREATE" | "JOIN" | None (None → SOLO default)
+    action: Optional[str] = None          # "CREATE" or "JOIN"
+    team_name: Optional[str] = None       # Required when action="CREATE"
+    join_code: Optional[str] = None       # Required when action="JOIN" (6-char team code)
+
     players: list[TournamentTeamMember] = []
     # Legacy fallback fields for older clients.
     game_username: Optional[str] = None
     game_uid: Optional[str] = None
     account_level: Optional[int] = Field(default=None, ge=1, le=100)
+
+
+class TeamPreviewResponse(BaseModel):
+    """Returned when user queries a join code before confirming JOIN."""
+    team_join_code: str
+    team_name: str
+    captain_username: str
+    current_members: int
+    max_members: int
+    is_full: bool

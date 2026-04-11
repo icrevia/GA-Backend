@@ -1,6 +1,6 @@
 import json
 
-from sqlalchemy import Column, Integer, ForeignKey, DateTime, String, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, Boolean, ForeignKey, DateTime, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from core.database import Base
@@ -22,6 +22,11 @@ class TournamentParticipant(Base):
     account_level = Column(Integer, nullable=True)
     team_members_raw = Column("team_members", Text, nullable=True)
     slot_no = Column(Integer, nullable=True)
+
+    # Team-based fields (DUO / SQUAD)
+    team_name       = Column(String, nullable=True)  # Team name chosen by captain
+    team_join_code  = Column(String, nullable=True, index=True)  # 6-char code shared with teammates
+    is_team_captain = Column(Boolean, default=False)  # True for the CREATE user
     
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
     

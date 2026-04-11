@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
 from typing import List
+import secrets
+import string
 
 from api.deps import get_current_user_tournaments, get_current_active_admin
 from core.database import get_db_sync as get_db
@@ -18,6 +20,7 @@ from schemas.tournament import (
     TournamentJoinRequest,
     TournamentSlotsBoardResponse,
     TournamentSlotResponse,
+    TeamPreviewResponse,
 )
 from services.notifications import add_user_notification
 from services.wallet_balances import (
@@ -31,6 +34,29 @@ from services.wallet_balances import (
 )
 
 router = APIRouter()
+
+
+# ─────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────
+
+def _generate_join_code(length: int = 6) -> str:
+    """Generate a short alphanumeric join code, e.g. 'A3K9PZ'."""
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _unique_join_code(db: Session, tournament_id: int, length: int = 6) -> str:
+    """Generate a join code guaranteed to be unique within this tournament."""
+    for _ in range(10):  # max 10 attempts
+        code = _generate_join_code(length)
+        existing = db.query(TournamentParticipant).filter(
+            TournamentParticipant.tournament_id == tournament_id,
+            TournamentParticipant.team_join_code == code,
+        ).first()
+        if not existing:
+            return code
+    raise HTTPException(status_code=500, detail="Could not generate unique join code. Please retry.")
 
 
 def _build_joined_count_map(db: Session, tournament_ids: List[int]) -> dict[int, int]:
@@ -198,6 +224,9 @@ def _build_slots_board(
                 ),
                 team_members=team_members,
                 is_mine=(current_user_id is not None and participant.user_id == current_user_id),
+                team_name=participant.team_name,
+                team_join_code=participant.team_join_code,
+                is_team_captain=bool(participant.is_team_captain),
             )
         )
 
@@ -223,6 +252,10 @@ def _next_available_slot(db: Session, tournament_id: int, max_slots: int) -> int
             return slot_no
     return None
 
+
+# ─────────────────────────────────────────────────────────────────
+# Routes
+# ─────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=List[TournamentResponse])
 def get_upcoming_tournaments(
@@ -271,6 +304,51 @@ def update_tournament(
     return _with_count(db_obj, db)
 
 
+# ─────────────────────────────────────────────────────────────────
+# Team Preview — look up a join code before confirming
+# ─────────────────────────────────────────────────────────────────
+
+@router.get("/{tournament_id}/team/{join_code}", response_model=TeamPreviewResponse)
+def preview_team_by_code(
+    tournament_id: int,
+    join_code: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_tournaments),
+):
+    """Let a user preview a team by its join code before paying to join."""
+    join_code = join_code.strip().upper()
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    if tournament.status != "UPCOMING":
+        raise HTTPException(status_code=400, detail="Tournament is no longer accepting players")
+
+    members = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id,
+        TournamentParticipant.team_join_code == join_code,
+    ).all()
+
+    if not members:
+        raise HTTPException(status_code=404, detail="Invalid join code. Double-check and try again.")
+
+    captain = next((m for m in members if m.is_team_captain), members[0])
+    team_size = _expected_team_size(tournament.match_type)
+    team_name = members[0].team_name or "—"
+
+    return TeamPreviewResponse(
+        team_join_code=join_code,
+        team_name=team_name,
+        captain_username=captain.username if captain.user else "Unknown",
+        current_members=len(members),
+        max_members=team_size,
+        is_full=len(members) >= team_size,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────
+# Join Tournament — handles SOLO / CREATE / JOIN
+# ─────────────────────────────────────────────────────────────────
+
 @router.post("/{tournament_id}/join", response_model=TournamentJoinResponse)
 def join_tournament(
     tournament_id: int,
@@ -305,7 +383,205 @@ def join_tournament(
     if existing:
         raise HTTPException(status_code=400, detail="Already joined this arena")
 
-    # Lock user row for atomic balance update
+    mode = (tournament.match_type or "SOLO").upper()
+    action = (request.action or "").upper() if request.action else None
+    is_team_match = mode in ("DUO", "SQUAD")
+    team_size = _expected_team_size(mode)
+
+    # ── DUO / SQUAD — CREATE ────────────────────────────────────
+    if is_team_match and action == "CREATE":
+        team_name = (request.team_name or "").strip()
+        if not team_name:
+            raise HTTPException(status_code=400, detail="Team name is required to create a team")
+
+        # Only need the captain's own player details (1 member)
+        members = _normalize_join_players(request)
+        if len(members) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide only YOUR player name & UID when creating a team"
+            )
+
+        # Captain pays for the WHOLE team upfront
+        total_fee = to_money(tournament.entry_fee) * team_size
+
+        user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+        available_balance = get_total_balance(user_wallet)
+        if available_balance < total_fee:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f"Insufficient balance! You need ₹{total_fee:.2f} to create a team for {mode}. Your current balance is ₹{available_balance:.2f}.",
+                    "error_code": "INSUFFICIENT_BALANCE",
+                    "required": float(total_fee),
+                    "available": float(available_balance),
+                }
+            )
+
+        try:
+            debit_wallet(
+                user_wallet,
+                total_fee,
+                spend_order=(WALLET_BUCKET_BONUS, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING),
+            )
+        except InsufficientWalletBalanceError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f"Insufficient balance! You need ₹{exc.required:.2f} to create a team. Your current balance is ₹{exc.available:.2f}.",
+                    "error_code": "INSUFFICIENT_BALANCE",
+                    "required": float(exc.required),
+                    "available": float(exc.available),
+                }
+            )
+
+        transaction = WalletTransaction(
+            user_id=current_user.id,
+            amount=-total_fee,
+            transaction_type="JOIN_TOURNAMENT",
+            status="SUCCESS",
+            reference_id=f"TOUR_{tournament_id}_{current_user.id}"
+        )
+        db.add(transaction)
+
+        slot_no = _next_available_slot(db, tournament_id, max_slots)
+        if slot_no is None:
+            raise HTTPException(status_code=400, detail="Arena slots unavailable. Please retry.")
+
+        join_code = _unique_join_code(db, tournament_id)
+
+        participant = TournamentParticipant(
+            tournament_id=tournament_id,
+            user_id=current_user.id,
+            slot_no=slot_no,
+            account_level=request.account_level,
+            team_name=team_name,
+            team_join_code=join_code,
+            is_team_captain=True,
+        )
+        participant.set_team_members(members)
+        db.add(participant)
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Already joined this arena")
+
+        try:
+            add_user_notification(
+                db, current_user.id,
+                "Team Created! 🎮",
+                f"Your team '{team_name}' is set for '{tournament.title}'. Share code {join_code} with your teammates!",
+                "APP"
+            )
+        except Exception:
+            pass
+
+        return {
+            "message": f"Team '{team_name}' created for {tournament.title}! Share code: {join_code}",
+            "tournament_id": tournament_id,
+            "new_wallet_balance": float(get_total_balance(user_wallet)),
+            "slot_no": slot_no,
+            "slot_label": _slot_label(slot_no),
+            "team_members": members,
+            "team_join_code": join_code,
+            "team_name": team_name,
+            "is_team_captain": True,
+        }
+
+    # ── DUO / SQUAD — JOIN ───────────────────────────────────────
+    if is_team_match and action == "JOIN":
+        join_code = (request.join_code or "").strip().upper()
+        if not join_code:
+            raise HTTPException(status_code=400, detail="Join code is required to join a team")
+
+        # Find existing team members
+        team_members_in_db = db.query(TournamentParticipant).filter(
+            TournamentParticipant.tournament_id == tournament_id,
+            TournamentParticipant.team_join_code == join_code,
+        ).all()
+
+        if not team_members_in_db:
+            raise HTTPException(status_code=404, detail="Invalid join code. Double-check and try again.")
+
+        if len(team_members_in_db) >= team_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"This team is already full ({team_size}/{team_size} members)."
+            )
+
+        existing_team_name = team_members_in_db[0].team_name or ""
+
+        # Joiner does NOT pay — captain already paid for the entire team
+        slot_no = _next_available_slot(db, tournament_id, max_slots)
+        if slot_no is None:
+            raise HTTPException(status_code=400, detail="Arena slots unavailable. Please retry.")
+
+        # Joiner still needs their player info (name + uid)
+        member_payload: dict[str, object] = {}
+        if request.players and len(request.players) > 0:
+            p = request.players[0]
+            name = (p.name or "").strip()
+            uid = (p.uid or "").strip()
+            if not name or not uid:
+                raise HTTPException(status_code=400, detail="Your player name and UID are required")
+            member_payload = {"name": name, "uid": uid}
+            if p.level is not None:
+                member_payload["level"] = int(p.level)
+        elif request.game_username and request.game_uid:
+            name = request.game_username.strip()
+            uid = request.game_uid.strip()
+            member_payload = {"name": name, "uid": uid}
+            if request.account_level is not None:
+                member_payload["level"] = int(request.account_level)
+        else:
+            raise HTTPException(status_code=400, detail="Your player name and UID are required to join a team")
+
+        participant = TournamentParticipant(
+            tournament_id=tournament_id,
+            user_id=current_user.id,
+            slot_no=slot_no,
+            account_level=request.account_level,
+            team_name=existing_team_name,
+            team_join_code=join_code,
+            is_team_captain=False,
+        )
+        participant.set_team_members([member_payload])
+        db.add(participant)
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Already joined this arena")
+
+        # Get current wallet balance (no deduction for joiners)
+        user_wallet = db.query(User).filter(User.id == current_user.id).first()
+
+        try:
+            add_user_notification(
+                db, current_user.id,
+                "Joined Team! 🎮",
+                f"You've joined team '{existing_team_name}' for '{tournament.title}'. Get ready!",
+                "APP"
+            )
+        except Exception:
+            pass
+
+        return {
+            "message": f"You've joined team '{existing_team_name}' in {tournament.title}!",
+            "tournament_id": tournament_id,
+            "new_wallet_balance": float(get_total_balance(user_wallet)) if user_wallet else 0.0,
+            "slot_no": slot_no,
+            "slot_label": _slot_label(slot_no),
+            "team_members": [member_payload],
+            "team_join_code": join_code,
+            "team_name": existing_team_name,
+            "is_team_captain": False,
+        }
+
+    # ── SOLO (or legacy DUO/SQUAD with all members) ──────────────
     user_wallet = db.query(User).filter(
         User.id == current_user.id
     ).with_for_update().first()
@@ -394,6 +670,9 @@ def join_tournament(
         "slot_no": slot_no,
         "slot_label": _slot_label(slot_no),
         "team_members": team_members,
+        "team_join_code": None,
+        "team_name": None,
+        "is_team_captain": False,
     }
 
 

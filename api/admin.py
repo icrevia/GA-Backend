@@ -83,6 +83,7 @@ from schemas.admin import (
     PromoUpdateRequest,
     BannerCreateRequest,
     BannerUpdateRequest,
+    KillRewardEntry,
 )
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
 
@@ -501,10 +502,6 @@ def conclude_tournament(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    winner_id = int(data.winner_id) if isinstance(data.winner_id, str) else data.winner_id
-    if not winner_id:
-        raise HTTPException(status_code=422, detail="Winner ID is required")
-
     tournament = db.query(Tournament).filter(
         Tournament.id == tournament_id
     ).with_for_update().first()
@@ -512,6 +509,98 @@ def conclude_tournament(
         raise HTTPException(status_code=404, detail="Tournament not found")
     if tournament.status == "COMPLETED":
         raise HTTPException(status_code=400, detail="Tournament already completed")
+
+    mode = (tournament.match_type or "SOLO").upper()
+    is_team_match = mode in ("DUO", "SQUAD")
+
+    # ── TEAM-BASED CONCLUDE (DUO / SQUAD) ────────────────────────
+    if is_team_match and data.winning_team_code:
+        join_code = data.winning_team_code.strip().upper()
+        winning_participants = db.query(TournamentParticipant).filter(
+            TournamentParticipant.tournament_id == tournament_id,
+            TournamentParticipant.team_join_code == join_code,
+        ).all()
+
+        if not winning_participants:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No team found with join code '{join_code}' in this tournament"
+            )
+
+        prize = to_money(tournament.prize_pool)
+        team_size = len(winning_participants)
+        base_share = prize / team_size
+
+        kill_map: dict[int, int] = {entry.user_id: entry.kills for entry in data.kill_rewards}
+        kill_value = Decimal(str(data.kill_value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        total_paid = Decimal("0.00")
+        first_winner_id = winning_participants[0].user_id
+
+        for p in winning_participants:
+            member_user = db.query(User).filter(User.id == p.user_id).with_for_update().first()
+            if not member_user:
+                continue
+
+            kills = kill_map.get(p.user_id, 0)
+            kill_bonus = kill_value * kills
+            member_prize = to_money(base_share) + kill_bonus
+
+            credit_wallet(member_user, member_prize, WALLET_BUCKET_WINNING)
+
+            tx = WalletTransaction(
+                user_id=member_user.id,
+                amount=member_prize,
+                transaction_type="PRIZE_WIN",
+                status="SUCCESS",
+                reference_id=f"WIN_TRN_{tournament_id}_{member_user.id}"
+            )
+            db.add(tx)
+            db.add(member_user)
+            total_paid += member_prize
+
+            try:
+                add_user_notification(
+                    db, member_user.id,
+                    "CHAMPION! 🏆",
+                    f"Your team won '{tournament.title}'! ₹{member_prize:.2f} credited to your wallet.",
+                    "APP"
+                )
+            except Exception:
+                pass
+
+        tournament.winner_id = first_winner_id  # track captain as primary winner
+        tournament.status = "COMPLETED"
+        db.add(tournament)
+        db.commit()
+
+        # Notify non-winners
+        try:
+            all_parts = db.query(TournamentParticipant).filter(
+                TournamentParticipant.tournament_id == tournament_id
+            ).all()
+            winning_ids = {p.user_id for p in winning_participants}
+            for p in all_parts:
+                if p.user_id not in winning_ids:
+                    add_user_notification(
+                        db, p.user_id,
+                        "Tournament Completed 🏆",
+                        f"'{tournament.title}' has ended. Better luck next time!",
+                        "APP"
+                    )
+        except Exception:
+            pass
+
+        logger.info(
+            f"Tournament {tournament_id} concluded (TEAM). Winning team: {join_code}, "
+            f"Members: {[p.user_id for p in winning_participants]}, Total paid: ₹{total_paid}"
+        )
+        return {"message": f"Tournament concluded. {team_size} team members paid ₹{total_paid:.2f} total."}
+
+    # ── SOLO CONCLUDE ─────────────────────────────────────────────
+    winner_id = int(data.winner_id) if isinstance(data.winner_id, str) else data.winner_id
+    if not winner_id:
+        raise HTTPException(status_code=422, detail="winner_id or winning_team_code is required")
 
     # FIXED: Validate winner is actually a participant
     participant = db.query(TournamentParticipant).filter(
