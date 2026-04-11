@@ -298,21 +298,9 @@ async def send_message(
     }
     await manager.broadcast(msg_data)
 
-    escalation_event = {
-        "type": "support_escalation",
-        "session_id": session.id,
-        "user_id": session.user_id,
-        "from_user_id": session.user_id,
-        "from_user_name": current_user.username,
-        "message_preview": clean_message[:180],
-        "reason": "user_message",
-        "timestamp": now_ist().isoformat(),
-    }
-    await manager.broadcast_to_admins(escalation_event)
-
     return {
         "status": "success",
-        "escalated_to_admin": True,
+        "escalated_to_admin": False,
         "attended_by_admin_id": None,
         "attended_by_admin_name": None,
     }
@@ -326,39 +314,17 @@ async def log_call(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_user_for_support_async)
 ):
-    target_user_id = user_id if (current_user.role == "ADMIN" and user_id) else current_user.id
-    session, _ = await _get_or_create_user_support_session(db, target_user_id)
-
-    content = f"[CALL_LOG:{type}]"
-    if duration:
-        content = f"[CALL_LOG:{type}:{duration}]"
-
-    new_msg = ChatMessage(
-        session_id=session.id,
-        sender_id=current_user.id,
-        content=content,
-        is_admin=(current_user.role == "ADMIN")
+    logger.info(
+        "Ignoring deprecated support call event: type=%s duration=%s actor_user_id=%s target_user_id=%s",
+        type,
+        duration,
+        current_user.id,
+        user_id,
     )
-    db.add(new_msg)
-    await db.commit()
-    await db.refresh(new_msg)
-
-    msg_data = {
-        "type":       "chat_message",
-        "id":         new_msg.id,
-        "session_id": session.id,
-        "user_id":    target_user_id,
-        "content":    content,
-        "is_admin":   (new_msg.sender_id != target_user_id),
-        "timestamp":  new_msg.timestamp.isoformat() if new_msg.timestamp else now_ist().isoformat()
+    return {
+        "status": "ignored",
+        "message": "Call events are deprecated. Use text chat only.",
     }
-
-    if current_user.role == "ADMIN":
-        await manager.send_personal_message(msg_data, target_user_id)
-    else:
-        await manager.broadcast_to_admins(msg_data)
-
-    return {"status": "success"}
 
 
 @router.post("/admin/reply")
