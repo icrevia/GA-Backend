@@ -13,6 +13,7 @@ import os
 import uuid
 import logging
 import time
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -199,6 +200,17 @@ app.add_middleware(RequestLoggingMiddleware)
 if not os.path.exists("static"):
     os.makedirs("static")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+support_media_dir = Path(settings.SUPPORT_MEDIA_STORAGE_DIR).expanduser()
+if not support_media_dir.is_absolute():
+    support_media_dir = (Path.cwd() / support_media_dir).resolve()
+
+try:
+    support_media_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/support", StaticFiles(directory=str(support_media_dir)), name="support_media")
+    logger.info("Support media static mount enabled at /support -> %s", support_media_dir)
+except Exception as support_mount_error:
+    logger.warning("Support media static mount failed: %s", support_mount_error)
 
 app.add_middleware(
     CORSMiddleware,

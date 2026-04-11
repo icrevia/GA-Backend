@@ -58,7 +58,7 @@ class Settings(BaseSettings):
 
     # ── Support media storage ────────────────────────────────────────────────
     SUPPORT_MEDIA_STORAGE_DIR: str = "static/support_media"
-    SUPPORT_MEDIA_PUBLIC_PREFIX: str = "/static/support_media"
+    SUPPORT_MEDIA_PUBLIC_PREFIX: str = "/support"
     SUPPORT_MEDIA_PUBLIC_BASE_URL: str = ""
     SUPPORT_MEDIA_RETENTION_HOURS: int = 24
     SUPPORT_MEDIA_CLEANUP_INTERVAL_MINUTES: int = 15
@@ -285,7 +285,7 @@ class Settings(BaseSettings):
             )
             object.__setattr__(self, "SUPPORT_MEDIA_VIDEO_MAX_MB", self.SUPPORT_MEDIA_PHOTO_MAX_MB)
 
-        media_prefix = (self.SUPPORT_MEDIA_PUBLIC_PREFIX or "").strip() or "/static/support_media"
+        media_prefix = (self.SUPPORT_MEDIA_PUBLIC_PREFIX or "").strip() or "/support"
         if not media_prefix.startswith("/"):
             media_prefix = f"/{media_prefix}"
         object.__setattr__(self, "SUPPORT_MEDIA_PUBLIC_PREFIX", media_prefix)

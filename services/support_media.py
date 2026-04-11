@@ -69,7 +69,7 @@ def _public_url_for(relative_path: str) -> str:
     if settings.SUPPORT_MEDIA_PUBLIC_BASE_URL:
         return f"{settings.SUPPORT_MEDIA_PUBLIC_BASE_URL.rstrip('/')}/{clean_rel}"
 
-    prefix = (settings.SUPPORT_MEDIA_PUBLIC_PREFIX or "/static/support_media").strip() or "/static/support_media"
+    prefix = (settings.SUPPORT_MEDIA_PUBLIC_PREFIX or "/support").strip() or "/support"
     if not prefix.startswith("/"):
         prefix = f"/{prefix}"
     url_path = f"{prefix.rstrip('/')}/{clean_rel}"
