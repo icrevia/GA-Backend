@@ -41,8 +41,8 @@ router = APIRouter()
 # ─────────────────────────────────────────────────────────────────
 
 def _generate_join_code(length: int = 6) -> str:
-    """Generate a short alphanumeric join code, e.g. 'A3K9PZ'."""
-    alphabet = string.ascii_uppercase + string.digits
+    """Generate a short numeric join code, e.g. '839210'."""
+    alphabet = string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
