@@ -61,6 +61,10 @@ class AdminBlockRequest(BaseModel):
     session_id: int
 
 
+class AdminUnblockRequest(BaseModel):
+    session_id: int
+
+
 class SendMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
     issue_type: str | None = Field(default=None, max_length=MAX_ISSUE_TYPE_LENGTH)
@@ -126,6 +130,21 @@ async def _mark_user_blocked(db: AsyncSession, user_id: int, admin_id: int) -> N
             is_user_blocked=True,
             blocked_by_admin_id=admin_id,
             blocked_at=now_ist(),
+            requires_admin=False,
+            attended_by_admin_id=admin_id,
+            attended_at=now_ist(),
+        )
+    )
+
+
+async def _mark_user_unblocked(db: AsyncSession, user_id: int, admin_id: int) -> None:
+    await db.execute(
+        update(ChatSession)
+        .where(ChatSession.user_id == user_id)
+        .values(
+            is_user_blocked=False,
+            blocked_by_admin_id=None,
+            blocked_at=None,
             requires_admin=False,
             attended_by_admin_id=admin_id,
             attended_at=now_ist(),
@@ -566,6 +585,40 @@ async def admin_block_user(
         "user_id": session.user_id,
         "blocked_message": DEFAULT_BLOCKED_MESSAGE,
         "support_whatsapp_url": _support_whatsapp_url(),
+    }
+
+
+@router.post("/admin/unblock")
+async def admin_unblock_user(
+    request: AdminUnblockRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_async),
+):
+    if current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    session_result = await db.execute(select(ChatSession).where(ChatSession.id == request.session_id))
+    session = session_result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await _mark_user_unblocked(db, session.user_id, current_user.id)
+    await db.commit()
+
+    unblocked_notice = {
+        "type": "support_unblocked",
+        "user_id": session.user_id,
+        "session_id": request.session_id,
+        "unblocked_by_admin_id": current_user.id,
+        "unblocked_by_admin_name": current_user.username,
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.send_personal_message(unblocked_notice, session.user_id)
+    await manager.broadcast_to_admins(unblocked_notice)
+
+    return {
+        "status": "success",
+        "user_id": session.user_id,
     }
 
 
