@@ -19,6 +19,8 @@ MAX_SUPPORT_MESSAGE_LENGTH = 1000
 MAX_ISSUE_TYPE_LENGTH = 120
 AUTO_REPLY_TEXT = "Please wait, an admin will join you shortly to assist."
 DEFAULT_BLOCKED_MESSAGE = "Blocked by admin. Contact via WhatsApp support."
+SESSION_STATUS_ACTIVE = "ACTIVE"
+SESSION_STATUS_ENDED = "ENDED"
 
 
 def now_ist() -> datetime:
@@ -65,6 +67,14 @@ class AdminUnblockRequest(BaseModel):
     session_id: int
 
 
+class AdminEndChatRequest(BaseModel):
+    session_id: int
+
+
+class EndChatRequest(BaseModel):
+    session_id: int | None = None
+
+
 class SendMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
     issue_type: str | None = Field(default=None, max_length=MAX_ISSUE_TYPE_LENGTH)
@@ -85,7 +95,14 @@ async def _get_or_create_user_support_session(db: AsyncSession, user_id: int) ->
     sessions = list(sessions_result.scalars().all())
 
     if sessions:
-        return sessions[0], sessions
+        active_session = next(
+            (
+                s for s in reversed(sessions)
+                if (s.status or SESSION_STATUS_ACTIVE).upper() != SESSION_STATUS_ENDED
+            ),
+            None,
+        )
+        return (active_session or sessions[-1]), sessions
 
     session = ChatSession(user_id=user_id)
     db.add(session)
@@ -96,6 +113,10 @@ async def _get_or_create_user_support_session(db: AsyncSession, user_id: int) ->
 
 async def _mark_user_requires_admin(db: AsyncSession, user_id: int, issue_type: str | None = None) -> None:
     values = {
+        "status": SESSION_STATUS_ACTIVE,
+        "ended_at": None,
+        "ended_by_user_id": None,
+        "ended_by_role": None,
         "requires_admin": True,
         "attended_by_admin_id": None,
         "attended_at": None,
@@ -145,9 +166,31 @@ async def _mark_user_unblocked(db: AsyncSession, user_id: int, admin_id: int) ->
             is_user_blocked=False,
             blocked_by_admin_id=None,
             blocked_at=None,
+            status=SESSION_STATUS_ACTIVE,
             requires_admin=False,
             attended_by_admin_id=admin_id,
             attended_at=now_ist(),
+        )
+    )
+
+
+async def _mark_user_chat_ended(
+    db: AsyncSession,
+    user_id: int,
+    ended_by_user_id: int,
+    ended_by_role: str,
+) -> None:
+    await db.execute(
+        update(ChatSession)
+        .where(ChatSession.user_id == user_id)
+        .where(ChatSession.status != SESSION_STATUS_ENDED)
+        .values(
+            status=SESSION_STATUS_ENDED,
+            ended_at=now_ist(),
+            ended_by_user_id=ended_by_user_id,
+            ended_by_role=ended_by_role,
+            requires_admin=False,
+            issue_ack_sent=False,
         )
     )
 
@@ -169,6 +212,17 @@ async def _resolve_admin_name(db: AsyncSession, admin_id: int | None) -> str | N
         return None
     result = await db.execute(select(User.username).where(User.id == admin_id))
     return result.scalar_one_or_none()
+
+
+def _build_end_notice(ended_by_role: str | None, ended_by_name: str | None) -> str:
+    role = (ended_by_role or "").upper()
+    if role == "ADMIN":
+        if ended_by_name:
+            return f"Chat ended by admin ({ended_by_name})."
+        return "Chat ended by admin."
+    if role == "USER":
+        return "You ended this chat."
+    return "This chat is ended."
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -260,6 +314,7 @@ async def get_sessions(
 
     attended_admin = aliased(User)
     blocked_admin = aliased(User)
+    ended_by_user = aliased(User)
 
     latest_message_sq = (
         select(
@@ -297,10 +352,15 @@ async def get_sessions(
             ChatSession.is_user_blocked.label("is_user_blocked"),
             ChatSession.blocked_at.label("blocked_at"),
             ChatSession.blocked_by_admin_id.label("blocked_by_admin_id"),
+            ChatSession.status.label("status"),
+            ChatSession.ended_at.label("ended_at"),
+            ChatSession.ended_by_user_id.label("ended_by_user_id"),
+            ChatSession.ended_by_role.label("ended_by_role"),
             User.username.label("username"),
             User.email.label("email"),
             attended_admin.username.label("attended_by_admin_name"),
             blocked_admin.username.label("blocked_by_admin_name"),
+            ended_by_user.username.label("ended_by_name"),
             latest_message_sq.c.content.label("last_message"),
             latest_message_sq.c.timestamp.label("last_timestamp"),
             func.coalesce(unread_sq.c.unread, 0).label("unread"),
@@ -308,6 +368,7 @@ async def get_sessions(
         .join(User, User.id == ChatSession.user_id)
         .outerjoin(attended_admin, attended_admin.id == ChatSession.attended_by_admin_id)
         .outerjoin(blocked_admin, blocked_admin.id == ChatSession.blocked_by_admin_id)
+        .outerjoin(ended_by_user, ended_by_user.id == ChatSession.ended_by_user_id)
         .outerjoin(
             latest_message_sq,
             and_(
@@ -335,6 +396,13 @@ async def get_sessions(
                 else None
             ),
             "issue_type": row.issue_type,
+            "status": (row.status or SESSION_STATUS_ACTIVE).upper(),
+            "is_ended": (row.status or SESSION_STATUS_ACTIVE).upper() == SESSION_STATUS_ENDED,
+            "ended_at": row.ended_at.isoformat() if row.ended_at else None,
+            "ended_by_user_id": row.ended_by_user_id,
+            "ended_by_role": row.ended_by_role,
+            "ended_by_name": row.ended_by_name,
+            "end_notice": _build_end_notice(row.ended_by_role, row.ended_by_name) if row.ended_at else None,
             "requires_admin": bool(row.requires_admin),
             "is_attended": bool(row.attended_by_admin_id),
             "attended_at": row.attended_at.isoformat() if row.attended_at else None,
@@ -373,9 +441,19 @@ async def get_my_chat(
     is_user_blocked = bool(session.is_user_blocked)
     attended_by_admin_name = await _resolve_admin_name(db, session.attended_by_admin_id)
     blocked_by_admin_name = await _resolve_admin_name(db, session.blocked_by_admin_id)
+    ended_by_name = await _resolve_admin_name(db, session.ended_by_user_id)
+    status_value = (session.status or SESSION_STATUS_ACTIVE).upper()
+    is_ended = status_value == SESSION_STATUS_ENDED
 
     return {
         "session_id": session.id,
+        "status": status_value,
+        "is_ended": is_ended,
+        "ended_at": session.ended_at.isoformat() if session.ended_at else None,
+        "ended_by_user_id": session.ended_by_user_id,
+        "ended_by_role": session.ended_by_role,
+        "ended_by_name": ended_by_name,
+        "end_notice": _build_end_notice(session.ended_by_role, ended_by_name) if session.ended_at else None,
         "issue_type": session.issue_type,
         "requires_admin": bool(session.requires_admin),
         "is_attended": bool(session.attended_by_admin_id),
@@ -510,6 +588,88 @@ async def log_call(
     }
 
 
+@router.post("/end")
+async def end_chat_by_user(
+    request: EndChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_user_for_support_async),
+):
+    primary_session, all_sessions = await _get_or_create_user_support_session(db, current_user.id)
+    target_session = primary_session
+    if request.session_id:
+        target_session = next((s for s in all_sessions if s.id == request.session_id), primary_session)
+
+    await _mark_user_chat_ended(
+        db,
+        user_id=current_user.id,
+        ended_by_user_id=current_user.id,
+        ended_by_role="USER",
+    )
+    await db.commit()
+
+    event = {
+        "type": "support_session_ended",
+        "session_id": target_session.id,
+        "user_id": current_user.id,
+        "ended_by_role": "USER",
+        "ended_by_user_id": current_user.id,
+        "ended_by_name": current_user.username,
+        "end_notice": _build_end_notice("USER", current_user.username),
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.send_personal_message(event, current_user.id)
+    await manager.broadcast_to_admins(event)
+
+    return {
+        "status": "success",
+        "session_id": target_session.id,
+        "ended_by_role": "USER",
+    }
+
+
+@router.post("/admin/end")
+async def end_chat_by_admin(
+    request: AdminEndChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_async),
+):
+    if current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    session_result = await db.execute(select(ChatSession).where(ChatSession.id == request.session_id))
+    session = session_result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await _mark_user_chat_ended(
+        db,
+        user_id=session.user_id,
+        ended_by_user_id=current_user.id,
+        ended_by_role="ADMIN",
+    )
+    await db.commit()
+
+    event = {
+        "type": "support_session_ended",
+        "session_id": request.session_id,
+        "user_id": session.user_id,
+        "ended_by_role": "ADMIN",
+        "ended_by_user_id": current_user.id,
+        "ended_by_name": current_user.username,
+        "end_notice": _build_end_notice("ADMIN", current_user.username),
+        "timestamp": now_ist().isoformat(),
+    }
+    await manager.send_personal_message(event, session.user_id)
+    await manager.broadcast_to_admins(event)
+
+    return {
+        "status": "success",
+        "session_id": request.session_id,
+        "user_id": session.user_id,
+        "ended_by_role": "ADMIN",
+    }
+
+
 @router.post("/admin/attend")
 async def admin_attend(
     request: AdminAttendRequest,
@@ -523,6 +683,8 @@ async def admin_attend(
     session = session_result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if (session.status or SESSION_STATUS_ACTIVE).upper() == SESSION_STATUS_ENDED:
+        raise HTTPException(status_code=409, detail="Chat is ended. Wait for user to reopen it.")
     if session.is_user_blocked:
         raise HTTPException(status_code=400, detail="User is already blocked")
 
@@ -641,6 +803,8 @@ async def admin_reply(
     session = session_result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if (session.status or SESSION_STATUS_ACTIVE).upper() == SESSION_STATUS_ENDED:
+        raise HTTPException(status_code=409, detail="Chat is ended. Wait for user to reopen it.")
     if session.is_user_blocked:
         raise HTTPException(status_code=400, detail="User is blocked from chat")
 
