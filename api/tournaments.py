@@ -402,8 +402,8 @@ def join_tournament(
                 detail="Provide only YOUR player name & UID when creating a team"
             )
 
-        # Captain pays for the WHOLE team upfront
-        total_fee = to_money(tournament.entry_fee) * team_size
+        # Captain pays the flat team entry fee
+        total_fee = to_money(tournament.entry_fee)
 
         user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
         available_balance = get_total_balance(user_wallet)
