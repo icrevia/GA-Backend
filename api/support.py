@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.orm import aliased
@@ -10,6 +10,7 @@ from models.support import ChatSession, ChatMessage
 from models.user import User
 from core.websockets import manager
 from core.config import settings
+from services.support_media import SupportMediaValidationError, store_support_media
 from datetime import datetime, timezone, timedelta
 import logging
 
@@ -225,6 +226,49 @@ def _build_end_notice(ended_by_role: str | None, ended_by_name: str | None) -> s
     return "This chat is ended."
 
 
+def _caption_or_placeholder(caption: str | None, media_type: str | None = None) -> str:
+    clean_caption = (caption or "").strip()
+    if clean_caption:
+        return clean_caption[:MAX_SUPPORT_MESSAGE_LENGTH]
+
+    if media_type == "photo":
+        return "Photo"
+    if media_type == "video":
+        return "Video"
+    return ""
+
+
+def _serialize_chat_message(message: ChatMessage) -> dict:
+    return {
+        "id": message.id,
+        "content": message.content,
+        "is_admin": bool(message.is_admin),
+        "timestamp": message.timestamp.isoformat() if message.timestamp else None,
+        "media_type": message.media_type,
+        "media_url": message.media_url,
+        "media_mime_type": message.media_mime_type,
+        "media_size_bytes": message.media_size_bytes,
+        "media_expires_at": message.media_expires_at.isoformat() if message.media_expires_at else None,
+    }
+
+
+def _chat_message_event(
+    message: ChatMessage,
+    session_id: int,
+    user_id: int,
+    issue_type: str | None = None,
+) -> dict:
+    payload = {
+        "type": "chat_message",
+        "session_id": session_id,
+        "user_id": user_id,
+    }
+    payload.update(_serialize_chat_message(message))
+    if issue_type:
+        payload["issue_type"] = issue_type
+    return payload
+
+
 # ─────────────────────────────────────────────────────────────────
 # WebSocket — requires JWT token, verifies ownership
 # ─────────────────────────────────────────────────────────────────
@@ -293,15 +337,7 @@ async def get_session_messages(
     await _mark_user_messages_read(db, user_session_ids)
     await db.commit()
 
-    return [
-        {
-            "id": m.id,
-            "content": m.content,
-            "is_admin": bool(m.is_admin),
-            "timestamp": m.timestamp.isoformat() if m.timestamp else None,
-        }
-        for m in messages
-    ]
+    return [_serialize_chat_message(m) for m in messages]
 
 
 @router.get("/sessions", response_model=List[dict])
@@ -465,15 +501,7 @@ async def get_my_chat(
         "blocked_by_admin_name": blocked_by_admin_name,
         "blocked_message": DEFAULT_BLOCKED_MESSAGE if is_user_blocked else None,
         "support_whatsapp_url": _support_whatsapp_url(),
-        "messages": [
-            {
-                "id": m.id,
-                "content": m.content,
-                "is_admin": bool(m.is_admin),
-                "timestamp": m.timestamp.isoformat() if m.timestamp else None,
-            }
-            for m in messages
-        ],
+        "messages": [_serialize_chat_message(m) for m in messages],
     }
 
 
@@ -525,16 +553,15 @@ async def send_message(
     if auto_reply_msg is not None:
         await db.refresh(auto_reply_msg)
 
-    msg_data = {
-        "type": "chat_message",
-        "id": new_msg.id,
-        "session_id": session.id,
-        "user_id": session.user_id,
-        "content": new_msg.content,
-        "is_admin": False,
-        "timestamp": new_msg.timestamp.isoformat() if new_msg.timestamp else now_ist().isoformat(),
-        "issue_type": issue_type,
-    }
+    msg_data = _chat_message_event(
+        message=new_msg,
+        session_id=session.id,
+        user_id=session.user_id,
+        issue_type=issue_type,
+    )
+    if not msg_data.get("timestamp"):
+        msg_data["timestamp"] = now_ist().isoformat()
+
     await manager.send_personal_message(msg_data, session.user_id)
     await manager.broadcast_to_admins(msg_data)
 
@@ -549,15 +576,13 @@ async def send_message(
     await manager.broadcast_to_admins(escalation_data)
 
     if auto_reply_msg is not None:
-        auto_reply_data = {
-            "type": "chat_message",
-            "id": auto_reply_msg.id,
-            "session_id": session.id,
-            "user_id": session.user_id,
-            "content": auto_reply_msg.content,
-            "is_admin": True,
-            "timestamp": auto_reply_msg.timestamp.isoformat() if auto_reply_msg.timestamp else now_ist().isoformat(),
-        }
+        auto_reply_data = _chat_message_event(
+            message=auto_reply_msg,
+            session_id=session.id,
+            user_id=session.user_id,
+        )
+        if not auto_reply_data.get("timestamp"):
+            auto_reply_data["timestamp"] = now_ist().isoformat()
         await manager.send_personal_message(auto_reply_data, session.user_id)
         await manager.broadcast_to_admins(auto_reply_data)
 
@@ -565,6 +590,117 @@ async def send_message(
         "status": "success",
         "issue_type": issue_type,
         "auto_reply_sent": auto_reply_msg is not None,
+    }
+
+
+@router.post("/upload")
+async def upload_media_message(
+    file: UploadFile = File(...),
+    caption: str = Form(default=""),
+    issue_type: str | None = Form(default=None),
+    is_issue_selection: bool = Form(default=False),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_user_for_support_async),
+):
+    clean_caption = (caption or "").strip()
+    if len(clean_caption) > MAX_SUPPORT_MESSAGE_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Caption is too long (max {MAX_SUPPORT_MESSAGE_LENGTH} characters)")
+
+    session, all_sessions = await _get_or_create_user_support_session(db, current_user.id)
+    if any(bool(s.is_user_blocked) for s in all_sessions):
+        raise HTTPException(status_code=403, detail=DEFAULT_BLOCKED_MESSAGE)
+
+    try:
+        stored_media = await store_support_media(
+            upload_file=file,
+            owner_user_id=current_user.id,
+            sender_role="user",
+        )
+    except SupportMediaValidationError as validation_error:
+        raise HTTPException(status_code=400, detail=str(validation_error)) from validation_error
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Support media upload failed for user_id=%s", current_user.id)
+        raise HTTPException(status_code=500, detail="Unable to upload media right now")
+
+    normalized_issue_type = _normalize_issue_type(issue_type)
+    message_content = _caption_or_placeholder(clean_caption, stored_media.media_type)
+
+    new_msg = ChatMessage(
+        session_id=session.id,
+        sender_id=current_user.id,
+        content=message_content,
+        is_admin=False,
+        media_type=stored_media.media_type,
+        media_url=stored_media.public_url,
+        media_path=stored_media.relative_path,
+        media_mime_type=stored_media.mime_type,
+        media_size_bytes=stored_media.size_bytes,
+        media_expires_at=stored_media.expires_at,
+    )
+    db.add(new_msg)
+
+    await _mark_user_requires_admin(db, session.user_id, issue_type=normalized_issue_type)
+
+    auto_reply_msg = None
+    if is_issue_selection and normalized_issue_type and not bool(session.issue_ack_sent):
+        await db.execute(
+            update(ChatSession)
+            .where(ChatSession.user_id == session.user_id)
+            .values(issue_ack_sent=True)
+        )
+        auto_reply_msg = ChatMessage(
+            session_id=session.id,
+            sender_id=current_user.id,
+            content=AUTO_REPLY_TEXT,
+            is_admin=True,
+        )
+        db.add(auto_reply_msg)
+
+    await db.commit()
+    await db.refresh(new_msg)
+    if auto_reply_msg is not None:
+        await db.refresh(auto_reply_msg)
+
+    msg_data = _chat_message_event(
+        message=new_msg,
+        session_id=session.id,
+        user_id=session.user_id,
+        issue_type=normalized_issue_type,
+    )
+    if not msg_data.get("timestamp"):
+        msg_data["timestamp"] = now_ist().isoformat()
+
+    await manager.send_personal_message(msg_data, session.user_id)
+    await manager.broadcast_to_admins(msg_data)
+
+    escalation_data = {
+        "type": "support_escalation",
+        "session_id": session.id,
+        "user_id": session.user_id,
+        "issue_type": normalized_issue_type,
+        "preview": message_content,
+        "timestamp": msg_data["timestamp"],
+    }
+    await manager.broadcast_to_admins(escalation_data)
+
+    if auto_reply_msg is not None:
+        auto_reply_data = _chat_message_event(
+            message=auto_reply_msg,
+            session_id=session.id,
+            user_id=session.user_id,
+        )
+        if not auto_reply_data.get("timestamp"):
+            auto_reply_data["timestamp"] = now_ist().isoformat()
+        await manager.send_personal_message(auto_reply_data, session.user_id)
+        await manager.broadcast_to_admins(auto_reply_data)
+
+    return {
+        "status": "success",
+        "issue_type": normalized_issue_type,
+        "auto_reply_sent": auto_reply_msg is not None,
+        "message": _serialize_chat_message(new_msg),
     }
 
 
@@ -825,15 +961,91 @@ async def admin_reply(
     await db.commit()
     await db.refresh(new_msg)
 
-    msg_data = {
-        "type": "chat_message",
-        "id": new_msg.id,
-        "session_id": primary_session.id,
-        "user_id": session.user_id,
-        "content": new_msg.content,
-        "is_admin": True,
-        "timestamp": new_msg.timestamp.isoformat() if new_msg.timestamp else now_ist().isoformat(),
-    }
+    msg_data = _chat_message_event(
+        message=new_msg,
+        session_id=primary_session.id,
+        user_id=session.user_id,
+    )
+    if not msg_data.get("timestamp"):
+        msg_data["timestamp"] = now_ist().isoformat()
+
     await manager.send_personal_message(msg_data, session.user_id)
     await manager.broadcast_to_admins(msg_data)
     return {"status": "success"}
+
+
+@router.post("/admin/upload")
+async def admin_upload_media(
+    session_id: int = Form(...),
+    file: UploadFile = File(...),
+    caption: str = Form(default=""),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_async),
+):
+    if current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    clean_caption = (caption or "").strip()
+    if len(clean_caption) > MAX_SUPPORT_MESSAGE_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Caption is too long (max {MAX_SUPPORT_MESSAGE_LENGTH} characters)")
+
+    session_result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    session = session_result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if (session.status or SESSION_STATUS_ACTIVE).upper() == SESSION_STATUS_ENDED:
+        raise HTTPException(status_code=409, detail="Chat is ended. Wait for user to reopen it.")
+    if session.is_user_blocked:
+        raise HTTPException(status_code=400, detail="User is blocked from chat")
+
+    try:
+        stored_media = await store_support_media(
+            upload_file=file,
+            owner_user_id=session.user_id,
+            sender_role="admin",
+        )
+    except SupportMediaValidationError as validation_error:
+        raise HTTPException(status_code=400, detail=str(validation_error)) from validation_error
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Support media upload failed for admin_id=%s session_id=%s", current_user.id, session_id)
+        raise HTTPException(status_code=500, detail="Unable to upload media right now")
+
+    primary_session, all_sessions = await _get_or_create_user_support_session(db, session.user_id)
+    user_session_ids = [s.id for s in all_sessions]
+
+    new_msg = ChatMessage(
+        session_id=primary_session.id,
+        sender_id=current_user.id,
+        content=_caption_or_placeholder(clean_caption, stored_media.media_type),
+        is_admin=True,
+        media_type=stored_media.media_type,
+        media_url=stored_media.public_url,
+        media_path=stored_media.relative_path,
+        media_mime_type=stored_media.mime_type,
+        media_size_bytes=stored_media.size_bytes,
+        media_expires_at=stored_media.expires_at,
+    )
+    db.add(new_msg)
+
+    await _mark_user_attended(db, session.user_id, current_user.id)
+    await _mark_user_messages_read(db, user_session_ids)
+    await db.commit()
+    await db.refresh(new_msg)
+
+    msg_data = _chat_message_event(
+        message=new_msg,
+        session_id=primary_session.id,
+        user_id=session.user_id,
+    )
+    if not msg_data.get("timestamp"):
+        msg_data["timestamp"] = now_ist().isoformat()
+
+    await manager.send_personal_message(msg_data, session.user_id)
+    await manager.broadcast_to_admins(msg_data)
+
+    return {
+        "status": "success",
+        "message": _serialize_chat_message(new_msg),
+    }

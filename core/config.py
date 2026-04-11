@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     APP_URL: str = ""
     SUPPORT_WHATSAPP_NUMBER: str = "917632932544"
 
+    # ── Support media storage ────────────────────────────────────────────────
+    SUPPORT_MEDIA_STORAGE_DIR: str = "static/support_media"
+    SUPPORT_MEDIA_PUBLIC_PREFIX: str = "/static/support_media"
+    SUPPORT_MEDIA_PUBLIC_BASE_URL: str = ""
+    SUPPORT_MEDIA_RETENTION_HOURS: int = 24
+    SUPPORT_MEDIA_CLEANUP_INTERVAL_MINUTES: int = 15
+    SUPPORT_MEDIA_PHOTO_MAX_MB: int = 2
+    SUPPORT_MEDIA_VIDEO_MAX_MB: int = 50
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated list of origins: "https://admin.GamerzAdda.com, http://localhost:3000"
     ALLOWED_ORIGINS: str = ""
@@ -239,6 +248,47 @@ class Settings(BaseSettings):
                 file=sys.stderr,
             )
             object.__setattr__(self, "IP_GEO_LOOKUP_TIMEOUT_SECONDS", 2.0)
+
+        if self.SUPPORT_MEDIA_RETENTION_HOURS <= 0:
+            print(
+                "[CONFIG WARNING] SUPPORT_MEDIA_RETENTION_HOURS must be positive. Falling back to 24.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "SUPPORT_MEDIA_RETENTION_HOURS", 24)
+
+        if self.SUPPORT_MEDIA_CLEANUP_INTERVAL_MINUTES <= 0:
+            print(
+                "[CONFIG WARNING] SUPPORT_MEDIA_CLEANUP_INTERVAL_MINUTES must be positive. Falling back to 15.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "SUPPORT_MEDIA_CLEANUP_INTERVAL_MINUTES", 15)
+
+        if self.SUPPORT_MEDIA_PHOTO_MAX_MB <= 0:
+            print(
+                "[CONFIG WARNING] SUPPORT_MEDIA_PHOTO_MAX_MB must be positive. Falling back to 2.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "SUPPORT_MEDIA_PHOTO_MAX_MB", 2)
+
+        if self.SUPPORT_MEDIA_VIDEO_MAX_MB <= 0:
+            print(
+                "[CONFIG WARNING] SUPPORT_MEDIA_VIDEO_MAX_MB must be positive. Falling back to 50.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "SUPPORT_MEDIA_VIDEO_MAX_MB", 50)
+
+        if self.SUPPORT_MEDIA_VIDEO_MAX_MB < self.SUPPORT_MEDIA_PHOTO_MAX_MB:
+            print(
+                "[CONFIG WARNING] SUPPORT_MEDIA_VIDEO_MAX_MB should be >= SUPPORT_MEDIA_PHOTO_MAX_MB. "
+                "Aligning video limit with photo limit.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "SUPPORT_MEDIA_VIDEO_MAX_MB", self.SUPPORT_MEDIA_PHOTO_MAX_MB)
+
+        media_prefix = (self.SUPPORT_MEDIA_PUBLIC_PREFIX or "").strip() or "/static/support_media"
+        if not media_prefix.startswith("/"):
+            media_prefix = f"/{media_prefix}"
+        object.__setattr__(self, "SUPPORT_MEDIA_PUBLIC_PREFIX", media_prefix)
 
         if self.DEVELOPER_OTP_LENGTH < 4 or self.DEVELOPER_OTP_LENGTH > 8:
             print(

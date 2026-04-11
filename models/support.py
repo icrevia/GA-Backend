@@ -36,7 +36,9 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
     __table_args__ = (
         CheckConstraint("length(content) <= 1000", name="ck_chat_messages_content_len"),
+        CheckConstraint("(media_type IS NULL) OR (media_type IN ('photo', 'video'))", name="ck_chat_messages_media_type"),
         Index("ix_chat_messages_session_timestamp", "session_id", "timestamp"),
+        Index("ix_chat_messages_media_expires_at", "media_expires_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -46,5 +48,11 @@ class ChatMessage(Base):
     timestamp = Column(DateTime, default=_utcnow_naive)
     is_admin = Column(Boolean, default=False)
     is_read = Column(Boolean, default=False)
+    media_type = Column(String(16), nullable=True)
+    media_url = Column(Text, nullable=True)
+    media_path = Column(Text, nullable=True)
+    media_mime_type = Column(String(120), nullable=True)
+    media_size_bytes = Column(Integer, nullable=True)
+    media_expires_at = Column(DateTime, nullable=True)
 
     session = relationship("ChatSession", back_populates="messages")

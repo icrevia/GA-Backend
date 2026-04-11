@@ -7,7 +7,8 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 from core.config import settings
 from services.login_security import extract_client_ip, is_ip_blocked
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+import asyncio
 import os
 import uuid
 import logging
@@ -36,6 +37,8 @@ _system_status_cache: dict[str, object] = {
 async def lifespan(app: FastAPI):
     # STARTUP
     logger.info("GamerzAdda API starting up (Lifespan)...")
+    support_media_cleanup_task: asyncio.Task | None = None
+
     async with engine.begin() as conn:
         # Create all tables asynchronously
         await conn.run_sync(Base.metadata.create_all)
@@ -70,6 +73,12 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS issue_type VARCHAR(120)",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS issue_ack_sent BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS is_user_blocked BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_type VARCHAR(16)",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_url TEXT",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_path TEXT",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_mime_type VARCHAR(120)",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_size_bytes INTEGER",
+                "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_expires_at TIMESTAMP",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS account_level INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_members TEXT",
@@ -79,6 +88,7 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS ix_tournaments_status_match_time ON tournaments (status, match_time)",
                 "CREATE INDEX IF NOT EXISTS ix_chat_sessions_user_created_at ON chat_sessions (user_id, created_at DESC)",
                 "CREATE INDEX IF NOT EXISTS ix_chat_messages_session_is_read ON chat_messages (session_id, is_read)",
+                "CREATE INDEX IF NOT EXISTS ix_chat_messages_media_expires_at ON chat_messages (media_expires_at)",
             ]
             for query in queries:
                 await conn.execute(text(query))
@@ -116,10 +126,26 @@ async def lifespan(app: FastAPI):
             logger.info("DB sync & migration successful")
         except Exception as e:
             logger.warning(f"DB migration partial failure: {e}")
+
+    from services.support_media import ensure_support_media_storage_dir, support_media_cleanup_worker
+
+    try:
+        ensure_support_media_storage_dir()
+    except Exception as media_dir_error:
+        logger.warning("Support media storage dir init failed: %s", media_dir_error)
+
+    support_media_cleanup_task = asyncio.create_task(support_media_cleanup_worker())
+    logger.info("Support media cleanup worker started")
             
-    yield
-    # SHUTDOWN
-    logger.info("GamerzAdda API shutting down...")
+    try:
+        yield
+    finally:
+        if support_media_cleanup_task is not None:
+            support_media_cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await support_media_cleanup_task
+        # SHUTDOWN
+        logger.info("GamerzAdda API shutting down...")
 
 # rate limiter
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
