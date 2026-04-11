@@ -1483,6 +1483,10 @@ def delete_promo(
 
 
 def _serialize_admin_user(user: User, match_stats: dict | None = None) -> dict:
+    bucket_total = (user.deposit_balance or 0) + (user.winning_balance or 0) + (user.bonus_balance or 0)
+    total_wallet_balance = float(bucket_total or 0)
+    if total_wallet_balance <= 0:
+        total_wallet_balance = float(user.wallet_balance or 0)
     return {
         "id": user.id,
         "username": user.username,
@@ -1490,7 +1494,12 @@ def _serialize_admin_user(user: User, match_stats: dict | None = None) -> dict:
         "phone_number": user.phone_number,
         "role": user.role,
         "wallet_balance": float(user.wallet_balance or 0),
+        "deposit_balance": float(user.deposit_balance or 0),
+        "winning_balance": float(user.winning_balance or 0),
+        "bonus_balance": float(user.bonus_balance or 0),
+        "total_wallet_balance": total_wallet_balance,
         "upi_id": None,
+        "upi_account_holder_name": None,
         "profile_pic": user.profile_pic,
         "bio": user.bio,
         "bgmi_id": None,
@@ -1498,6 +1507,11 @@ def _serialize_admin_user(user: User, match_stats: dict | None = None) -> dict:
         "freefire_id": user.freefire_id,
         "is_active": user.is_active,
         "referral_code": user.referral_code,
+        "referred_by_id": user.referred_by_id,
+        "token_version": user.token_version,
+        "last_login_ip": user.last_login_ip,
+        "last_login_device": user.last_login_device,
+        "last_login_at": user.last_login_at,
         "created_at": user.created_at,
         "updated_at": user.updated_at,
         "match_stats": match_stats or empty_user_match_stats(),
@@ -1526,6 +1540,29 @@ def search_users(
     user_ids = [user.id for user in users]
     stats_map = compute_match_stats_for_user_ids(db, user_ids)
     return [_serialize_admin_user(user, stats_map.get(user.id)) for user in users]
+
+
+@router.get("/users/{user_id}")
+def get_user_detail(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    payload = _serialize_admin_user(user, compute_match_stats_for_user(db, user_id))
+    latest_upi = (
+        db.query(WithdrawUpiAccount)
+        .filter(WithdrawUpiAccount.user_id == user_id)
+        .order_by(WithdrawUpiAccount.created_at.desc(), WithdrawUpiAccount.id.desc())
+        .first()
+    )
+    if latest_upi:
+        payload["upi_id"] = latest_upi.upi_id
+        payload["upi_account_holder_name"] = latest_upi.account_holder_name
+    return payload
 
 
 @router.get("/users/{user_id}/stats")

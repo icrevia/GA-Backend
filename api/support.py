@@ -385,6 +385,7 @@ async def get_sessions(
         {
             "id": row.session_id,
             "user_id": row.user_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
             "user": {
                 "username": row.username,
                 "email": row.email,
