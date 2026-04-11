@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     # ── App URL ───────────────────────────────────────────────────────────────
     # In production, set this explicitly from Railway Variables.
     APP_URL: str = ""
+    SUPPORT_WHATSAPP_NUMBER: str = "917632932544"
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated list of origins: "https://admin.GamerzAdda.com, http://localhost:3000"
