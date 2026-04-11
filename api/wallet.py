@@ -83,12 +83,18 @@ def get_balance(current_user: User = Depends(get_current_user_wallet)):
 @router.get("/transactions", response_model=List[WalletTransactionResponse])
 def get_transactions(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user_wallet)
+    current_user: User = Depends(get_current_user_wallet),
+    limit: int = 200,
+    offset: int = 0,
 ):
+    safe_limit = max(1, min(limit, 500))
+    safe_offset = max(0, offset)
     return (
         db.query(WalletTransaction)
         .filter(WalletTransaction.user_id == current_user.id)
         .order_by(WalletTransaction.created_at.desc())
+        .offset(safe_offset)
+        .limit(safe_limit)
         .all()
     )
 

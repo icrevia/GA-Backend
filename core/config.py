@@ -61,8 +61,8 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     DATABASE_URL: str = ""
-    DB_POOL_SIZE: int = 1
-    DB_MAX_OVERFLOW: int = 0
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
     DB_POOL_TIMEOUT_SECONDS: int = 30
     DB_POOL_RECYCLE_SECONDS: int = 1800
 

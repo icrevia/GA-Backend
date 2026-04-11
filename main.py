@@ -23,6 +23,12 @@ from api.router import api_router
 from core.database import engine, Base
 from models import user, tournament, wallet, support, withdraw_upi_account, promo, banner, restriction, otp_phone_lock
 
+SYSTEM_STATUS_CACHE_TTL_SECONDS = 15.0
+_system_status_cache: dict[str, object] = {
+    "expires_at": 0.0,
+    "value": None,
+}
+
 # ─────────────────────────────────────────────
 # Lifespan context manager (Modern approach)
 # ─────────────────────────────────────────────
@@ -59,7 +65,11 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS account_level INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_members TEXT",
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tournament_participant_slot_idx ON tournament_participants (tournament_id, slot_no) WHERE slot_no IS NOT NULL"
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tournament_participant_slot_idx ON tournament_participants (tournament_id, slot_no) WHERE slot_no IS NOT NULL",
+                "CREATE INDEX IF NOT EXISTS ix_wallet_tx_type_status_created_at ON wallet_transactions (transaction_type, status, created_at DESC)",
+                "CREATE INDEX IF NOT EXISTS ix_wallet_tx_created_at ON wallet_transactions (created_at DESC)",
+                "CREATE INDEX IF NOT EXISTS ix_tournaments_status_match_time ON tournaments (status, match_time)",
+                "CREATE INDEX IF NOT EXISTS ix_chat_sessions_user_created_at ON chat_sessions (user_id, created_at DESC)",
             ]
             for query in queries:
                 await conn.execute(text(query))
@@ -171,6 +181,12 @@ def root():
 
 @app.get("/api/v1/status")
 async def get_system_status():
+    now = time.monotonic()
+    cached_until = float(_system_status_cache.get("expires_at", 0.0) or 0.0)
+    cached_payload = _system_status_cache.get("value")
+    if cached_payload is not None and now < cached_until:
+        return cached_payload
+
     from core.database import SessionLocal
     from models.config import SystemConfig
     from sqlalchemy import select
@@ -179,11 +195,14 @@ async def get_system_status():
             result = await db.execute(select(SystemConfig))
             configs = result.scalars().all()
             config_map = {c.config_key: c.config_value for c in configs}
-            return {
+            payload = {
                 "maintenance_mode": config_map.get("maintenance_mode", "false").lower() == "true",
                 "status": "online",
                 "latest_version_code": int(config_map.get("latest_version_code", "1")),
                 "support_email": "support@gamerzadda.in"
             }
+            _system_status_cache["value"] = payload
+            _system_status_cache["expires_at"] = now + SYSTEM_STATUS_CACHE_TTL_SECONDS
+            return payload
         except Exception as e:
             return {"status": "degraded", "error": str(e)}

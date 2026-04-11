@@ -223,16 +223,22 @@ async def get_sessions(
 
 @router.get("/my-chat")
 async def get_my_chat(
+    since_id: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_user_for_support_async)
 ):
     session, all_sessions = await _get_or_create_user_support_session(db, current_user.id)
     session_ids = [s.id for s in all_sessions]
 
-    messages_result = await db.execute(
+    message_query = (
         select(ChatMessage)
         .where(ChatMessage.session_id.in_(session_ids))
-        .order_by(ChatMessage.timestamp.asc(), ChatMessage.id.asc())
+    )
+    if since_id > 0:
+        message_query = message_query.where(ChatMessage.id > since_id)
+
+    messages_result = await db.execute(
+        message_query.order_by(ChatMessage.timestamp.asc(), ChatMessage.id.asc())
     )
     messages = messages_result.scalars().all()
 

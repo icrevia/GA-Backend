@@ -2092,6 +2092,7 @@ def list_all_transactions(
     limit: int = 100
 ):
     """Full transaction audit log — all types, all statuses, all users."""
+    safe_limit = max(1, min(limit, 500))
     q = db.query(WalletTransaction).order_by(WalletTransaction.created_at.desc())
 
     if status:
@@ -2099,7 +2100,8 @@ def list_all_transactions(
     if type:
         q = q.filter(WalletTransaction.transaction_type == type.upper())
 
-    txs = q.limit(limit * 3).all()
+    fetch_limit = safe_limit * 3 if search else safe_limit
+    txs = q.limit(fetch_limit).all()
 
     # FIXED: Bulk-load all needed users in one query (eliminates N+1)
     user_ids = list({tx.user_id for tx in txs})
@@ -2208,7 +2210,7 @@ def list_all_transactions(
             "created_at":     tx.created_at,
             "updated_at":     tx.updated_at,
         })
-        if len(res) >= limit:
+        if len(res) >= safe_limit:
             break
 
     return res
