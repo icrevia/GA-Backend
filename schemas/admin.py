@@ -35,6 +35,10 @@ class RestrictionCreateRequest(BaseModel):
 class RestrictionUnlockRequest(BaseModel):
     note: Optional[str] = Field(default=None, max_length=300)
 
+
+class OtpLockResetRequest(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=300)
+
 class TournamentRoomUpdate(BaseModel):
     room_id: str
     room_password: Optional[str] = None

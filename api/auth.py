@@ -21,6 +21,14 @@ import random
 import httpx
 from services.login_security import extract_client_ip
 from services.referral_codes import generate_unique_referral_code_async
+from services.restrictions import RESTRICTION_SCOPE_FULL_APP, get_active_restrictions_for_user_async
+from services.otp_limits import (
+    OTP_LOCK_CLIENT_MESSAGE,
+    OTP_LOCK_STATUS,
+    get_active_phone_lock_async,
+    register_otp_send_success_async,
+    reset_otp_lock_after_success_async,
+)
 
 # In-memory store
 _otp_store: dict[str, str] = {}
@@ -129,7 +137,21 @@ def _build_banned_support_response(user: User, fallback_phone: str) -> dict[str,
 
 
 async def _is_blocked_for_login_support(db: AsyncSession, user: User) -> bool:
-    return not bool(user.is_active)
+    if not bool(user.is_active):
+        return True
+
+    active_full_app_restrictions = await get_active_restrictions_for_user_async(
+        db,
+        user.id,
+        scope=RESTRICTION_SCOPE_FULL_APP,
+    )
+    return bool(active_full_app_restrictions)
+
+
+async def _raise_if_phone_otp_locked(db: AsyncSession, phone: str) -> None:
+    active_lock = await get_active_phone_lock_async(db, phone)
+    if active_lock:
+        raise HTTPException(status_code=429, detail=OTP_LOCK_CLIENT_MESSAGE)
 
 
 def _clean_env_value(value: str | None) -> str:
@@ -381,6 +403,12 @@ async def signup_availability(
         result = await db.execute(select(User.id).where(User.email == normalized_email))
         email_available = result.scalar_one_or_none() is None
     if normalized_phone:
+        active_phone_lock = await get_active_phone_lock_async(db, normalized_phone)
+        if active_phone_lock:
+            phone_restricted = True
+            status = OTP_LOCK_STATUS
+            message = OTP_LOCK_CLIENT_MESSAGE
+
         phone_candidates = list(_phone_variants(normalized_phone))
         if phone_candidates:
             result = await db.execute(
@@ -396,11 +424,14 @@ async def signup_availability(
 
         if matched_user and await _is_blocked_for_login_support(db, matched_user):
             phone_restricted = True
-            payload = _build_banned_support_response(matched_user, normalized_phone)
-            status = payload.get("status")
-            message = payload.get("message")
-            access_token = payload.get("access_token")
-            role = payload.get("role")
+            if status == OTP_LOCK_STATUS:
+                message = message or OTP_LOCK_CLIENT_MESSAGE
+            else:
+                payload = _build_banned_support_response(matched_user, normalized_phone)
+                status = payload.get("status") if not status else status
+                message = payload.get("message") if not message else message
+                access_token = payload.get("access_token")
+                role = payload.get("role")
 
     return {
         "username_available": username_available,
@@ -434,6 +465,8 @@ async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depen
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username taken")
 
+    await _raise_if_phone_otp_locked(db, phone)
+
     _pending_signups[phone] = {
         "username": user_in.username,
         "email": email,
@@ -447,6 +480,12 @@ async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depen
         result = await otp_service.send_otp(phone)
         verification_id = result["data"]["verificationId"]
         _otp_store[phone] = verification_id
+        await register_otp_send_success_async(
+            db=db,
+            phone=phone,
+            source="SIGNUP",
+            user=None,
+        )
         return {"message": "OTP sent to phone for verification", "phone": phone, "status": "pending_verification"}
     except Exception as e:
         _pending_signups.pop(phone, None)
@@ -532,6 +571,12 @@ async def verify_otp(
 
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    await reset_otp_lock_after_success_async(
+        db=db,
+        phone=normalized_phone,
+        user=db_user,
+    )
 
     client_ip = extract_client_ip(request)
     device_name = _resolve_login_device(request)
@@ -638,6 +683,9 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
         raise HTTPException(status_code=404, detail="Account not found")
 
     if not _is_admin_web_login_request(request):
+        await _raise_if_phone_otp_locked(db, user.phone_number)
+
+    if not _is_admin_web_login_request(request):
         if await _is_blocked_for_login_support(db, user):
             return _build_banned_support_response(user, identifier)
 
@@ -667,6 +715,12 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
         # Async call with await
         res = await otp_service.send_otp(user.phone_number)
         _otp_store[user.phone_number] = res["data"]["verificationId"]
+        await register_otp_send_success_async(
+            db=db,
+            phone=user.phone_number,
+            source="LOGIN",
+            user=user,
+        )
         logger.info(f"OTP successfully sent for login: {user.phone_number}")
         return {"message": "OTP sent", "phone": user.phone_number, "status": "pending_verification"}
     except Exception as e:
@@ -729,19 +783,25 @@ async def send_otp(
     else:
         user_result = await db.execute(select(User).where(User.phone_number == normalized_phone))
     existing_user = user_result.scalar_one_or_none()
+
+    await _raise_if_phone_otp_locked(db, normalized_phone)
+
     if existing_user and await _is_blocked_for_login_support(db, existing_user):
         return _build_banned_support_response(existing_user, normalized_phone)
 
-    user_exists_res = await db.execute(select(User.id).where(User.phone_number == normalized_phone))
-    user_exists = user_exists_res.scalar_one_or_none() is not None
-
-    if not user_exists and normalized_phone not in _pending_signups:
+    if not existing_user and normalized_phone not in _pending_signups:
         raise HTTPException(status_code=404, detail="Account not found for this phone")
 
     try:
         from services import otp as otp_service
         res = await otp_service.send_otp(normalized_phone)
         _otp_store[normalized_phone] = res["data"]["verificationId"]
+        await register_otp_send_success_async(
+            db=db,
+            phone=normalized_phone,
+            source="RESEND",
+            user=existing_user,
+        )
         return {"message": "OTP sent", "phone": normalized_phone, "status": "pending_verification"}
     except Exception as e:
         logger.error(f"OTP SEND ERR RESEND: {e}")

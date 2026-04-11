@@ -9,6 +9,13 @@ venv/
 *.sqlite3
 *.db
 
+# Local scratch and diagnostics
+tmp_*.py
+tmp_*.txt
+tmp_*.md
+test_status.py
+*.log
+
 # Generated verification artifacts
 verification/*_traces.json
 verification/*_proof.json

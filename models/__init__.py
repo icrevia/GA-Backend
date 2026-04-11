@@ -7,5 +7,6 @@ from models.participant import TournamentParticipant
 from models.config import SystemConfig
 from models.promo import PromoCode
 from models.restriction import UserRestriction
+from models.otp_phone_lock import OtpPhoneLock
 
 # This file is used to import all models so Alembic can discover them

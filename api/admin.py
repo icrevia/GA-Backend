@@ -20,6 +20,7 @@ from core.config import settings
 from models.user import User
 from models.banner import HomeBanner
 from models.promo import PromoCode
+from models.otp_phone_lock import OtpPhoneLock
 from models.restriction import UserRestriction
 from models.tournament import Tournament
 from models.wallet import WalletTransaction
@@ -47,6 +48,11 @@ from services.match_stats import (
     compute_match_stats_for_user_ids,
     empty_user_match_stats,
 )
+from services.otp_limits import (
+    clear_otp_lock_for_user_sync,
+    list_otp_locks_sync,
+    reset_otp_lock_sync,
+)
 from core.websockets import manager as ws_manager
 
 from schemas.admin import (
@@ -55,6 +61,7 @@ from schemas.admin import (
     UserStatusUpdate,
     RestrictionCreateRequest,
     RestrictionUnlockRequest,
+    OtpLockResetRequest,
     TournamentRoomUpdate,
     TournamentConclude,
     TournamentCreateAdmin,
@@ -1527,6 +1534,13 @@ def update_user_status(
         current_tv = getattr(user, "token_version", 0) or 0
         user.token_version = current_tv + 1
         logger.info(f"Revoked all tokens for user {user_id} (token_version -> {user.token_version})")
+    else:
+        clear_otp_lock_for_user_sync(
+            db,
+            user=user,
+            admin_id=current_user.id,
+            note="OTP limit reset from admin status update",
+        )
 
     db.add(user)
     db.commit()
@@ -1796,6 +1810,14 @@ def unlock_user_restriction(
         if not has_other_full_app_restriction:
             user.is_active = True
             db.add(user)
+
+    if user and restriction.scope == RESTRICTION_SCOPE_FULL_APP:
+        clear_otp_lock_for_user_sync(
+            db,
+            user=user,
+            admin_id=current_user.id,
+            note=(payload.note or "").strip() or "Restriction unlocked from admin panel",
+        )
 
     db.add(restriction)
     db.commit()
@@ -2339,18 +2361,118 @@ def get_banned_users(
     current_user: User = Depends(get_current_active_admin)
 ):
     users = db.query(User).filter(User.is_active == False).all()
+    user_ids = [u.id for u in users]
+
+    restrictions = db.query(UserRestriction).filter(
+        UserRestriction.user_id.in_(user_ids),
+        UserRestriction.scope == RESTRICTION_SCOPE_FULL_APP,
+        UserRestriction.is_active == True,
+    ).order_by(UserRestriction.created_at.desc()).all() if user_ids else []
+
+    latest_restriction_by_user: dict[int, UserRestriction] = {}
+    for restriction in restrictions:
+        if restriction.user_id in latest_restriction_by_user:
+            continue
+        if not is_restriction_currently_active(restriction):
+            continue
+        latest_restriction_by_user[restriction.user_id] = restriction
+
+    active_locks = db.query(OtpPhoneLock).filter(
+        OtpPhoneLock.user_id.in_(user_ids),
+        OtpPhoneLock.is_locked == True,
+    ).all() if user_ids else []
+    lock_by_user = {lock.user_id: lock for lock in active_locks if lock.user_id}
+
     return [
         {
             "id": u.id,
             "username": u.username,
             "email": u.email,
+            "phone_number": u.phone_number,
             "role": u.role,
             "is_active": bool(u.is_active),
             "balance": float(u.wallet_balance),
             "created_at": u.created_at,
+            "last_login_ip": u.last_login_ip,
+            "last_login_device": u.last_login_device,
+            "restricted_reason": (
+                (latest_restriction_by_user.get(u.id).reason if latest_restriction_by_user.get(u.id) else None)
+                or (lock_by_user.get(u.id).lock_reason if lock_by_user.get(u.id) else None)
+            ),
+            "restricted_at": (
+                (latest_restriction_by_user.get(u.id).starts_at if latest_restriction_by_user.get(u.id) else None)
+                or (lock_by_user.get(u.id).locked_at if lock_by_user.get(u.id) else None)
+            ),
+            "otp_send_count": lock_by_user.get(u.id).otp_send_count if lock_by_user.get(u.id) else None,
+            "otp_lock_id": lock_by_user.get(u.id).id if lock_by_user.get(u.id) else None,
         }
         for u in users
     ]
+
+
+def _serialize_admin_otp_lock(lock: OtpPhoneLock, user: User | None) -> dict:
+    return {
+        "id": lock.id,
+        "phone_number": lock.phone_number,
+        "user_id": lock.user_id,
+        "username": user.username if user else None,
+        "email": user.email if user else None,
+        "user_is_active": bool(user.is_active) if user else None,
+        "otp_send_count": int(lock.otp_send_count or 0),
+        "is_locked": bool(lock.is_locked),
+        "lock_reason": lock.lock_reason,
+        "last_source": lock.last_source,
+        "first_sent_at": lock.first_sent_at,
+        "last_sent_at": lock.last_sent_at,
+        "locked_at": lock.locked_at,
+        "unlocked_at": lock.unlocked_at,
+        "reset_note": lock.reset_note,
+    }
+
+
+@router.get("/otp-locks")
+def get_otp_locks(
+    include_unlocked: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    locks = list_otp_locks_sync(db, include_unlocked=include_unlocked)
+    user_ids = {lock.user_id for lock in locks if lock.user_id}
+    users_by_id = {
+        item.id: item
+        for item in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
+
+    return [
+        _serialize_admin_otp_lock(lock, users_by_id.get(lock.user_id or 0))
+        for lock in locks
+    ]
+
+
+@router.post("/otp-locks/{lock_id}/reset")
+def reset_otp_lock(
+    lock_id: int,
+    payload: OtpLockResetRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    lock = db.query(OtpPhoneLock).filter(OtpPhoneLock.id == lock_id).with_for_update().first()
+    if not lock:
+        raise HTTPException(status_code=404, detail="OTP lock not found")
+
+    updated = reset_otp_lock_sync(
+        db,
+        lock=lock,
+        admin_id=current_user.id,
+        note=(payload.note or "").strip() or "OTP limit reset from admin panel",
+    )
+
+    user = db.query(User).filter(User.id == updated.user_id).first() if updated.user_id else None
+    return {
+        "message": "OTP limit reset successfully",
+        "lock": _serialize_admin_otp_lock(updated, user),
+    }
+
 @router.post("/transactions/reject-all-pending")
 def reject_all_pending_transactions(
     db: Session = Depends(get_db),
