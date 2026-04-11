@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_by_admin_id INTEGER",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_at TIMESTAMP",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER",
+                "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS account_level INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_members TEXT",
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_tournament_participant_slot_idx ON tournament_participants (tournament_id, slot_no) WHERE slot_no IS NOT NULL"
             ]

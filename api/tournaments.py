@@ -76,8 +76,8 @@ def _expected_team_size(match_type: str | None) -> int:
     return 1
 
 
-def _normalize_join_players(request: TournamentJoinRequest) -> list[dict[str, str]]:
-    members: list[dict[str, str]] = []
+def _normalize_join_players(request: TournamentJoinRequest) -> list[dict[str, object]]:
+    members: list[dict[str, object]] = []
 
     if request.players:
         for idx, player in enumerate(request.players, start=1):
@@ -88,7 +88,11 @@ def _normalize_join_players(request: TournamentJoinRequest) -> list[dict[str, st
                     status_code=400,
                     detail=f"Player {idx} requires both name and UID",
                 )
-            members.append({"name": name, "uid": uid})
+            level = player.level if player.level is not None else request.account_level
+            member_payload: dict[str, object] = {"name": name, "uid": uid}
+            if level is not None:
+                member_payload["level"] = int(level)
+            members.append(member_payload)
         return members
 
     # Backward compatible fallback for old clients.
@@ -97,12 +101,15 @@ def _normalize_join_players(request: TournamentJoinRequest) -> list[dict[str, st
         uid = (request.game_uid or "").strip()
         if not name or not uid:
             raise HTTPException(status_code=400, detail="Player details must include both name and UID")
-        members.append({"name": name, "uid": uid})
+        member_payload: dict[str, object] = {"name": name, "uid": uid}
+        if request.account_level is not None:
+            member_payload["level"] = int(request.account_level)
+        members.append(member_payload)
 
     return members
 
 
-def _validate_team_for_match(match_type: str | None, members: list[dict[str, str]]) -> list[dict[str, str]]:
+def _validate_team_for_match(match_type: str | None, members: list[dict[str, object]]) -> list[dict[str, object]]:
     mode = (match_type or "SOLO").upper()
     expected = _expected_team_size(mode)
 
@@ -112,7 +119,7 @@ def _validate_team_for_match(match_type: str | None, members: list[dict[str, str
             detail=f"{mode} match requires exactly {expected} player name/UID pairs.",
         )
 
-    uids = [member["uid"] for member in members]
+    uids = [str(member["uid"]) for member in members]
     if len(set(uids)) != len(uids):
         raise HTTPException(status_code=400, detail="Each player UID must be unique")
 
@@ -184,6 +191,11 @@ def _build_slots_board(
                 bio=(participant.user.bio if participant.user else None),
                 game_username=(primary_member["name"] if primary_member else participant.game_username),
                 game_uid=(primary_member["uid"] if primary_member else participant.game_uid),
+                account_level=(
+                    int(primary_member["level"])
+                    if primary_member and primary_member.get("level") is not None
+                    else participant.account_level
+                ),
                 team_members=team_members,
                 is_mine=(current_user_id is not None and participant.user_id == current_user_id),
             )
@@ -355,6 +367,7 @@ def join_tournament(
         tournament_id=tournament_id,
         user_id=current_user.id,
         slot_no=slot_no,
+        account_level=(request.account_level if request.account_level is not None else None),
     )
     participant.set_team_members(team_members)
     db.add(participant)

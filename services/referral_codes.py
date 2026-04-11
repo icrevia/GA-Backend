@@ -10,88 +10,22 @@ from models.user import User
 
 _FALLBACK_PREFIX = "GAMER"
 _SEPARATOR = "-"
-_WORD_COUNT = 3
-_CANDIDATE_ATTEMPTS = 300
-_WORD_BANK = (
-    "ALPHA",
-    "ARROW",
-    "ASTRO",
-    "BLAZE",
-    "BOLT",
-    "BRAVO",
-    "CARGO",
-    "CHAMP",
-    "CLOUD",
-    "COMET",
-    "CRISP",
-    "CROWN",
-    "DART",
-    "DELTA",
-    "DUSK",
-    "ECHO",
-    "EMBER",
-    "FALCON",
-    "FLARE",
-    "FLASH",
-    "FROST",
-    "GHOST",
-    "GLIDE",
-    "GLOW",
-    "HAWK",
-    "HYPER",
-    "ION",
-    "JET",
-    "KNIGHT",
-    "LASER",
-    "LEGEND",
-    "LUNAR",
-    "MATRIX",
-    "METRO",
-    "NEXUS",
-    "NITRO",
-    "NOVA",
-    "OMEGA",
-    "ORBIT",
-    "PHANTOM",
-    "PHOENIX",
-    "PULSE",
-    "QUARK",
-    "QUEST",
-    "RAPTOR",
-    "RIDER",
-    "RIVAL",
-    "ROCKET",
-    "SCOUT",
-    "SHADOW",
-    "SKY",
-    "SNAP",
-    "SONIC",
-    "SPARK",
-    "SPIRIT",
-    "STORM",
-    "STRIKE",
-    "SWIFT",
-    "TANGO",
-    "THOR",
-    "TIGER",
-    "TITAN",
-    "TURBO",
-    "VORTEX",
-    "WAVE",
-    "WOLF",
-    "ZENITH",
-)
+_SUFFIX_SPACE = 1000
+_PREFIX_MAX_LEN = 48
+
+_rng = secrets.SystemRandom()
 
 
 def _normalize_username_prefix(username: str | None) -> str:
-    cleaned = "".join(ch for ch in (username or "").upper() if ch.isalnum())
+    collapsed = " ".join((username or "").strip().split())
+    cleaned = "".join(ch for ch in collapsed.upper() if ch.isalnum())
     if not cleaned:
         return _FALLBACK_PREFIX
 
     if cleaned[0].isdigit():
         cleaned = f"G{cleaned}"
 
-    return cleaned
+    return cleaned[:_PREFIX_MAX_LEN]
 
 
 def is_username_aligned_referral_code(username: str | None, referral_code: str | None) -> bool:
@@ -103,22 +37,18 @@ def is_username_aligned_referral_code(username: str | None, referral_code: str |
     if not code.startswith(prefix):
         return False
 
-    parts = code.split(_SEPARATOR)
-    return len(parts) >= (_WORD_COUNT + 1) and all(part for part in parts)
+    suffix = code[len(prefix):]
+    return len(suffix) == 3 and suffix.isdigit()
 
 
-def _build_candidate(prefix: str) -> str:
-    suffix_parts = [secrets.choice(_WORD_BANK) for _ in range(_WORD_COUNT)]
-    return f"{prefix}{_SEPARATOR}{_SEPARATOR.join(suffix_parts)}"
+def _build_candidate(prefix: str, suffix_number: int) -> str:
+    return f"{prefix}{_SEPARATOR}{suffix_number:03d}"
 
 
-def _build_fallback_candidate(prefix: str) -> str:
-    suffix_parts = [
-        secrets.choice(_WORD_BANK),
-        secrets.choice(_WORD_BANK),
-        f"{secrets.choice(_WORD_BANK)}{secrets.randbelow(1000):03d}",
-    ]
-    return f"{prefix}{_SEPARATOR}{_SEPARATOR.join(suffix_parts)}"
+def _build_shuffled_suffixes() -> list[int]:
+    suffixes = list(range(_SUFFIX_SPACE))
+    _rng.shuffle(suffixes)
+    return suffixes
 
 
 def _is_available_sync(db: Session, candidate: str, user_id: int | None) -> bool:
@@ -142,15 +72,15 @@ def generate_unique_referral_code_sync(
 ) -> str:
     prefix = _normalize_username_prefix(username)
 
-    for _ in range(_CANDIDATE_ATTEMPTS):
-        candidate = _build_candidate(prefix)
+    for suffix_number in _build_shuffled_suffixes():
+        candidate = _build_candidate(prefix, suffix_number)
         if _is_available_sync(db, candidate, user_id):
             return candidate
 
-    while True:
-        candidate = _build_fallback_candidate(prefix)
-        if _is_available_sync(db, candidate, user_id):
-            return candidate
+    raise RuntimeError(
+        "Unable to allocate unique referral code for this name. "
+        "Please update profile name and retry."
+    )
 
 
 async def generate_unique_referral_code_async(
@@ -160,12 +90,12 @@ async def generate_unique_referral_code_async(
 ) -> str:
     prefix = _normalize_username_prefix(username)
 
-    for _ in range(_CANDIDATE_ATTEMPTS):
-        candidate = _build_candidate(prefix)
+    for suffix_number in _build_shuffled_suffixes():
+        candidate = _build_candidate(prefix, suffix_number)
         if await _is_available_async(db, candidate, user_id):
             return candidate
 
-    while True:
-        candidate = _build_fallback_candidate(prefix)
-        if await _is_available_async(db, candidate, user_id):
-            return candidate
+    raise RuntimeError(
+        "Unable to allocate unique referral code for this name. "
+        "Please update profile name and retry."
+    )

@@ -875,12 +875,16 @@ def get_tournament_roster(
     def _serialize_participant(p: TournamentParticipant) -> dict:
         team_members = p.team_members
         primary = team_members[0] if team_members else None
+        primary_level = (
+            int(primary["level"]) if primary and primary.get("level") is not None else p.account_level
+        )
         return {
             "id":            p.user_id,
             "username":      user_map[p.user_id].username     if p.user_id in user_map else "Unknown",
             "avatar_url":    user_map[p.user_id].profile_pic  if p.user_id in user_map else None,
             "game_username": primary["name"] if primary else p.game_username,
             "game_uid":      primary["uid"] if primary else p.game_uid,
+            "account_level": primary_level,
             "team_members":  team_members,
             "slot_no":       p.slot_no,
             "slot_label":    f"S{p.slot_no}" if p.slot_no else None,

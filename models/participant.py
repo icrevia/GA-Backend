@@ -19,6 +19,7 @@ class TournamentParticipant(Base):
     # Details provided during join
     game_username = Column(String, nullable=True) # Player's actual in-game name
     game_uid = Column(String, nullable=True)      # Player's game ID/UID
+    account_level = Column(Integer, nullable=True)
     team_members_raw = Column("team_members", Text, nullable=True)
     slot_no = Column(Integer, nullable=True)
     
@@ -48,7 +49,7 @@ class TournamentParticipant(Base):
     @property
     def team_members(self):
         """Returns normalized team members with backward compatibility for old rows."""
-        parsed: list[dict[str, str]] = []
+        parsed: list[dict[str, object]] = []
         if self.team_members_raw:
             try:
                 data = json.loads(self.team_members_raw)
@@ -59,7 +60,17 @@ class TournamentParticipant(Base):
                         name = str(member.get("name") or "").strip()
                         uid = str(member.get("uid") or "").strip()
                         if name and uid:
-                            parsed.append({"name": name, "uid": uid})
+                            level_value = member.get("level")
+                            level: int | None = None
+                            if isinstance(level_value, int):
+                                level = level_value
+                            elif isinstance(level_value, str) and level_value.strip().isdigit():
+                                level = int(level_value.strip())
+
+                            normalized_member: dict[str, object] = {"name": name, "uid": uid}
+                            if level is not None:
+                                normalized_member["level"] = level
+                            parsed.append(normalized_member)
             except Exception:
                 parsed = []
 
@@ -69,21 +80,37 @@ class TournamentParticipant(Base):
         legacy_name = (self.game_username or "").strip()
         legacy_uid = (self.game_uid or "").strip()
         if legacy_name and legacy_uid:
-            return [{"name": legacy_name, "uid": legacy_uid}]
+            fallback_member: dict[str, object] = {"name": legacy_name, "uid": legacy_uid}
+            if self.account_level is not None:
+                fallback_member["level"] = int(self.account_level)
+            return [fallback_member]
         return []
 
-    def set_team_members(self, team_members: list[dict[str, str]]) -> None:
-        normalized: list[dict[str, str]] = []
+    def set_team_members(self, team_members: list[dict[str, object]]) -> None:
+        normalized: list[dict[str, object]] = []
         for member in team_members:
             if not isinstance(member, dict):
                 continue
             name = str(member.get("name") or "").strip()
             uid = str(member.get("uid") or "").strip()
             if name and uid:
-                normalized.append({"name": name, "uid": uid})
+                level_value = member.get("level")
+                level: int | None = None
+                if isinstance(level_value, int):
+                    level = level_value
+                elif isinstance(level_value, str) and level_value.strip().isdigit():
+                    level = int(level_value.strip())
+
+                normalized_member: dict[str, object] = {"name": name, "uid": uid}
+                if level is not None:
+                    normalized_member["level"] = level
+                normalized.append(normalized_member)
 
         self.team_members_raw = json.dumps(normalized, ensure_ascii=True) if normalized else None
         if normalized:
             # Keep legacy fields populated for old consumers.
-            self.game_username = normalized[0]["name"]
-            self.game_uid = normalized[0]["uid"]
+            primary = normalized[0]
+            self.game_username = str(primary.get("name") or "")
+            self.game_uid = str(primary.get("uid") or "")
+            level_value = primary.get("level")
+            self.account_level = int(level_value) if isinstance(level_value, int) else self.account_level

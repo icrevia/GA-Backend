@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
@@ -6,6 +6,7 @@ from typing import Optional
 class TournamentTeamMember(BaseModel):
     name: str
     uid: str
+    level: Optional[int] = None
 
 class TournamentBase(BaseModel):
     title: str
@@ -79,6 +80,7 @@ class TournamentSlotResponse(BaseModel):
     bio: Optional[str] = None
     game_username: Optional[str] = None
     game_uid: Optional[str] = None
+    account_level: Optional[int] = None
     team_members: list[TournamentTeamMember] = []
     is_mine: bool = False
 
@@ -96,3 +98,4 @@ class TournamentJoinRequest(BaseModel):
     # Legacy fallback fields for older clients.
     game_username: Optional[str] = None
     game_uid: Optional[str] = None
+    account_level: Optional[int] = Field(default=None, ge=1, le=100)
