@@ -83,6 +83,11 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS account_level INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_members TEXT",
+                # Team-based join system
+                "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_name TEXT",
+                "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_join_code TEXT",
+                "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS is_team_captain BOOLEAN DEFAULT FALSE",
+                "CREATE INDEX IF NOT EXISTS ix_tp_team_join_code ON tournament_participants (team_join_code) WHERE team_join_code IS NOT NULL",
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_tournament_participant_slot_idx ON tournament_participants (tournament_id, slot_no) WHERE slot_no IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS ix_wallet_tx_type_status_created_at ON wallet_transactions (transaction_type, status, created_at DESC)",
                 "CREATE INDEX IF NOT EXISTS ix_wallet_tx_created_at ON wallet_transactions (created_at DESC)",
