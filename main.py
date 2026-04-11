@@ -42,6 +42,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(20)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS bio VARCHAR(30)",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS deposit_balance NUMERIC(12,2) DEFAULT 0.00",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS winning_balance NUMERIC(12,2) DEFAULT 0.00",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS bonus_balance NUMERIC(12,2) DEFAULT 0.00",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip VARCHAR(64)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_device VARCHAR(160)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP",
@@ -59,6 +62,20 @@ async def lifespan(app: FastAPI):
             ]
             for query in queries:
                 await conn.execute(text(query))
+
+            # Backfill for legacy accounts where only wallet_balance existed.
+            await conn.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET deposit_balance = COALESCE(wallet_balance, 0.00)
+                    WHERE COALESCE(wallet_balance, 0.00) > 0.00
+                      AND COALESCE(deposit_balance, 0.00) = 0.00
+                      AND COALESCE(winning_balance, 0.00) = 0.00
+                      AND COALESCE(bonus_balance, 0.00) = 0.00
+                    """
+                )
+            )
 
             # Best-effort cleanup: these legacy fields are no longer stored in users table.
             # Keep failures non-fatal for engines that do not support DROP COLUMN IF EXISTS.

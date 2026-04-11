@@ -47,6 +47,9 @@ class UserResponse(BaseModel):
     phone_number: Optional[str] = None
     role: str
     wallet_balance: float
+    deposit_balance: float = 0.0
+    winning_balance: float = 0.0
+    bonus_balance: float = 0.0
     profile_pic: Optional[str] = None
     bio: Optional[str] = None
     freefire_id: Optional[str] = None

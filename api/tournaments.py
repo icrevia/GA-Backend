@@ -20,6 +20,15 @@ from schemas.tournament import (
     TournamentSlotResponse,
 )
 from services.notifications import add_user_notification
+from services.wallet_balances import (
+    WALLET_BUCKET_BONUS,
+    WALLET_BUCKET_DEPOSIT,
+    WALLET_BUCKET_WINNING,
+    InsufficientWalletBalanceError,
+    debit_wallet,
+    get_total_balance,
+    to_money,
+)
 
 router = APIRouter()
 
@@ -289,14 +298,17 @@ def join_tournament(
         User.id == current_user.id
     ).with_for_update().first()
 
-    if user_wallet.wallet_balance < tournament.entry_fee:
+    entry_fee = to_money(tournament.entry_fee)
+    available_balance = get_total_balance(user_wallet)
+
+    if available_balance < entry_fee:
         raise HTTPException(
             status_code=400,
             detail={
-                "message": f"Insufficient balance! You need ₹{tournament.entry_fee} to join. Your current balance is ₹{float(user_wallet.wallet_balance):.0f}.",
+                "message": f"Insufficient balance! You need ₹{entry_fee:.2f} to join. Your current balance is ₹{available_balance:.2f}.",
                 "error_code": "INSUFFICIENT_BALANCE",
-                "required": float(tournament.entry_fee),
-                "available": float(user_wallet.wallet_balance),
+                "required": float(entry_fee),
+                "available": float(available_balance),
             }
         )
 
@@ -305,11 +317,30 @@ def join_tournament(
         _normalize_join_players(request),
     )
 
-    user_wallet.wallet_balance -= tournament.entry_fee
+    try:
+        debit_wallet(
+            user_wallet,
+            entry_fee,
+            spend_order=(
+                WALLET_BUCKET_BONUS,
+                WALLET_BUCKET_DEPOSIT,
+                WALLET_BUCKET_WINNING,
+            ),
+        )
+    except InsufficientWalletBalanceError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"Insufficient balance! You need ₹{exc.required:.2f} to join. Your current balance is ₹{exc.available:.2f}.",
+                "error_code": "INSUFFICIENT_BALANCE",
+                "required": float(exc.required),
+                "available": float(exc.available),
+            }
+        )
 
     transaction = WalletTransaction(
         user_id=current_user.id,
-        amount=-tournament.entry_fee,
+        amount=-entry_fee,
         transaction_type="JOIN_TOURNAMENT",
         status="SUCCESS",
         reference_id=f"TOUR_{tournament_id}_{current_user.id}"
@@ -346,7 +377,7 @@ def join_tournament(
     return {
         "message": f"Successfully joined {tournament.title}!",
         "tournament_id": tournament_id,
-        "new_wallet_balance": float(user_wallet.wallet_balance),
+        "new_wallet_balance": float(get_total_balance(user_wallet)),
         "slot_no": slot_no,
         "slot_label": _slot_label(slot_no),
         "team_members": team_members,

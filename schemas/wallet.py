@@ -32,6 +32,9 @@ class PromoRedeemResponse(BaseModel):
     code: str
     reward_amount: Decimal
     wallet_balance: Decimal
+    deposit_balance: Decimal
+    winning_balance: Decimal
+    bonus_balance: Decimal
     transaction_reference: str
 
 
@@ -49,6 +52,10 @@ class WalletTransactionResponse(BaseModel):
 
 class WalletBalanceResponse(BaseModel):
     balance: Decimal
+    deposit_balance: Decimal
+    winning_balance: Decimal
+    bonus_balance: Decimal
+    withdrawable_balance: Decimal
 
 
 class WithdrawUpiAccountPayload(BaseModel):

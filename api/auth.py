@@ -361,6 +361,9 @@ async def _provision_or_activate_env_admin_user(
         role="ADMIN",
         is_active=True,
         wallet_balance=Decimal("0.00"),
+        deposit_balance=Decimal("0.00"),
+        winning_balance=Decimal("0.00"),
+        bonus_balance=Decimal("0.00"),
     )
     db.add(new_admin)
 
@@ -557,7 +560,10 @@ async def verify_otp(
             role="USER",
             referral_code=ref_code,
             referred_by_id=referrer.id if referrer else None,
-            wallet_balance=Decimal("0.00")
+            wallet_balance=Decimal("0.00"),
+            deposit_balance=Decimal("0.00"),
+            winning_balance=Decimal("0.00"),
+            bonus_balance=Decimal("0.00"),
         )
 
         db.add(db_user)

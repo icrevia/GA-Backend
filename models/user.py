@@ -21,6 +21,9 @@ class User(Base):
 
     # Numeric(12,2): exact decimal arithmetic — no floating-point rounding errors
     wallet_balance  = Column(Numeric(precision=12, scale=2), default=0.00)
+    deposit_balance = Column(Numeric(precision=12, scale=2), nullable=False, default=0.00, server_default="0")
+    winning_balance = Column(Numeric(precision=12, scale=2), nullable=False, default=0.00, server_default="0")
+    bonus_balance   = Column(Numeric(precision=12, scale=2), nullable=False, default=0.00, server_default="0")
 
     is_active       = Column(Boolean, default=True)
     referral_code   = Column(String, unique=True, index=True, nullable=True)

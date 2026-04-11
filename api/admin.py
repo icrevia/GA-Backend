@@ -54,6 +54,16 @@ from services.otp_limits import (
     reset_otp_lock_sync,
 )
 from core.websockets import manager as ws_manager
+from services.wallet_balances import (
+    WALLET_BUCKET_BONUS,
+    WALLET_BUCKET_DEPOSIT,
+    WALLET_BUCKET_WINNING,
+    InsufficientWalletBalanceError,
+    credit_wallet,
+    debit_wallet,
+    get_total_balance,
+    to_money,
+)
 
 from schemas.admin import (
     SystemConfigUpdate,
@@ -515,8 +525,8 @@ def conclude_tournament(
     if not winner:
         raise HTTPException(status_code=404, detail="Winner user not found")
 
-    prize = tournament.prize_pool
-    winner.wallet_balance += prize
+    prize = to_money(tournament.prize_pool)
+    credit_wallet(winner, prize, WALLET_BUCKET_WINNING)
 
     win_tx = WalletTransaction(
         user_id=winner.id,
@@ -591,10 +601,11 @@ def refund_tournament(
     for p in participants:
         user = db.query(User).filter(User.id == p.user_id).with_for_update().first()
         if user:
-            user.wallet_balance += tournament.entry_fee
+            entry_fee = to_money(tournament.entry_fee)
+            credit_wallet(user, entry_fee, WALLET_BUCKET_DEPOSIT)
             ref_tx = WalletTransaction(
                 user_id=user.id,
-                amount=tournament.entry_fee,
+                amount=entry_fee,
                 transaction_type="REFUND",
                 status="SUCCESS",
                 reference_id=f"REFUND_{tournament_id}_{user.id}"
@@ -712,7 +723,8 @@ def _refund_withdrawal_if_needed(
     if refund_amount <= Decimal("0.00"):
         return Decimal("0.00")
 
-    user.wallet_balance = (user.wallet_balance or Decimal("0.00")) + refund_amount
+    # Withdrawal is debited from winning only, so refund goes back to winning.
+    credit_wallet(user, refund_amount, WALLET_BUCKET_WINNING)
     refund_tx = WalletTransaction(
         user_id=tx.user_id,
         amount=refund_amount,
@@ -1300,16 +1312,24 @@ def revoke_promo_usage(
     if reversal_amount <= Decimal("0.00"):
         raise HTTPException(status_code=400, detail="Promo transaction has invalid reward amount")
 
-    current_balance = Decimal(str(user.wallet_balance or Decimal("0.00"))).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP
-    )
+    current_balance = get_total_balance(user)
     if current_balance < reversal_amount:
         raise HTTPException(
             status_code=400,
             detail=f"User has insufficient wallet balance. Required Rs {reversal_amount:.2f}, available Rs {current_balance:.2f}",
         )
 
-    user.wallet_balance = current_balance - reversal_amount
+    try:
+        debit_wallet(
+            user,
+            reversal_amount,
+            spend_order=(WALLET_BUCKET_BONUS, WALLET_BUCKET_WINNING, WALLET_BUCKET_DEPOSIT),
+        )
+    except InsufficientWalletBalanceError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User has insufficient wallet balance. Required Rs {reversal_amount:.2f}, available Rs {current_balance:.2f}",
+        )
     if int(promo.uses_count or 0) > 0:
         promo.uses_count = int(promo.uses_count or 0) - 1
 
@@ -1358,7 +1378,7 @@ def revoke_promo_usage(
         "user_id": user.id,
         "reversal_reference": reversal_reference,
         "deducted_amount": float(reversal_amount),
-        "wallet_balance": float(user.wallet_balance or 0),
+        "wallet_balance": float(get_total_balance(user)),
     }
 
 
@@ -1939,14 +1959,20 @@ def adjust_user_funds(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # FIXED: Convert float to Decimal before arithmetic — wallet_balance is Numeric(12,2)
     decimal_amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    new_balance = (user.wallet_balance or Decimal(0)) + decimal_amount
-    if new_balance < Decimal(0):
-        raise HTTPException(status_code=400, detail="Adjustment would result in negative balance")
+    if decimal_amount > Decimal("0.00"):
+        credit_wallet(user, decimal_amount, WALLET_BUCKET_DEPOSIT)
+    elif decimal_amount < Decimal("0.00"):
+        try:
+            debit_wallet(
+                user,
+                abs(decimal_amount),
+                spend_order=(WALLET_BUCKET_BONUS, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING),
+            )
+        except InsufficientWalletBalanceError:
+            raise HTTPException(status_code=400, detail="Adjustment would result in negative balance")
 
-    user.wallet_balance = new_balance
     tx = WalletTransaction(
         user_id=user_id,
         amount=decimal_amount,
@@ -1962,7 +1988,7 @@ def adjust_user_funds(
         f"Admin adjustment: admin={current_user.username} user={user_id} "
         f"amount={decimal_amount} reason={reason[:100]}"
     )
-    return {"message": f"Balance updated. New balance: ₹{float(user.wallet_balance):.2f}"}
+    return {"message": f"Balance updated. New balance: ₹{float(get_total_balance(user)):.2f}"}
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -2261,7 +2287,7 @@ def manual_credit_transaction(
     if credit_amount <= Decimal("0.00"):
         raise HTTPException(status_code=400, detail="Invalid add-money amount")
 
-    user.wallet_balance = (user.wallet_balance or Decimal("0.00")) + credit_amount
+    credit_wallet(user, credit_amount, WALLET_BUCKET_DEPOSIT)
     tx.status = "SUCCESS"
     tx.payment_mode = tx.payment_mode or "MANUAL_APPROVE"
     tx.failure_reason = None

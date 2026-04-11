@@ -7,6 +7,7 @@ from models.user import User
 from schemas.user import UserResponse, UserUpdate
 from services.match_stats import compute_match_stats_for_user
 from services.restrictions import get_active_restrictions_for_user, serialize_user_restriction
+from services.wallet_balances import get_wallet_breakdown
 
 router = APIRouter()
 
@@ -24,13 +25,17 @@ def read_user_me(
     current_user: User = Depends(get_current_user),
 ):
     active_restrictions = get_active_restrictions_for_user(db, current_user.id)
+    wallet_breakdown = get_wallet_breakdown(current_user)
     return {
         "id": current_user.id,
         "username": current_user.username,
         "email": current_user.email,
         "phone_number": current_user.phone_number,
         "role": current_user.role,
-        "wallet_balance": float(current_user.wallet_balance or 0),
+        "wallet_balance": float(wallet_breakdown["balance"]),
+        "deposit_balance": float(wallet_breakdown["deposit_balance"]),
+        "winning_balance": float(wallet_breakdown["winning_balance"]),
+        "bonus_balance": float(wallet_breakdown["bonus_balance"]),
         "profile_pic": current_user.profile_pic,
         "bio": current_user.bio,
         "freefire_id": current_user.freefire_id,
@@ -67,13 +72,17 @@ def update_user_me(
     db.commit()
     db.refresh(current_user)
     active_restrictions = get_active_restrictions_for_user(db, current_user.id)
+    wallet_breakdown = get_wallet_breakdown(current_user)
     return {
         "id": current_user.id,
         "username": current_user.username,
         "email": current_user.email,
         "phone_number": current_user.phone_number,
         "role": current_user.role,
-        "wallet_balance": float(current_user.wallet_balance or 0),
+        "wallet_balance": float(wallet_breakdown["balance"]),
+        "deposit_balance": float(wallet_breakdown["deposit_balance"]),
+        "winning_balance": float(wallet_breakdown["winning_balance"]),
+        "bonus_balance": float(wallet_breakdown["bonus_balance"]),
         "profile_pic": current_user.profile_pic,
         "bio": current_user.bio,
         "freefire_id": current_user.freefire_id,

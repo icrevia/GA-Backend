@@ -30,6 +30,17 @@ from core.config import settings
 from services.notifications import add_user_notification
 from services.referral_rewards import maybe_credit_referrer_for_first_successful_deposit
 from core.websockets import manager as ws_manager
+from services.wallet_balances import (
+    WALLET_BUCKET_BONUS,
+    WALLET_BUCKET_DEPOSIT,
+    WALLET_BUCKET_WINNING,
+    InsufficientWalletBalanceError,
+    credit_wallet,
+    debit_wallet,
+    get_wallet_breakdown,
+    get_withdrawable_balance,
+    to_money,
+)
 
 logger = logging.getLogger("GamerzAdda.wallet")
 
@@ -66,7 +77,7 @@ def _is_promo_expired(promo: PromoCode) -> bool:
 
 @router.get("/balance", response_model=WalletBalanceResponse)
 def get_balance(current_user: User = Depends(get_current_user_wallet)):
-    return {"balance": current_user.wallet_balance}
+    return get_wallet_breakdown(current_user)
 
 
 @router.get("/transactions", response_model=List[WalletTransactionResponse])
@@ -141,7 +152,7 @@ def redeem_promo_code(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user.wallet_balance = Decimal(str(user.wallet_balance or Decimal("0"))) + reward_amount
+    credit_wallet(user, reward_amount, WALLET_BUCKET_BONUS)
     promo.uses_count = int(promo.uses_count or 0) + 1
 
     tx = WalletTransaction(
@@ -167,11 +178,16 @@ def redeem_promo_code(
         "WALLET",
     )
 
+    wallet_breakdown = get_wallet_breakdown(user)
+
     return {
         "message": f"Promo applied successfully. ₹{reward_amount:.2f} credited.",
         "code": normalized_code,
         "reward_amount": reward_amount,
-        "wallet_balance": user.wallet_balance,
+        "wallet_balance": wallet_breakdown["balance"],
+        "deposit_balance": wallet_breakdown["deposit_balance"],
+        "winning_balance": wallet_breakdown["winning_balance"],
+        "bonus_balance": wallet_breakdown["bonus_balance"],
         "transaction_reference": reference_id,
     }
 
@@ -401,7 +417,7 @@ async def pay0_callback_handler(
             tx.status = "SUCCESS"
             tx.gateway_payment_id = status_res.get("utr") or form_data.get("utr")
             user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-            user.wallet_balance += tx.amount
+            credit_wallet(user, tx.amount, WALLET_BUCKET_DEPOSIT)
             referral_bonus = maybe_credit_referrer_for_first_successful_deposit(
                 db=db,
                 referred_user=user,
@@ -481,7 +497,7 @@ def get_payment_status(
                 tx.gateway_payment_id = status_res.get("utr")
                 tx.gateway_order_id = status_res.get("order_id") or tx.gateway_order_id or txnid
                 user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-                user.wallet_balance += tx.amount
+                credit_wallet(user, tx.amount, WALLET_BUCKET_DEPOSIT)
                 referral_bonus = maybe_credit_referrer_for_first_successful_deposit(
                     db=db,
                     referred_user=user,
@@ -524,9 +540,11 @@ def request_withdrawal(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_wallet)
 ):
-    if req.amount <= 0:
+    amount_to_withdraw = to_money(req.amount)
+
+    if amount_to_withdraw <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
-    if req.amount > 50_000:
+    if amount_to_withdraw > Decimal("50000.00"):
         raise HTTPException(status_code=400, detail="Maximum withdrawal per request is ₹50,000")
 
     user = db.query(User).filter(User.id == current_user.id).with_for_update().first()
@@ -535,10 +553,27 @@ def request_withdrawal(
     if not normalized_upi_id:
         raise HTTPException(status_code=400, detail="UPI ID is required")
 
-    if user.wallet_balance < req.amount:
-        raise HTTPException(status_code=400, detail="Insufficient balance")
+    withdrawable_balance = get_withdrawable_balance(user)
+    if withdrawable_balance < amount_to_withdraw:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Insufficient winning balance. Available ₹{withdrawable_balance:.2f}, "
+                f"requested ₹{amount_to_withdraw:.2f}."
+            ),
+        )
 
-    user.wallet_balance -= req.amount
+    try:
+        debit_wallet(
+            user,
+            amount_to_withdraw,
+            spend_order=(WALLET_BUCKET_WINNING,),
+        )
+    except InsufficientWalletBalanceError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient winning balance. Available ₹{exc.available:.2f}, requested ₹{exc.required:.2f}.",
+        )
 
     existing_accounts = (
         db.query(WithdrawUpiAccount)
@@ -558,7 +593,7 @@ def request_withdrawal(
 
     tx = WalletTransaction(
         user_id=user.id,
-        amount=-req.amount,
+        amount=-amount_to_withdraw,
         transaction_type="WITHDRAWAL",
         status="PENDING",
         reference_id=f"WITHDRAW_{uuid.uuid4().hex[:8].upper()}",
@@ -574,7 +609,7 @@ def request_withdrawal(
         db,
         user.id,
         "Withdrawal Requested",
-        f"Your withdrawal request of ₹{req.amount} has been submitted.",
+        f"Your withdrawal request of ₹{amount_to_withdraw:.2f} has been submitted.",
         "WALLET"
     )
 

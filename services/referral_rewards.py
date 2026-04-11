@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from models.user import User
 from models.wallet import WalletTransaction
 from services.notifications import add_user_notification
+from services.wallet_balances import WALLET_BUCKET_BONUS, credit_wallet
 
 REFERRAL_LOW_BONUS_MIN = Decimal("50.00")
 REFERRAL_LOW_BONUS_MAX = Decimal("60.00")
@@ -93,8 +94,7 @@ def maybe_credit_referrer_for_first_successful_deposit(
     first_deposit_match_bonus = _to_money(first_deposit_amount * FIRST_DEPOSIT_MATCH_MULTIPLIER)
     total_bonus = _to_money(weighted_bonus + first_deposit_match_bonus)
 
-    current_balance = _to_money(referrer.wallet_balance or Decimal("0"))
-    referrer.wallet_balance = _to_money(current_balance + total_bonus)
+    credit_wallet(referrer, total_bonus, WALLET_BUCKET_BONUS)
 
     reward_tx = WalletTransaction(
         user_id=referrer.id,
