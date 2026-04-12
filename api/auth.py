@@ -617,13 +617,15 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
         identifier = f"+91{identifier}"
 
     user: User | None = None
+    is_admin_source_request = _is_admin_web_login_request(request)
+    is_admin_identifier_attempt = _matches_admin_login_identifier(raw_identifier)
 
-    if _is_admin_web_login_request(request):
+    if is_admin_source_request or is_admin_identifier_attempt:
         configured_identifier = (settings.ADMIN_LOGIN_IDENTIFIER or "").strip()
         configured_phone = _normalize_signup_phone(settings.ADMIN_LOGIN_PHONE)
 
         if not configured_identifier or not configured_phone:
-            logger.error("Admin-web login blocked: ADMIN_LOGIN_IDENTIFIER/ADMIN_LOGIN_PHONE not configured")
+            logger.error("Admin login blocked: ADMIN_LOGIN_IDENTIFIER/ADMIN_LOGIN_PHONE not configured")
             raise HTTPException(
                 status_code=503,
                 detail=(
@@ -632,7 +634,7 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
                 ),
             )
 
-        if not _matches_admin_login_identifier(raw_identifier):
+        if not is_admin_identifier_attempt:
             raise HTTPException(status_code=403, detail="Invalid admin credentials")
 
         configured_identifier_lower = configured_identifier.lower()
