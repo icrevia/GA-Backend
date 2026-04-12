@@ -94,6 +94,8 @@ class ScratchCard(BaseModel):
     is_scratched: bool
     valid_for_days: int
     expires_at: str
+    game_category: str = ""          # e.g. "free_fire", "free_fire_max", "clash_squad"
+    game_category_label: str = ""    # Human-readable e.g. "Free Fire"
 
 
 class ScratchCardDeckResponse(BaseModel):
@@ -201,18 +203,36 @@ def _scratch_reward_for_card(user_id: int, card_serial: int) -> Decimal:
     return Decimal("2.00")
 
 
-def _count_completed_matches(user_id: int, db: Session) -> int:
+# 3 categories the app supports
+_SCRATCH_CATEGORIES: dict[str, str] = {
+    "free_fire":     "Free Fire",
+    "free_fire_max": "Free Fire Max",
+    "clash_squad":   "Clash Squad",
+}
+
+
+def _count_completed_matches_per_category(user_id: int, db: Session) -> dict[str, int]:
+    """Returns {category_key: completed_match_count} for COMPLETED tournaments."""
     from models.participant import TournamentParticipant
     from models.tournament import Tournament
-    return (
-        db.query(TournamentParticipant)
-        .join(Tournament, Tournament.id == TournamentParticipant.tournament_id)
+    from services.match_stats import classify_game_mode
+
+    rows = (
+        db.query(Tournament.game_name)
+        .join(TournamentParticipant, TournamentParticipant.tournament_id == Tournament.id)
         .filter(
             TournamentParticipant.user_id == user_id,
             Tournament.status == "COMPLETED",
         )
-        .count()
+        .all()
     )
+
+    counts: dict[str, int] = {k: 0 for k in _SCRATCH_CATEGORIES}
+    for (game_name,) in rows:
+        mode = classify_game_mode(game_name)
+        if mode in counts:
+            counts[mode] += 1
+    return counts
 
 
 def _scratch_card_reference(user_id: int, card_id: str) -> str:
@@ -220,32 +240,32 @@ def _scratch_card_reference(user_id: int, card_id: str) -> str:
 
 
 def _build_scratch_card_deck(current_user: User, db: Session) -> ScratchCardDeckResponse:
-    """One scratch card per MATCHES_PER_SCRATCH_CARD completed matches.
-    Each card is valid for SCRATCH_CARD_VALIDITY_DAYS days.
-    """
+    """Per-category scratch cards: 1 card per 5 completed matches *in that category*."""
     now_utc = datetime.utcnow()
-    completed = _count_completed_matches(current_user.id, db)
-    total_earned = completed // MATCHES_PER_SCRATCH_CARD
-
     joined_utc = _to_utc_naive(current_user.created_at)
     anchor = datetime(joined_utc.year, joined_utc.month, joined_utc.day)
 
-    planned_cards: list[tuple[str, Decimal, str, str, int]] = []
-    for serial in range(1, total_earned + 1):
-        card_id  = f"mc-{current_user.id}-{serial}"
-        reward   = to_money(_scratch_reward_for_card(current_user.id, serial))
-        ref_id   = _scratch_card_reference(current_user.id, card_id)
-        # An earned card becomes valid from the day it was earned
-        earned_after_match = serial * MATCHES_PER_SCRATCH_CARD
-        earned_on = anchor + timedelta(days=earned_after_match)
-        expires   = earned_on + timedelta(days=SCRATCH_CARD_VALIDITY_DAYS)
-        valid_days = max((expires.date() - now_utc.date()).days, 0)
-        planned_cards.append((card_id, reward, ref_id, expires.isoformat() + "Z", valid_days))
+    counts_per_cat = _count_completed_matches_per_category(current_user.id, db)
 
-    # Only show non-expired cards
-    active_planned = [(cid, r, rid, exp, vd) for cid, r, rid, exp, vd in planned_cards if vd > 0]
+    planned_cards: list[tuple[str, Decimal, str, str, int, str, str]] = []
+    for cat_key, cat_label in _SCRATCH_CATEGORIES.items():
+        completed = counts_per_cat.get(cat_key, 0)
+        cards_earned = completed // MATCHES_PER_SCRATCH_CARD
+        for serial in range(1, cards_earned + 1):
+            card_id  = f"{cat_key}-{current_user.id}-{serial}"
+            reward   = to_money(_scratch_reward_for_card(current_user.id, hash(card_id) % 10000))
+            ref_id   = _scratch_card_reference(current_user.id, card_id)
+            earned_after = serial * MATCHES_PER_SCRATCH_CARD
+            earned_on = anchor + timedelta(days=earned_after)
+            expires   = earned_on + timedelta(days=SCRATCH_CARD_VALIDITY_DAYS)
+            valid_days = max((expires.date() - now_utc.date()).days, 0)
+            planned_cards.append((card_id, reward, ref_id, expires.isoformat() + "Z",
+                                  valid_days, cat_key, cat_label))
 
-    reference_ids = [rid for _, _, rid, _, _ in active_planned]
+    # Filter expired
+    active_planned = [c for c in planned_cards if c[4] > 0]
+
+    reference_ids = [c[2] for c in active_planned]
     scratched_refs: set[str] = set()
     if reference_ids:
         rows = (
@@ -269,8 +289,10 @@ def _build_scratch_card_deck(current_user: User, db: Session) -> ScratchCardDeck
             is_scratched=ref_id in scratched_refs,
             valid_for_days=valid_days,
             expires_at=expires_at,
+            game_category=cat_key,
+            game_category_label=cat_label,
         )
-        for card_id, reward, ref_id, expires_at, valid_days in active_planned
+        for card_id, reward, ref_id, expires_at, valid_days, cat_key, cat_label in active_planned
     ]
     revealed = sum(1 for c in cards if c.is_scratched)
 
@@ -342,18 +364,22 @@ def get_match_progress(
     current_user: User = Depends(get_current_user_referral),
     db: Session = Depends(get_db),
 ):
-    """Returns how many completed matches the user has and how many until the next scratch card."""
-    completed = _count_completed_matches(current_user.id, db)
-    cards_earned = completed // MATCHES_PER_SCRATCH_CARD
-    matches_in_current_cycle = completed % MATCHES_PER_SCRATCH_CARD
-    matches_needed = MATCHES_PER_SCRATCH_CARD - matches_in_current_cycle
-    return {
-        "completed_matches": completed,
-        "cards_earned": cards_earned,
-        "matches_in_current_cycle": matches_in_current_cycle,
-        "matches_needed_for_next_card": matches_needed,
-        "matches_per_card": MATCHES_PER_SCRATCH_CARD,
-    }
+    """Per-category match progress towards the next scratch card."""
+    counts = _count_completed_matches_per_category(current_user.id, db)
+    categories = {}
+    for cat_key, cat_label in _SCRATCH_CATEGORIES.items():
+        completed = counts.get(cat_key, 0)
+        in_cycle  = completed % MATCHES_PER_SCRATCH_CARD
+        needed    = MATCHES_PER_SCRATCH_CARD - in_cycle
+        categories[cat_key] = {
+            "label": cat_label,
+            "completed_matches": completed,
+            "cards_earned": completed // MATCHES_PER_SCRATCH_CARD,
+            "matches_in_cycle": in_cycle,
+            "matches_needed_for_next_card": needed,
+            "matches_per_card": MATCHES_PER_SCRATCH_CARD,
+        }
+    return {"categories": categories}
 
 
 @router.get("/scratch-cards", response_model=ScratchCardDeckResponse)
