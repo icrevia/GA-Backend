@@ -23,6 +23,13 @@ class UserStatusUpdate(BaseModel):
     is_active: bool
 
 
+class UserWalletBucketsUpdate(BaseModel):
+    deposit_balance: float = Field(..., ge=0)
+    winning_balance: float = Field(..., ge=0)
+    bonus_balance: float = Field(..., ge=0)
+    reason: Optional[str] = Field(default="Manual wallet bucket update", max_length=200)
+
+
 class RestrictionCreateRequest(BaseModel):
     user_id: int = Field(..., ge=1)
     scope: str = Field(..., min_length=4, max_length=20)

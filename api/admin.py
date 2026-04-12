@@ -61,6 +61,8 @@ from services.wallet_balances import (
     InsufficientWalletBalanceError,
     credit_wallet,
     debit_wallet,
+    ensure_wallet_buckets,
+    sync_wallet_total,
     get_total_balance,
     to_money,
 )
@@ -72,6 +74,7 @@ from schemas.admin import (
     RestrictionCreateRequest,
     RestrictionUnlockRequest,
     OtpLockResetRequest,
+    UserWalletBucketsUpdate,
     TournamentRoomUpdate,
     TournamentConclude,
     TournamentCreateAdmin,
@@ -2120,6 +2123,65 @@ def adjust_user_funds(
         f"amount={decimal_amount} reason={reason[:100]}"
     )
     return {"message": f"Balance updated. New balance: ₹{float(get_total_balance(user)):.2f}"}
+
+
+@router.put("/users/{user_id}/wallet-buckets")
+def update_user_wallet_buckets(
+    user_id: int,
+    payload: UserWalletBucketsUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    user = db.query(User).filter(User.id == user_id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Keep existing migration-safe behavior before direct bucket assignment.
+    ensure_wallet_buckets(user)
+
+    user.deposit_balance = to_money(payload.deposit_balance)
+    user.winning_balance = to_money(payload.winning_balance)
+    user.bonus_balance = to_money(payload.bonus_balance)
+    sync_wallet_total(user)
+
+    reason = (payload.reason or "Manual wallet bucket update").strip()[:200]
+    total_amount = to_money(user.wallet_balance)
+    tx = WalletTransaction(
+        user_id=user_id,
+        amount=total_amount,
+        transaction_type="ADMIN_BUCKET_SET",
+        status="SUCCESS",
+        reference_id=f"BUCKET_SET_{uuid.uuid4().hex[:12].upper()}",
+        failure_reason=(
+            f"ADMIN:{current_user.username};"
+            f"DEPOSIT:{float(user.deposit_balance):.2f};"
+            f"WINNING:{float(user.winning_balance):.2f};"
+            f"BONUS:{float(user.bonus_balance):.2f};"
+            f"REASON:{reason}"
+        ),
+    )
+
+    db.add(user)
+    db.add(tx)
+    db.commit()
+
+    logger.info(
+        "Admin bucket update: admin=%s user=%s deposit=%.2f winning=%.2f bonus=%.2f reason=%s",
+        current_user.username,
+        user_id,
+        float(user.deposit_balance or 0),
+        float(user.winning_balance or 0),
+        float(user.bonus_balance or 0),
+        reason,
+    )
+
+    return {
+        "message": "Wallet buckets updated",
+        "deposit_balance": float(user.deposit_balance or 0),
+        "winning_balance": float(user.winning_balance or 0),
+        "bonus_balance": float(user.bonus_balance or 0),
+        "wallet_balance": float(user.wallet_balance or 0),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────
