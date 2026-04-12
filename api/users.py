@@ -33,6 +33,34 @@ def save_device_token(
     return {"message": "Device token saved"}
 
 
+class TestNotifRequest(BaseModel):
+    user_id: int
+    title: str = "🔔 Test Notification"
+    body: str  = "Notification is working! GamerzAdda ✅"
+
+
+@router.post("/test-notification", status_code=200)
+def send_test_notification(
+    payload: TestNotifRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),  # admin only
+):
+    """Admin-only: Send a test push notification to any user to verify FCM is working."""
+    from services.push_notifications import send_push
+    target = db.query(User).filter(User.id == payload.user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not target.fcm_token:
+        raise HTTPException(
+            status_code=400,
+            detail=f"User {payload.user_id} has no FCM token saved. "
+                   "Make sure they opened the app after the latest update."
+        )
+    success = send_push(target.fcm_token, payload.title, payload.body)
+    if success:
+        return {"message": f"✅ Test notification sent to user {payload.user_id}"}
+    raise HTTPException(status_code=500, detail="FCM send failed — check server logs and firebase-service-account.json")
+
 
 def _normalize_phone(phone_number: str) -> str:
     normalized = phone_number.strip().replace(" ", "")
