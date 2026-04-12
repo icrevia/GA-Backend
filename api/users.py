@@ -101,3 +101,71 @@ def read_users(
 ):
     users = db.query(User).offset(skip).limit(limit).all()
     return users
+
+
+# ─────────────────────────────────────────────────────────────────
+# Public Leaderboard — top players by winnings + kills
+# ─────────────────────────────────────────────────────────────────
+
+@router.get("/leaderboard")
+def get_leaderboard(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_profile),
+    limit: int = 50,
+):
+    from sqlalchemy import func as sqlfunc, case as sqcase
+    from models.participant import TournamentParticipant
+    from models.tournament import Tournament
+    from services.wallet_balances import get_wallet_breakdown
+
+    # Aggregate stats per user from completed tournaments
+    rows = (
+        db.query(
+            TournamentParticipant.user_id,
+            sqlfunc.count(TournamentParticipant.id).label("total_matches"),
+            sqlfunc.sum(
+                sqcase(
+                    (Tournament.winner_id == TournamentParticipant.user_id, 1),
+                    else_=0
+                )
+            ).label("total_wins"),
+        )
+        .join(Tournament, Tournament.id == TournamentParticipant.tournament_id)
+        .filter(Tournament.status == "COMPLETED")
+        .group_by(TournamentParticipant.user_id)
+        .all()
+    )
+
+    stats_by_user = {
+        row.user_id: {
+            "total_matches": int(row.total_matches or 0),
+            "total_wins": int(row.total_wins or 0),
+        }
+        for row in rows
+    }
+
+    user_ids = list(stats_by_user.keys())
+    if not user_ids:
+        return []
+
+    users = db.query(User).filter(User.id.in_(user_ids), User.is_active == True).all()
+
+    result = []
+    for user in users:
+        wb = get_wallet_breakdown(user)
+        winning_balance = float(wb.get("winning_balance", 0) or 0)
+        stats = stats_by_user.get(user.id, {})
+        result.append({
+            "id": user.id,
+            "username": user.username,
+            "bio": user.bio,
+            "profile_pic": user.profile_pic,
+            "total_matches": stats.get("total_matches", 0),
+            "total_wins": stats.get("total_wins", 0),
+            "total_earnings": winning_balance,
+        })
+
+    # Sort by total earnings desc, then wins desc
+    result.sort(key=lambda x: (-x["total_earnings"], -x["total_wins"], -x["total_matches"]))
+    return result[:limit]
+
