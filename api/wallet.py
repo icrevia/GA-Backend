@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import List
 from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 import html
 import logging
@@ -50,6 +50,7 @@ router = APIRouter()
 MAX_WITHDRAW_UPI_ACCOUNTS = 3
 SPIN_COST = Decimal("10.00")
 DAILY_SPIN_LIMIT = 1
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _common_spin_prize_amount() -> Decimal:
@@ -70,6 +71,16 @@ def _planned_prize_for_spin(spin_number: int) -> Decimal:
     if spin_number % 5 == 0:
         return Decimal("10.00")
     return _common_spin_prize_amount()
+
+
+def _ist_day_window_utc_naive() -> tuple[datetime, datetime]:
+    """Return UTC-naive timestamps representing current IST day start/end."""
+    now_ist = datetime.now(IST)
+    day_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end_ist = day_start_ist + timedelta(days=1)
+    day_start_utc = day_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+    day_end_utc = day_end_ist.astimezone(timezone.utc).replace(tzinfo=None)
+    return day_start_utc, day_end_utc
 
 
 def _normalize_upi_id(raw_value: str) -> str:
@@ -132,9 +143,7 @@ def play_spin(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    now_utc = datetime.utcnow()
-    day_start = datetime(now_utc.year, now_utc.month, now_utc.day)
-    day_end = day_start + timedelta(days=1)
+    day_start, day_end = _ist_day_window_utc_naive()
 
     spins_used_today = (
         db.query(WalletTransaction.id)
@@ -148,7 +157,7 @@ def play_spin(
         .count()
     )
     if spins_used_today >= DAILY_SPIN_LIMIT:
-        raise HTTPException(status_code=400, detail="Daily spin limit reached. Try again tomorrow.")
+        raise HTTPException(status_code=400, detail="Daily spin limit reached. Resets at 12:00 AM IST.")
 
     try:
         debit_wallet(
