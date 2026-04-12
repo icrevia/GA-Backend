@@ -3,10 +3,11 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import List
 from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import html
 import logging
+import random
 
 from api.deps import get_current_user_wallet
 from core.database import get_db_sync as get_db
@@ -25,6 +26,7 @@ from schemas.wallet import (
     WalletBalanceResponse,
     WithdrawUpiAccountListRequest,
     WithdrawUpiAccountResponse,
+    SpinPlayResponse,
 )
 from core.config import settings
 from services.notifications import add_user_notification
@@ -46,6 +48,28 @@ logger = logging.getLogger("GamerzAdda.wallet")
 
 router = APIRouter()
 MAX_WITHDRAW_UPI_ACCOUNTS = 3
+SPIN_COST = Decimal("10.00")
+DAILY_SPIN_LIMIT = 1
+
+
+def _common_spin_prize_amount() -> Decimal:
+    return Decimal("0.00") if random.random() < 0.68 else Decimal("1.00")
+
+
+def _planned_prize_for_spin(spin_number: int) -> Decimal:
+    if spin_number <= 0:
+        return Decimal("0.00")
+    if spin_number == 1:
+        return Decimal(str(random.choice([1, 2, 5])))
+    if spin_number % 100 == 0:
+        return Decimal("100.00")
+    if spin_number % 30 == 0:
+        return Decimal("50.00")
+    if spin_number % 15 == 0:
+        return Decimal("20.00")
+    if spin_number % 5 == 0:
+        return Decimal("10.00")
+    return _common_spin_prize_amount()
 
 
 def _normalize_upi_id(raw_value: str) -> str:
@@ -97,6 +121,114 @@ def get_transactions(
         .limit(safe_limit)
         .all()
     )
+
+
+@router.post("/spin/play", response_model=SpinPlayResponse)
+def play_spin(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_wallet),
+):
+    user = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    now_utc = datetime.utcnow()
+    day_start = datetime(now_utc.year, now_utc.month, now_utc.day)
+    day_end = day_start + timedelta(days=1)
+
+    spins_used_today = (
+        db.query(WalletTransaction.id)
+        .filter(
+            WalletTransaction.user_id == user.id,
+            WalletTransaction.transaction_type == "SPIN",
+            WalletTransaction.status == "SUCCESS",
+            WalletTransaction.created_at >= day_start,
+            WalletTransaction.created_at < day_end,
+        )
+        .count()
+    )
+    if spins_used_today >= DAILY_SPIN_LIMIT:
+        raise HTTPException(status_code=400, detail="Daily spin limit reached. Try again tomorrow.")
+
+    try:
+        debit_wallet(
+            user,
+            SPIN_COST,
+            spend_order=(WALLET_BUCKET_BONUS, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING),
+        )
+    except InsufficientWalletBalanceError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient balance. Available ₹{exc.available:.2f}, required ₹{exc.required:.2f}.",
+        )
+
+    total_spins_before = (
+        db.query(WalletTransaction.id)
+        .filter(
+            WalletTransaction.user_id == user.id,
+            WalletTransaction.transaction_type == "SPIN",
+            WalletTransaction.status == "SUCCESS",
+        )
+        .count()
+    )
+    total_spins = total_spins_before + 1
+    prize_amount = to_money(_planned_prize_for_spin(total_spins))
+
+    spin_reference = f"SPIN_{user.id}_{uuid.uuid4().hex[:10].upper()}"
+    db.add(
+        WalletTransaction(
+            user_id=user.id,
+            amount=-SPIN_COST,
+            transaction_type="SPIN",
+            status="SUCCESS",
+            reference_id=spin_reference,
+            payment_mode="SPIN",
+        )
+    )
+
+    if prize_amount > Decimal("0.00"):
+        credit_wallet(user, prize_amount, WALLET_BUCKET_WINNING)
+        db.add(
+            WalletTransaction(
+                user_id=user.id,
+                amount=prize_amount,
+                transaction_type="SPIN_REWARD",
+                status="SUCCESS",
+                reference_id=f"{spin_reference}_REWARD",
+                payment_mode="SPIN",
+            )
+        )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    if prize_amount > Decimal("0.00"):
+        add_user_notification(
+            db,
+            user.id,
+            "Spin Reward Credited",
+            f"You won ₹{prize_amount:.2f}. Amount credited to your Winning Wallet.",
+            "WALLET",
+        )
+
+    spins_used_today += 1
+    remaining_spins = max(0, DAILY_SPIN_LIMIT - spins_used_today)
+    wallet_breakdown = get_wallet_breakdown(user)
+
+    return {
+        "message": "Spin completed successfully",
+        "prize_amount": prize_amount,
+        "spin_cost": SPIN_COST,
+        "spins_used_today": spins_used_today,
+        "daily_spin_limit": DAILY_SPIN_LIMIT,
+        "remaining_spins": remaining_spins,
+        "total_spins": total_spins,
+        "wallet_balance": wallet_breakdown["balance"],
+        "deposit_balance": wallet_breakdown["deposit_balance"],
+        "winning_balance": wallet_breakdown["winning_balance"],
+        "bonus_balance": wallet_breakdown["bonus_balance"],
+    }
 
 
 @router.get("/withdraw/accounts", response_model=List[WithdrawUpiAccountResponse])

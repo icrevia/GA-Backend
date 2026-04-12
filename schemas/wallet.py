@@ -58,6 +58,20 @@ class WalletBalanceResponse(BaseModel):
     withdrawable_balance: Decimal
 
 
+class SpinPlayResponse(BaseModel):
+    message: str
+    prize_amount: Decimal
+    spin_cost: Decimal
+    spins_used_today: int
+    daily_spin_limit: int
+    remaining_spins: int
+    total_spins: int
+    wallet_balance: Decimal
+    deposit_balance: Decimal
+    winning_balance: Decimal
+    bonus_balance: Decimal
+
+
 class WithdrawUpiAccountPayload(BaseModel):
     account_holder_name: str
     upi_id: str
