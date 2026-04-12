@@ -9,7 +9,6 @@ class TournamentParticipant(Base):
     __tablename__ = "tournament_participants"
     __table_args__ = (
         UniqueConstraint("tournament_id", "user_id", name="uq_tournament_participant_user"),
-        UniqueConstraint("tournament_id", "slot_no", name="uq_tournament_participant_slot"),
     )
 
     id = Column(Integer, primary_key=True, index=True)

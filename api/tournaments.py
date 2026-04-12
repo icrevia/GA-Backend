@@ -156,25 +156,29 @@ def _validate_team_for_match(match_type: str | None, members: list[dict[str, obj
     return members
 
 
-def _resolve_participant_slots(participants: List[TournamentParticipant], max_slots: int) -> dict[int, TournamentParticipant]:
-    slot_map: dict[int, TournamentParticipant] = {}
+def _resolve_participant_slots(participants: List[TournamentParticipant], max_slots: int) -> dict[int, List[TournamentParticipant]]:
+    slot_map: dict[int, List[TournamentParticipant]] = {}
 
+    # First pass: put participants in their designated slots
     for participant in participants:
         slot_no = participant.slot_no
-        if slot_no and 1 <= slot_no <= max_slots and slot_no not in slot_map:
-            slot_map[slot_no] = participant
+        if slot_no and 1 <= slot_no <= max_slots:
+            if slot_no not in slot_map:
+                slot_map[slot_no] = []
+            slot_map[slot_no].append(participant)
 
+    # Second pass: handle participants without slot_no (legacy or edge cases)
     fallback_slot = 1
     for participant in participants:
-        slot_no = participant.slot_no
-        if slot_no and 1 <= slot_no <= max_slots and slot_no in slot_map and slot_map[slot_no].id == participant.id:
+        if participant.slot_no and 1 <= participant.slot_no <= max_slots:
             continue
 
         while fallback_slot <= max_slots and fallback_slot in slot_map:
             fallback_slot += 1
         if fallback_slot > max_slots:
             break
-        slot_map[fallback_slot] = participant
+        slot_map[fallback_slot] = [participant]
+        participant.slot_no = fallback_slot # Update for current session
 
     return slot_map
 
@@ -196,8 +200,8 @@ def _build_slots_board(
 
     slots: list[TournamentSlotResponse] = []
     for slot_no in range(1, max_slots + 1):
-        participant = slot_map.get(slot_no)
-        if participant is None:
+        slot_participants = slot_map.get(slot_no)
+        if not slot_participants:
             slots.append(
                 TournamentSlotResponse(
                     slot_no=slot_no,
@@ -207,30 +211,32 @@ def _build_slots_board(
             )
             continue
 
-        username = participant.username if participant.user else None
-        team_members = participant.team_members
-        primary_member = team_members[0] if team_members else None
+        # Merge all team members from all participants in this slot
+        merged_team_members = []
+        for p in slot_participants:
+            merged_team_members.extend(p.team_members)
+
+        # Pick the "primary" user for display (Captain or first joined)
+        primary_p = next((p for p in slot_participants if p.is_team_captain), slot_participants[0])
+        
+        username = primary_p.username if primary_p.user else None
         slots.append(
             TournamentSlotResponse(
                 slot_no=slot_no,
                 slot_label=_slot_label(slot_no),
                 status="BOOKED",
-                user_id=participant.user_id,
+                user_id=primary_p.user_id,
                 username=username,
-                avatar_url=(participant.user.profile_pic if participant.user else None),
-                bio=(participant.user.bio if participant.user else None),
-                game_username=(primary_member["name"] if primary_member else participant.game_username),
-                game_uid=(primary_member["uid"] if primary_member else participant.game_uid),
-                account_level=(
-                    int(primary_member["level"])
-                    if primary_member and primary_member.get("level") is not None
-                    else participant.account_level
-                ),
-                team_members=team_members,
-                is_mine=(current_user_id is not None and participant.user_id == current_user_id),
-                team_name=participant.team_name,
-                team_join_code=participant.team_join_code,
-                is_team_captain=bool(participant.is_team_captain),
+                avatar_url=(primary_p.user.profile_pic if primary_p.user else None),
+                bio=(primary_p.user.bio if primary_p.user else None),
+                game_username=None, # Multiple members now
+                game_uid=None,
+                account_level=primary_p.account_level,
+                team_members=merged_team_members,
+                is_mine=(current_user_id is not None and any(p.user_id == current_user_id for p in slot_participants)),
+                team_name=primary_p.team_name,
+                team_join_code=primary_p.team_join_code,
+                is_team_captain=any(p.is_team_captain for p in slot_participants),
             )
         )
 
@@ -610,7 +616,12 @@ def join_tournament(
         existing_team_name = team_members_in_db[0].team_name or ""
 
         # Joiner does NOT pay — captain already paid for the entire team
-        slot_no = _next_available_slot(db, tournament_id, max_slots)
+        # Inherit the slot number from the existing team members
+        slot_no = team_members_in_db[0].slot_no
+        if slot_no is None:
+            # Fallback if somehow missing
+            slot_no = _next_available_slot(db, tournament_id, max_slots)
+            
         if slot_no is None:
             raise HTTPException(status_code=400, detail="Arena slots unavailable. Please retry.")
 
