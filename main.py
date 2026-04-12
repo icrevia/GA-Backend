@@ -158,7 +158,37 @@ async def lifespan(app: FastAPI):
 
     support_media_cleanup_task = asyncio.create_task(support_media_cleanup_worker())
     logger.info("Support media cleanup worker started")
-            
+
+    # ── Startup push notification to all users ───────────────────
+    async def _send_startup_notification():
+        try:
+            from services.push_notifications import send_push_to_many
+            from core.database import SessionLocal
+            from models.user import User as UserModel
+            async with SessionLocal() as db:
+                from sqlalchemy import select
+                result = await db.execute(
+                    select(UserModel.fcm_token).where(UserModel.fcm_token.isnot(None))
+                )
+                tokens = [row[0] for row in result.fetchall() if row[0]]
+            if tokens:
+                import threading
+                threading.Thread(
+                    target=send_push_to_many,
+                    args=(
+                        tokens,
+                        "🚀 GamerzAdda is Live!",
+                        "Server is active — App is running smooth! Check out new tournaments 🎮",
+                    ),
+                    daemon=True,
+                ).start()
+                logger.info("Startup notification sent to %d devices", len(tokens))
+        except Exception as notif_err:
+            logger.warning("Startup notification failed: %s", notif_err)
+
+    asyncio.create_task(_send_startup_notification())
+    # ─────────────────────────────────────────────────────────────
+
     try:
         yield
     finally:
