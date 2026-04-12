@@ -65,6 +65,15 @@ class TournamentResponse(TournamentBase):
     class Config:
         from_attributes = True
 
+class TournamentJoinDeductionBreakdown(BaseModel):
+    bonus_amount: float
+    deposit_amount: float
+    winning_amount: float
+    total_deducted: float
+    bonus_cap_amount: float
+    bonus_usage_limit_percentage: float
+
+
 class TournamentJoinResponse(BaseModel):
     message: str
     tournament_id: int
@@ -76,6 +85,7 @@ class TournamentJoinResponse(BaseModel):
     team_join_code: Optional[str] = None
     team_name: Optional[str] = None
     is_team_captain: bool = False
+    deduction_breakdown: Optional[TournamentJoinDeductionBreakdown] = None
 
 
 class TournamentCancelResponse(BaseModel):

@@ -428,6 +428,7 @@ def create_tournament(
         game_name=data.game_name,
         entry_fee=data.entry_fee,
         prize_pool=data.prize_pool,
+        commission_percentage=data.commission_percentage,
         match_type=data.match_type,
         match_time=dt,
         game_image_url=data.game_image_url,

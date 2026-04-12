@@ -264,6 +264,78 @@ def _now_for_match_timezone(match_time: datetime) -> datetime:
     return now_utc.astimezone(match_time.tzinfo)
 
 
+def _resolve_bonus_usage_limit_percentage(tournament: Tournament) -> Decimal:
+    raw = to_money(getattr(tournament, "commission_percentage", 0) or 0)
+    if raw < Decimal("0.00"):
+        return Decimal("0.00")
+    if raw > Decimal("100.00"):
+        return Decimal("100.00")
+    return raw
+
+
+def _compute_join_wallet_deductions(
+    user_wallet: User,
+    total_fee: Decimal,
+    bonus_usage_limit_percentage: Decimal,
+) -> tuple[dict[str, Decimal], Decimal, Decimal]:
+    fee = to_money(total_fee)
+    limit_pct = to_money(bonus_usage_limit_percentage)
+    bonus_cap_amount = to_money((fee * limit_pct) / Decimal("100.00"))
+
+    available_bonus = to_money(getattr(user_wallet, "bonus_balance", Decimal("0.00")))
+    available_deposit = to_money(getattr(user_wallet, "deposit_balance", Decimal("0.00")))
+    available_winning = to_money(getattr(user_wallet, "winning_balance", Decimal("0.00")))
+
+    bonus_take = min(available_bonus, bonus_cap_amount, fee)
+    remaining_after_bonus = to_money(fee - bonus_take)
+
+    deposit_take = min(available_deposit, remaining_after_bonus)
+    remaining_after_deposit = to_money(remaining_after_bonus - deposit_take)
+
+    winning_take = min(available_winning, remaining_after_deposit)
+    remaining_due = to_money(remaining_after_deposit - winning_take)
+
+    deductions = {
+        WALLET_BUCKET_BONUS: to_money(bonus_take),
+        WALLET_BUCKET_DEPOSIT: to_money(deposit_take),
+        WALLET_BUCKET_WINNING: to_money(winning_take),
+    }
+    return deductions, bonus_cap_amount, remaining_due
+
+
+def _apply_join_wallet_deductions(user_wallet: User, deductions: dict[str, Decimal]) -> None:
+    bonus_amount = to_money(deductions.get(WALLET_BUCKET_BONUS))
+    deposit_amount = to_money(deductions.get(WALLET_BUCKET_DEPOSIT))
+    winning_amount = to_money(deductions.get(WALLET_BUCKET_WINNING))
+
+    if bonus_amount > Decimal("0.00"):
+        debit_wallet(user_wallet, bonus_amount, spend_order=(WALLET_BUCKET_BONUS,))
+    if deposit_amount > Decimal("0.00"):
+        debit_wallet(user_wallet, deposit_amount, spend_order=(WALLET_BUCKET_DEPOSIT,))
+    if winning_amount > Decimal("0.00"):
+        debit_wallet(user_wallet, winning_amount, spend_order=(WALLET_BUCKET_WINNING,))
+
+
+def _join_deduction_payload(
+    deductions: dict[str, Decimal],
+    bonus_cap_amount: Decimal,
+    bonus_usage_limit_percentage: Decimal,
+) -> dict[str, float]:
+    total_deducted = to_money(
+        to_money(deductions.get(WALLET_BUCKET_BONUS))
+        + to_money(deductions.get(WALLET_BUCKET_DEPOSIT))
+        + to_money(deductions.get(WALLET_BUCKET_WINNING))
+    )
+    return {
+        "bonus_amount": float(to_money(deductions.get(WALLET_BUCKET_BONUS))),
+        "deposit_amount": float(to_money(deductions.get(WALLET_BUCKET_DEPOSIT))),
+        "winning_amount": float(to_money(deductions.get(WALLET_BUCKET_WINNING))),
+        "total_deducted": float(total_deducted),
+        "bonus_cap_amount": float(to_money(bonus_cap_amount)),
+        "bonus_usage_limit_percentage": float(to_money(bonus_usage_limit_percentage)),
+    }
+
+
 # ─────────────────────────────────────────────────────────────────
 # Routes
 # ─────────────────────────────────────────────────────────────────
@@ -415,26 +487,34 @@ def join_tournament(
 
         # Captain pays the flat team entry fee
         total_fee = to_money(tournament.entry_fee)
+        bonus_usage_limit_percentage = _resolve_bonus_usage_limit_percentage(tournament)
 
         user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
-        available_balance = get_total_balance(user_wallet)
-        if available_balance < total_fee:
+        deductions, bonus_cap_amount, remaining_due = _compute_join_wallet_deductions(
+            user_wallet,
+            total_fee,
+            bonus_usage_limit_percentage,
+        )
+        available_by_rule = to_money(total_fee - remaining_due)
+        if remaining_due > Decimal("0.00"):
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "message": f"Insufficient balance! You need ₹{total_fee:.2f} to create a team for {mode}. Your current balance is ₹{available_balance:.2f}.",
+                    "message": (
+                        f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
+                        f"(₹{bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
+                    ),
                     "error_code": "INSUFFICIENT_BALANCE",
                     "required": float(total_fee),
-                    "available": float(available_balance),
+                    "available": float(available_by_rule),
+                    "wallet_total": float(get_total_balance(user_wallet)),
+                    "bonus_cap_amount": float(bonus_cap_amount),
+                    "bonus_usage_limit_percentage": float(bonus_usage_limit_percentage),
                 }
             )
 
         try:
-            debit_wallet(
-                user_wallet,
-                total_fee,
-                spend_order=(WALLET_BUCKET_BONUS, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING),
-            )
+            _apply_join_wallet_deductions(user_wallet, deductions)
         except InsufficientWalletBalanceError as exc:
             raise HTTPException(
                 status_code=400,
@@ -499,6 +579,11 @@ def join_tournament(
             "team_join_code": join_code,
             "team_name": team_name,
             "is_team_captain": True,
+            "deduction_breakdown": _join_deduction_payload(
+                deductions,
+                bonus_cap_amount,
+                bonus_usage_limit_percentage,
+            ),
         }
 
     # ── DUO / SQUAD — JOIN ───────────────────────────────────────
@@ -598,16 +683,28 @@ def join_tournament(
     ).with_for_update().first()
 
     entry_fee = to_money(tournament.entry_fee)
-    available_balance = get_total_balance(user_wallet)
+    bonus_usage_limit_percentage = _resolve_bonus_usage_limit_percentage(tournament)
+    deductions, bonus_cap_amount, remaining_due = _compute_join_wallet_deductions(
+        user_wallet,
+        entry_fee,
+        bonus_usage_limit_percentage,
+    )
+    available_by_rule = to_money(entry_fee - remaining_due)
 
-    if available_balance < entry_fee:
+    if remaining_due > Decimal("0.00"):
         raise HTTPException(
             status_code=400,
             detail={
-                "message": f"Insufficient balance! You need ₹{entry_fee:.2f} to join. Your current balance is ₹{available_balance:.2f}.",
+                "message": (
+                    f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
+                    f"(₹{bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
+                ),
                 "error_code": "INSUFFICIENT_BALANCE",
                 "required": float(entry_fee),
-                "available": float(available_balance),
+                "available": float(available_by_rule),
+                "wallet_total": float(get_total_balance(user_wallet)),
+                "bonus_cap_amount": float(bonus_cap_amount),
+                "bonus_usage_limit_percentage": float(bonus_usage_limit_percentage),
             }
         )
 
@@ -617,15 +714,7 @@ def join_tournament(
     )
 
     try:
-        debit_wallet(
-            user_wallet,
-            entry_fee,
-            spend_order=(
-                WALLET_BUCKET_BONUS,
-                WALLET_BUCKET_DEPOSIT,
-                WALLET_BUCKET_WINNING,
-            ),
-        )
+        _apply_join_wallet_deductions(user_wallet, deductions)
     except InsufficientWalletBalanceError as exc:
         raise HTTPException(
             status_code=400,
@@ -684,6 +773,11 @@ def join_tournament(
         "team_join_code": None,
         "team_name": None,
         "is_team_captain": False,
+        "deduction_breakdown": _join_deduction_payload(
+            deductions,
+            bonus_cap_amount,
+            bonus_usage_limit_percentage,
+        ),
     }
 
 

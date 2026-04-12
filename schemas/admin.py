@@ -63,6 +63,7 @@ class TournamentCreateAdmin(BaseModel):
     game_name: str
     entry_fee: float
     prize_pool: float
+    commission_percentage: float = Field(10.0, ge=0.0, le=100.0)
     match_type: str
     match_time: str
     game_image_url: Optional[str] = None
