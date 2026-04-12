@@ -72,7 +72,9 @@ def send_push(
         messaging.send(msg, app=app)
         return True
     except Exception as e:
-        logger.error("FCM send failed: %s", e)
+        # Avoid logging the full token for privacy, but show enough to identify
+        token_hint = f"{fcm_token[:8]}...{fcm_token[-4:]}" if fcm_token else "None"
+        logger.error(f"FCM single send failed for token {token_hint}: {e}")
         return False
 
 
@@ -90,18 +92,29 @@ def send_push_to_many(
         return 0
     try:
         from firebase_admin import messaging
-        messages = [
-            messaging.Message(
-                notification=messaging.Notification(title=title, body=body),
-                data={str(k): str(v) for k, v in (data or {}).items()},
-                token=token,
-                android=messaging.AndroidConfig(priority="high"),
-            )
-            for token in fcm_tokens
-        ]
-        resp = messaging.send_each(messages, app=app)
-        logger.info("FCM batch: %d/%d sent", resp.success_count, len(fcm_tokens))
-        return resp.success_count
+        # Limit batch size to 500 (Firebase Admin SDK limit for send_each)
+        batch_size = 500
+        total_success = 0
+        
+        for i in range(0, len(fcm_tokens), batch_size):
+            chunk = fcm_tokens[i : i + batch_size]
+            messages = [
+                messaging.Message(
+                    notification=messaging.Notification(title=title, body=body),
+                    data={str(k): str(v) for k, v in (data or {}).items()},
+                    token=token,
+                    android=messaging.AndroidConfig(priority="high"),
+                )
+                for token in chunk
+            ]
+            resp = messaging.send_each(messages, app=app)
+            total_success += resp.success_count
+            
+            if resp.failure_count > 0:
+                logger.warning(f"FCM Batch failure: {resp.failure_count} messages failed in chunk {i//batch_size + 1}")
+
+        logger.info(f"FCM Broadcast complete: {total_success}/{len(fcm_tokens)} sent successfully")
+        return total_success
     except Exception as e:
-        logger.error("FCM batch send failed: %s", e)
+        logger.error(f"FCM broadcast send failed: {e}")
         return 0

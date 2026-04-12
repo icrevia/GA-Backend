@@ -51,6 +51,11 @@ def _pool_kwargs_for_url(database_url: str) -> dict:
 
 
 async_url = settings.DATABASE_URL
+if async_url.startswith("postgresql://") and "+asyncpg" not in async_url:
+    async_url = async_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+elif async_url.startswith("postgres://") and "+asyncpg" not in async_url:
+    async_url = async_url.replace("postgres://", "postgresql+asyncpg://", 1)
+
 sync_url = _to_sync_database_url(settings.DATABASE_URL)
 
 # Correct Async Engine for asyncpg driver

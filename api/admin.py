@@ -30,6 +30,7 @@ from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
 from models.withdraw_upi_account import WithdrawUpiAccount
 from services.notifications import add_user_notification
+from services.push_notifications import send_push, send_push_to_many
 from services.restrictions import (
     RESTRICTION_SCOPE_FULL_APP,
     RESTRICTION_SCOPE_PAGE,
@@ -2174,11 +2175,13 @@ def update_developer_system_config(
 @router.post("/notifications/send")
 def send_push_notification(
     data: NotificationSendRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
     users = db.query(User).filter(User.role == "USER", User.is_active == True).all()
 
+    tokens = []
     for user in users:
         notif = Notification(
             user_id=user.id,
@@ -2187,21 +2190,34 @@ def send_push_notification(
             type="SYSTEM"
         )
         db.add(notif)
+        if user.fcm_token:
+            tokens.append(user.fcm_token)
 
     db.commit()
+
+    if tokens:
+        background_tasks.add_task(
+            send_push_to_many,
+            fcm_tokens=tokens,
+            title=data.title,
+            body=data.body,
+            data={"type": "SYSTEM"}
+        )
+
     logger.info(
-        f"Broadcast sent to {len(users)} users by admin={current_user.username}: '{data.title}'"
+        f"Broadcast (DB + FCM) sent to {len(users)} users by admin={current_user.username}: '{data.title}'"
     )
-    return {"message": f"Broadcast '{data.title}' sent to {len(users)} users"}
+    return {"message": f"Broadcast '{data.title}' scheduled for {len(users)} users ({len(tokens)} via Push)"}
 
 
 @router.post("/developer/notifications/send")
 def send_developer_push_notification(
     data: NotificationSendRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_developer_otp),
 ):
-    return send_push_notification(data=data, db=db, current_user=current_user)
+    return send_push_notification(data=data, background_tasks=background_tasks, db=db, current_user=current_user)
 
 
 # ─────────────────────────────────────────────────────────────────
