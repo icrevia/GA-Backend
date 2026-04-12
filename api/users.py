@@ -93,6 +93,19 @@ def _normalize_phone(phone_number: str) -> str:
     return normalized
 
 
+@router.get("/my-fcm-token")
+def get_my_fcm_token(
+    current_user: User = Depends(get_current_user),
+):
+    """Returns current user's FCM token — use this to test Firebase Console notifications."""
+    if not current_user.fcm_token:
+        raise HTTPException(
+            status_code=404,
+            detail="No FCM token found. Rebuild + reinstall the app with google-services.json, then login again."
+        )
+    return {"fcm_token": current_user.fcm_token}
+
+
 @router.get("/me", response_model=UserResponse)
 def read_user_me(
     db: Session = Depends(get_db),
