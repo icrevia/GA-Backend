@@ -70,7 +70,7 @@ def _build_joined_count_map(db: Session, tournament_ids: List[int]) -> dict[int,
     rows = (
         db.query(
             TournamentParticipant.tournament_id,
-            func.count(TournamentParticipant.id),
+            func.count(func.distinct(TournamentParticipant.slot_no)),
         )
         .filter(TournamentParticipant.tournament_id.in_(tournament_ids))
         .group_by(TournamentParticipant.tournament_id)
