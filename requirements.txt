@@ -21,3 +21,4 @@ python-dotenv
 email-validator
 requests
 aiofiles
+firebase-admin==6.5.0

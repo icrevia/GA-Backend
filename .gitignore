@@ -5,6 +5,9 @@ __pycache__/
 venv/
 .env
 
+# Firebase private key — NEVER commit this
+firebase-service-account.json
+
 # Database
 *.sqlite3
 *.db

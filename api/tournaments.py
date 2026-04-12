@@ -382,7 +382,7 @@ def update_tournament(
     if not db_obj:
         raise HTTPException(status_code=404, detail="Tournament not found")
 
-    # FIXED: .model_dump() replaces deprecated .dict()
+    old_status = db_obj.status  # capture before update
     update_data = tournament_in.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(db_obj, field, value)
@@ -390,7 +390,45 @@ def update_tournament(
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
+
+    # ── Push notifications on status change ──────────────────────
+    new_status = db_obj.status
+    if new_status != old_status and new_status in ("LIVE", "COMPLETED"):
+        try:
+            from services.push_notifications import send_push_to_many
+            participants = db.query(TournamentParticipant).filter(
+                TournamentParticipant.tournament_id == tournament_id
+            ).all()
+            user_ids = list({p.user_id for p in participants})
+            if user_ids:
+                tokens = [
+                    u.fcm_token for u in
+                    db.query(User).filter(User.id.in_(user_ids), User.fcm_token.isnot(None)).all()
+                    if u.fcm_token
+                ]
+                if tokens:
+                    title_map = {
+                        "LIVE":      f"🔴 Match is LIVE! — {db_obj.title}",
+                        "COMPLETED": f"🏆 Results Out! — {db_obj.title}",
+                    }
+                    body_map = {
+                        "LIVE":      "The match has started. Open the app immediately!",
+                        "COMPLETED": "The match has ended. Check your result and winnings! 💰",
+                    }
+                    import threading
+                    threading.Thread(
+                        target=send_push_to_many,
+                        args=(tokens, title_map[new_status], body_map[new_status]),
+                        kwargs={"data": {"tournament_id": str(tournament_id), "status": new_status}},
+                        daemon=True,
+                    ).start()
+        except Exception as notif_err:
+            import logging
+            logging.getLogger("GamerzAdda").warning("Push notification error: %s", notif_err)
+    # ─────────────────────────────────────────────────────────────
+
     return _with_count(db_obj, db)
+
 
 
 # ─────────────────────────────────────────────────────────────────
