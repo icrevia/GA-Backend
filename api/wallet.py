@@ -507,7 +507,7 @@ def init_add_money(
             db,
             current_user.id,
             "Recharge Failed ❌",
-            f"We could not initialize your payment via Pay0. {failure_reason}",
+            f"We could not initialize your payment via UPI. {failure_reason}",
             "WALLET"
         )
         logger.error("Add-money init failed for user=%s reason=%s", current_user.id, failure_reason)
@@ -523,7 +523,7 @@ def init_add_money(
         db,
         current_user.id,
         "Recharge Initiated",
-        f"You have initiated a recharge of ₹{req.amount} via Pay0. Complete the payment to see it in your wallet.",
+        f"You have initiated a recharge of ₹{req.amount} via UPI. Complete the payment to see it in your wallet.",
         "WALLET"
     )
 
@@ -604,7 +604,7 @@ async def pay0_callback_handler(
             add_user_notification(
                 db, user.id,
                 "Payment Confirmed ✅",
-                f"₹{tx.amount:.0f} has been added to your wallet via Pay0.",
+                f"₹{tx.amount:.0f} has been added to your wallet via UPI.",
                 "WALLET"
             )
             background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})

@@ -200,7 +200,7 @@ class Settings(BaseSettings):
         if not self.PAY0_MERCHANT_KEY:
             print(
                 "[CONFIG WARNING] PAY0_MERCHANT_KEY is not set. "
-                "Payments via Pay0 will fail.",
+                "Payments via UPI will fail.",
                 file=sys.stderr
             )
 
