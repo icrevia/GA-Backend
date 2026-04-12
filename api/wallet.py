@@ -50,6 +50,7 @@ router = APIRouter()
 MAX_WITHDRAW_UPI_ACCOUNTS = 3
 SPIN_COST = Decimal("10.00")
 DAILY_SPIN_LIMIT = 1
+SPIN_DAILY_RESET_MINUTE_IST = 1
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -73,14 +74,21 @@ def _planned_prize_for_spin(spin_number: int) -> Decimal:
     return _common_spin_prize_amount()
 
 
-def _ist_day_window_utc_naive() -> tuple[datetime, datetime]:
-    """Return UTC-naive timestamps representing current IST day start/end."""
+def _current_spin_cycle_ist() -> tuple[str, datetime, datetime]:
+    """Return cycle key and UTC-naive window for daily reset at 12:01 AM IST."""
     now_ist = datetime.now(IST)
-    day_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_end_ist = day_start_ist + timedelta(days=1)
-    day_start_utc = day_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
-    day_end_utc = day_end_ist.astimezone(timezone.utc).replace(tzinfo=None)
-    return day_start_utc, day_end_utc
+    reset_point_ist = now_ist.replace(
+        hour=0,
+        minute=SPIN_DAILY_RESET_MINUTE_IST,
+        second=0,
+        microsecond=0,
+    )
+    cycle_start_ist = reset_point_ist - timedelta(days=1) if now_ist < reset_point_ist else reset_point_ist
+    cycle_end_ist = cycle_start_ist + timedelta(days=1)
+    cycle_key = cycle_start_ist.date().isoformat()
+    cycle_start_utc = cycle_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+    cycle_end_utc = cycle_end_ist.astimezone(timezone.utc).replace(tzinfo=None)
+    return cycle_key, cycle_start_utc, cycle_end_utc
 
 
 def _normalize_upi_id(raw_value: str) -> str:
@@ -143,21 +151,33 @@ def play_spin(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    day_start, day_end = _ist_day_window_utc_naive()
+    daily_spin_limit = int(getattr(user, "daily_spin_limit", DAILY_SPIN_LIMIT) or DAILY_SPIN_LIMIT)
+    if daily_spin_limit <= 0:
+        daily_spin_limit = DAILY_SPIN_LIMIT
 
-    spins_used_today = (
-        db.query(WalletTransaction.id)
-        .filter(
-            WalletTransaction.user_id == user.id,
-            WalletTransaction.transaction_type == "SPIN",
-            WalletTransaction.status == "SUCCESS",
-            WalletTransaction.created_at >= day_start,
-            WalletTransaction.created_at < day_end,
+    cycle_key, day_start, day_end = _current_spin_cycle_ist()
+    stored_cycle_key = (getattr(user, "daily_spin_cycle_key", None) or "").strip()
+
+    if stored_cycle_key != cycle_key:
+        # Rebuild once from transaction log for safety during rollouts/restarts.
+        spins_used_today = (
+            db.query(WalletTransaction.id)
+            .filter(
+                WalletTransaction.user_id == user.id,
+                WalletTransaction.transaction_type == "SPIN",
+                WalletTransaction.status == "SUCCESS",
+                WalletTransaction.created_at >= day_start,
+                WalletTransaction.created_at < day_end,
+            )
+            .count()
         )
-        .count()
-    )
-    if spins_used_today >= DAILY_SPIN_LIMIT:
-        raise HTTPException(status_code=400, detail="Daily spin limit reached. Resets at 12:00 AM IST.")
+        user.daily_spin_cycle_key = cycle_key
+        user.daily_spin_used = spins_used_today
+    else:
+        spins_used_today = int(getattr(user, "daily_spin_used", 0) or 0)
+
+    if spins_used_today >= daily_spin_limit:
+        raise HTTPException(status_code=400, detail="Daily spin limit reached. Resets at 12:01 AM IST.")
 
     try:
         debit_wallet(
@@ -208,6 +228,10 @@ def play_spin(
             )
         )
 
+    spins_used_today += 1
+    user.daily_spin_cycle_key = cycle_key
+    user.daily_spin_used = spins_used_today
+
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -221,8 +245,7 @@ def play_spin(
             "WALLET",
         )
 
-    spins_used_today += 1
-    remaining_spins = max(0, DAILY_SPIN_LIMIT - spins_used_today)
+    remaining_spins = max(0, daily_spin_limit - spins_used_today)
     wallet_breakdown = get_wallet_breakdown(user)
 
     return {
@@ -230,7 +253,7 @@ def play_spin(
         "prize_amount": prize_amount,
         "spin_cost": SPIN_COST,
         "spins_used_today": spins_used_today,
-        "daily_spin_limit": DAILY_SPIN_LIMIT,
+        "daily_spin_limit": daily_spin_limit,
         "remaining_spins": remaining_spins,
         "total_spins": total_spins,
         "wallet_balance": wallet_breakdown["balance"],

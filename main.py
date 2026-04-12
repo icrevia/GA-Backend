@@ -58,6 +58,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_ip VARCHAR(64)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_device VARCHAR(160)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_limit INTEGER DEFAULT 1",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_used INTEGER DEFAULT 0",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_cycle_key VARCHAR(16)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(255) UNIQUE",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_id INTEGER",
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_order_id VARCHAR(255)",
@@ -109,6 +112,16 @@ async def lifespan(app: FastAPI):
                       AND COALESCE(deposit_balance, 0.00) = 0.00
                       AND COALESCE(winning_balance, 0.00) = 0.00
                       AND COALESCE(bonus_balance, 0.00) = 0.00
+                    """
+                )
+            )
+
+            await conn.execute(
+                text(
+                    """
+                    UPDATE users
+                    SET daily_spin_limit = COALESCE(daily_spin_limit, 1),
+                        daily_spin_used = COALESCE(daily_spin_used, 0)
                     """
                 )
             )

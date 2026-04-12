@@ -37,6 +37,9 @@ class User(Base):
     last_login_ip   = Column(String(64), nullable=True)
     last_login_device = Column(String(160), nullable=True)
     last_login_at   = Column(DateTime, nullable=True)
+    daily_spin_limit = Column(Integer, nullable=False, default=1, server_default="1")
+    daily_spin_used = Column(Integer, nullable=False, default=0, server_default="0")
+    daily_spin_cycle_key = Column(String(16), nullable=True)
 
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
