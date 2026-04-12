@@ -78,6 +78,16 @@ class TournamentJoinResponse(BaseModel):
     is_team_captain: bool = False
 
 
+class TournamentCancelResponse(BaseModel):
+    message: str
+    tournament_id: int
+    cancelled_slots: int
+    refund_percentage: int
+    refund_amount: float
+    refunded_to: str
+    new_wallet_balance: float
+
+
 class TournamentSlotResponse(BaseModel):
     slot_no: int
     slot_label: str

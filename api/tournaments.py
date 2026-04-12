@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
 from typing import List
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import secrets
 import string
 
@@ -18,6 +20,7 @@ from schemas.tournament import (
     TournamentResponse,
     TournamentJoinResponse,
     TournamentJoinRequest,
+    TournamentCancelResponse,
     TournamentSlotsBoardResponse,
     TournamentSlotResponse,
     TeamPreviewResponse,
@@ -28,6 +31,7 @@ from services.wallet_balances import (
     WALLET_BUCKET_DEPOSIT,
     WALLET_BUCKET_WINNING,
     InsufficientWalletBalanceError,
+    credit_wallet,
     debit_wallet,
     get_total_balance,
     to_money,
@@ -251,6 +255,13 @@ def _next_available_slot(db: Session, tournament_id: int, max_slots: int) -> int
         if slot_no not in used_slots:
             return slot_no
     return None
+
+
+def _now_for_match_timezone(match_time: datetime) -> datetime:
+    now_utc = datetime.now(timezone.utc)
+    if match_time.tzinfo is None:
+        return now_utc.replace(tzinfo=None)
+    return now_utc.astimezone(match_time.tzinfo)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -673,6 +684,149 @@ def join_tournament(
         "team_join_code": None,
         "team_name": None,
         "is_team_captain": False,
+    }
+
+
+@router.post("/{tournament_id}/cancel", response_model=TournamentCancelResponse)
+def cancel_tournament_participation(
+    tournament_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_tournaments),
+):
+    tournament = db.query(Tournament).filter(
+        Tournament.id == tournament_id
+    ).with_for_update().first()
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+
+    if (tournament.status or "").upper() != "UPCOMING":
+        raise HTTPException(status_code=400, detail="Only upcoming tournaments can be cancelled")
+
+    participant = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id,
+        TournamentParticipant.user_id == current_user.id,
+    ).with_for_update().first()
+    if not participant:
+        raise HTTPException(status_code=404, detail="You are not part of this tournament")
+
+    if not tournament.match_time:
+        raise HTTPException(status_code=400, detail="Tournament match time is missing")
+
+    cancel_cutoff = tournament.match_time - timedelta(hours=2)
+    now_for_match = _now_for_match_timezone(tournament.match_time)
+    if now_for_match >= cancel_cutoff:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Cancellation closes 2 hours before match start.",
+                "error_code": "CANCEL_WINDOW_CLOSED",
+            },
+        )
+
+    mode = (tournament.match_type or "SOLO").upper()
+    is_team_match = mode in ("DUO", "SQUAD")
+    is_captain_cancel = bool(is_team_match and participant.is_team_captain and participant.team_join_code)
+
+    participants_to_remove = [participant]
+    if is_captain_cancel and participant.team_join_code:
+        participants_to_remove = db.query(TournamentParticipant).filter(
+            TournamentParticipant.tournament_id == tournament_id,
+            TournamentParticipant.team_join_code == participant.team_join_code,
+        ).with_for_update().all()
+        if not participants_to_remove:
+            participants_to_remove = [participant]
+
+    paid_amount = Decimal("0.00")
+    if not is_team_match or is_captain_cancel:
+        join_tx = db.query(WalletTransaction).filter(
+            WalletTransaction.user_id == current_user.id,
+            WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
+            WalletTransaction.status == "SUCCESS",
+            WalletTransaction.reference_id == f"TOUR_{tournament_id}_{current_user.id}",
+        ).order_by(WalletTransaction.id.desc()).first()
+
+        if join_tx:
+            paid_amount = to_money(abs(join_tx.amount))
+        else:
+            paid_amount = to_money(tournament.entry_fee)
+
+    refund_amount = to_money(paid_amount * Decimal("0.70"))
+
+    user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+    if not user_wallet:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if refund_amount > Decimal("0.00"):
+        refund_reference = f"CANCEL_REFUND_{tournament_id}_{current_user.id}"
+        existing_refund = db.query(WalletTransaction).filter(
+            WalletTransaction.reference_id == refund_reference
+        ).first()
+        if existing_refund:
+            raise HTTPException(status_code=409, detail="Cancellation refund already processed")
+
+        credit_wallet(user_wallet, refund_amount, WALLET_BUCKET_DEPOSIT)
+        db.add(
+            WalletTransaction(
+                user_id=current_user.id,
+                amount=refund_amount,
+                transaction_type="TOURNAMENT_CANCEL_REFUND",
+                status="SUCCESS",
+                reference_id=refund_reference,
+            )
+        )
+
+    teammate_user_ids: list[int] = []
+    if is_captain_cancel:
+        teammate_user_ids = [p.user_id for p in participants_to_remove if p.user_id != current_user.id]
+
+    cancelled_slots = 0
+    for row in participants_to_remove:
+        if row.slot_no is not None:
+            cancelled_slots += 1
+        db.delete(row)
+
+    db.add(user_wallet)
+    db.commit()
+
+    try:
+        if refund_amount > Decimal("0.00"):
+            add_user_notification(
+                db,
+                current_user.id,
+                "Tournament Cancelled",
+                f"Entry cancelled for '{tournament.title}'. ₹{float(refund_amount):.2f} refunded to your deposit wallet.",
+                "TOURNAMENT",
+            )
+        else:
+            add_user_notification(
+                db,
+                current_user.id,
+                "Tournament Cancelled",
+                f"Entry cancelled for '{tournament.title}'. No entry fee was deducted for your slot.",
+                "TOURNAMENT",
+            )
+
+        if teammate_user_ids:
+            for teammate_id in teammate_user_ids:
+                add_user_notification(
+                    db,
+                    teammate_id,
+                    "Team Entry Cancelled",
+                    f"Your captain cancelled team entry for '{tournament.title}'.",
+                    "TOURNAMENT",
+                )
+    except Exception:
+        pass
+
+    refund_value = float(refund_amount)
+    return {
+        "message": "Tournament entry cancelled successfully",
+        "tournament_id": tournament_id,
+        "cancelled_slots": cancelled_slots,
+        "refund_percentage": 70,
+        "refund_amount": refund_value,
+        "refunded_to": "deposit",
+        "new_wallet_balance": float(get_total_balance(user_wallet)),
     }
 
 
