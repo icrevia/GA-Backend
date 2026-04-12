@@ -37,19 +37,12 @@ from services.wallet_balances import (
 
 router = APIRouter()
 
-SCRATCH_CARD_VALIDITY_DAYS = 30
-SCRATCH_CARDS_PER_CYCLE = 6
-SCRATCH_CARD_REWARD_POOL = (
-    Decimal("0.00"),
-    Decimal("0.00"),
-    Decimal("5.00"),
-    Decimal("10.00"),
-    Decimal("20.00"),
-    Decimal("50.00"),
-    Decimal("100.00"),
-)
+SCRATCH_CARD_VALIDITY_DAYS = 7           # each earned card is valid for 7 days
+MATCHES_PER_SCRATCH_CARD   = 5           # 1 card per 5 completed matches
+
 SCRATCH_CARD_REWARD_TX_TYPE = "SCRATCH_CARD_REWARD"
 SCRATCH_CARD_REVEAL_TX_TYPE = "SCRATCH_CARD_REVEAL"
+
 
 
 class ReferralRewardPolicy(BaseModel):
@@ -197,10 +190,29 @@ def _scratch_cycle_window(current_user: User, now_utc: datetime | None = None) -
     return cycle_start, cycle_end
 
 
-def _scratch_reward_for_card(user_id: int, cycle_key: str, slot_number: int) -> Decimal:
-    seed = f"{user_id}:{cycle_key}:{slot_number}".encode("utf-8")
-    pick = hashlib.sha256(seed).digest()[0] % len(SCRATCH_CARD_REWARD_POOL)
-    return SCRATCH_CARD_REWARD_POOL[pick]
+def _scratch_reward_for_card(user_id: int, card_serial: int) -> Decimal:
+    """98% -> ₹1.00 or ₹1.50 (50/50), 2% -> ₹2.00."""
+    seed = f"sc:{user_id}:{card_serial}".encode()
+    digest = hashlib.sha256(seed).digest()
+    roll = digest[0] % 100          # 0-99
+    if roll < 98:
+        sub = digest[1] % 2         # 0=₹1.00, 1=₹1.50
+        return Decimal("1.00") + Decimal("0.50") * sub
+    return Decimal("2.00")
+
+
+def _count_completed_matches(user_id: int, db: Session) -> int:
+    from models.participant import TournamentParticipant
+    from models.tournament import Tournament
+    return (
+        db.query(TournamentParticipant)
+        .join(Tournament, Tournament.id == TournamentParticipant.tournament_id)
+        .filter(
+            TournamentParticipant.user_id == user_id,
+            Tournament.status == "COMPLETED",
+        )
+        .count()
+    )
 
 
 def _scratch_card_reference(user_id: int, card_id: str) -> str:
@@ -208,23 +220,35 @@ def _scratch_card_reference(user_id: int, card_id: str) -> str:
 
 
 def _build_scratch_card_deck(current_user: User, db: Session) -> ScratchCardDeckResponse:
+    """One scratch card per MATCHES_PER_SCRATCH_CARD completed matches.
+    Each card is valid for SCRATCH_CARD_VALIDITY_DAYS days.
+    """
     now_utc = datetime.utcnow()
-    cycle_start, cycle_end = _scratch_cycle_window(current_user, now_utc)
-    cycle_key = cycle_start.strftime("%Y%m%d")
-    expires_at = cycle_end.isoformat() + "Z"
-    valid_for_days = max((cycle_end.date() - now_utc.date()).days, 0)
+    completed = _count_completed_matches(current_user.id, db)
+    total_earned = completed // MATCHES_PER_SCRATCH_CARD
 
-    planned_cards: list[tuple[str, Decimal, str]] = []
-    for slot in range(1, SCRATCH_CARDS_PER_CYCLE + 1):
-        card_id = f"{cycle_key}-{slot}"
-        reward_amount = to_money(_scratch_reward_for_card(current_user.id, cycle_key, slot))
-        reference_id = _scratch_card_reference(current_user.id, card_id)
-        planned_cards.append((card_id, reward_amount, reference_id))
+    joined_utc = _to_utc_naive(current_user.created_at)
+    anchor = datetime(joined_utc.year, joined_utc.month, joined_utc.day)
 
-    reference_ids = [reference_id for _, _, reference_id in planned_cards]
+    planned_cards: list[tuple[str, Decimal, str, str, int]] = []
+    for serial in range(1, total_earned + 1):
+        card_id  = f"mc-{current_user.id}-{serial}"
+        reward   = to_money(_scratch_reward_for_card(current_user.id, serial))
+        ref_id   = _scratch_card_reference(current_user.id, card_id)
+        # An earned card becomes valid from the day it was earned
+        earned_after_match = serial * MATCHES_PER_SCRATCH_CARD
+        earned_on = anchor + timedelta(days=earned_after_match)
+        expires   = earned_on + timedelta(days=SCRATCH_CARD_VALIDITY_DAYS)
+        valid_days = max((expires.date() - now_utc.date()).days, 0)
+        planned_cards.append((card_id, reward, ref_id, expires.isoformat() + "Z", valid_days))
+
+    # Only show non-expired cards
+    active_planned = [(cid, r, rid, exp, vd) for cid, r, rid, exp, vd in planned_cards if vd > 0]
+
+    reference_ids = [rid for _, _, rid, _, _ in active_planned]
     scratched_refs: set[str] = set()
     if reference_ids:
-        scratched_rows = (
+        rows = (
             db.query(WalletTransaction.reference_id)
             .filter(
                 WalletTransaction.user_id == current_user.id,
@@ -236,24 +260,24 @@ def _build_scratch_card_deck(current_user: User, db: Session) -> ScratchCardDeck
             )
             .all()
         )
-        scratched_refs = {reference for (reference,) in scratched_rows if reference}
+        scratched_refs = {ref for (ref,) in rows if ref}
 
     cards = [
         ScratchCard(
             card_id=card_id,
-            reward_amount=float(reward_amount),
-            is_scratched=reference_id in scratched_refs,
-            valid_for_days=valid_for_days,
+            reward_amount=float(reward),
+            is_scratched=ref_id in scratched_refs,
+            valid_for_days=valid_days,
             expires_at=expires_at,
         )
-        for card_id, reward_amount, reference_id in planned_cards
+        for card_id, reward, ref_id, expires_at, valid_days in active_planned
     ]
-    revealed_count = sum(1 for card in cards if card.is_scratched)
+    revealed = sum(1 for c in cards if c.is_scratched)
 
     return ScratchCardDeckResponse(
         total_cards=len(cards),
-        active_cards=max(len(cards) - revealed_count, 0),
-        revealed_cards=revealed_count,
+        active_cards=max(len(cards) - revealed, 0),
+        revealed_cards=revealed,
         cards=cards,
     )
 
@@ -313,12 +337,32 @@ def get_referral_stats(
     return _build_referral_stats(current_user, db)
 
 
+@router.get("/match-progress")
+def get_match_progress(
+    current_user: User = Depends(get_current_user_referral),
+    db: Session = Depends(get_db),
+):
+    """Returns how many completed matches the user has and how many until the next scratch card."""
+    completed = _count_completed_matches(current_user.id, db)
+    cards_earned = completed // MATCHES_PER_SCRATCH_CARD
+    matches_in_current_cycle = completed % MATCHES_PER_SCRATCH_CARD
+    matches_needed = MATCHES_PER_SCRATCH_CARD - matches_in_current_cycle
+    return {
+        "completed_matches": completed,
+        "cards_earned": cards_earned,
+        "matches_in_current_cycle": matches_in_current_cycle,
+        "matches_needed_for_next_card": matches_needed,
+        "matches_per_card": MATCHES_PER_SCRATCH_CARD,
+    }
+
+
 @router.get("/scratch-cards", response_model=ScratchCardDeckResponse)
 def get_scratch_cards(
     current_user: User = Depends(get_current_user_referral),
     db: Session = Depends(get_db),
 ) -> Any:
     return _build_scratch_card_deck(current_user, db)
+
 
 
 @router.post("/scratch-cards/{card_id}/reveal", response_model=ScratchCardRevealResponse)
