@@ -63,6 +63,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_cycle_key VARCHAR(16)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(255) UNIQUE",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_id INTEGER",
+                # FCM push notification token
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token VARCHAR(512)",
+
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_order_id VARCHAR(255)",
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_payment_id VARCHAR(255)",
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_signature VARCHAR(512)",

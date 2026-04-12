@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List
 from api.deps import get_current_user, get_current_user_profile, get_current_active_admin
@@ -10,6 +11,27 @@ from services.restrictions import get_active_restrictions_for_user, serialize_us
 from services.wallet_balances import get_wallet_breakdown
 
 router = APIRouter()
+
+
+class DeviceTokenRequest(BaseModel):
+    fcm_token: str
+
+
+@router.post("/device-token", status_code=200)
+def save_device_token(
+    payload: DeviceTokenRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Save / refresh the FCM push notification token for this device."""
+    token = payload.fcm_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="fcm_token cannot be empty")
+    current_user.fcm_token = token
+    db.add(current_user)
+    db.commit()
+    return {"message": "Device token saved"}
+
 
 
 def _normalize_phone(phone_number: str) -> str:

@@ -41,5 +41,9 @@ class User(Base):
     daily_spin_used = Column(Integer, nullable=False, default=0, server_default="0")
     daily_spin_cycle_key = Column(String(16), nullable=True)
 
+    # FCM push notification token (refreshed by Android app automatically)
+    fcm_token       = Column(String(512), nullable=True)
+
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
+
