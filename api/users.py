@@ -59,7 +59,31 @@ def send_test_notification(
     success = send_push(target.fcm_token, payload.title, payload.body)
     if success:
         return {"message": f"✅ Test notification sent to user {payload.user_id}"}
-    raise HTTPException(status_code=500, detail="FCM send failed — check server logs and firebase-service-account.json")
+    raise HTTPException(status_code=500, detail="FCM send failed — check Railway logs and FIREBASE_SERVICE_ACCOUNT_JSON env var")
+
+
+class BroadcastNotifRequest(BaseModel):
+    title: str = "📢 GamerzAdda"
+    body: str
+
+
+@router.post("/broadcast-notification", status_code=200)
+def broadcast_notification(
+    payload: BroadcastNotifRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Admin-only: Send a push notification to ALL users with an FCM token."""
+    from services.push_notifications import send_push_to_many
+    tokens = [
+        u.fcm_token for u in
+        db.query(User.fcm_token).filter(User.fcm_token.isnot(None)).all()
+        if u.fcm_token
+    ]
+    if not tokens:
+        raise HTTPException(status_code=400, detail="No users have FCM tokens yet — make sure app is updated and users have logged in")
+    sent = send_push_to_many(tokens, payload.title, payload.body)
+    return {"message": f"✅ Sent to {sent}/{len(tokens)} devices"}
 
 
 def _normalize_phone(phone_number: str) -> str:
