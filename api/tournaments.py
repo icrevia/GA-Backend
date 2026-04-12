@@ -193,8 +193,8 @@ def _build_slots_board(
 
     my_slot_no = None
     if current_user_id is not None:
-        for slot_no, participant in slot_map.items():
-            if participant.user_id == current_user_id:
+        for slot_no, slot_participants in slot_map.items():
+            if any(p.user_id == current_user_id for p in slot_participants):
                 my_slot_no = slot_no
                 break
 
