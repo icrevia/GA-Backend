@@ -1,4 +1,6 @@
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import hashlib
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,8 +28,28 @@ from services.referral_rewards import (
     REFERRAL_LOW_BAND_PROBABILITY,
     REFERRAL_REWARD_TX_TYPE,
 )
+from services.wallet_balances import (
+    WALLET_BUCKET_DEPOSIT,
+    credit_wallet,
+    get_wallet_breakdown,
+    to_money,
+)
 
 router = APIRouter()
+
+SCRATCH_CARD_VALIDITY_DAYS = 30
+SCRATCH_CARDS_PER_CYCLE = 6
+SCRATCH_CARD_REWARD_POOL = (
+    Decimal("0.00"),
+    Decimal("0.00"),
+    Decimal("5.00"),
+    Decimal("10.00"),
+    Decimal("20.00"),
+    Decimal("50.00"),
+    Decimal("100.00"),
+)
+SCRATCH_CARD_REWARD_TX_TYPE = "SCRATCH_CARD_REWARD"
+SCRATCH_CARD_REVEAL_TX_TYPE = "SCRATCH_CARD_REVEAL"
 
 
 class ReferralRewardPolicy(BaseModel):
@@ -71,6 +93,32 @@ class MissionClaimResponse(BaseModel):
     reward_amount: float
     wallet_balance: float
     stats: ReferralStats
+
+
+class ScratchCard(BaseModel):
+    card_id: str
+    reward_amount: float
+    is_scratched: bool
+    valid_for_days: int
+    expires_at: str
+
+
+class ScratchCardDeckResponse(BaseModel):
+    total_cards: int
+    active_cards: int
+    revealed_cards: int
+    cards: List[ScratchCard]
+
+
+class ScratchCardRevealResponse(BaseModel):
+    message: str
+    card_id: str
+    reward_amount: float
+    credited_to: str
+    wallet_balance: float
+    deposit_balance: float
+    winning_balance: float
+    bonus_balance: float
 
 
 def _count_referrals(db: Session, user_id: int) -> int:
@@ -130,6 +178,86 @@ def _build_reward_policy() -> ReferralRewardPolicy:
     )
 
 
+def _to_utc_naive(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.utcnow()
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _scratch_cycle_window(current_user: User, now_utc: datetime | None = None) -> tuple[datetime, datetime]:
+    now = now_utc or datetime.utcnow()
+    joined_utc = _to_utc_naive(current_user.created_at)
+    anchor = datetime(joined_utc.year, joined_utc.month, joined_utc.day)
+    elapsed_days = max((now.date() - anchor.date()).days, 0)
+    cycle_index = elapsed_days // SCRATCH_CARD_VALIDITY_DAYS
+    cycle_start = anchor + timedelta(days=cycle_index * SCRATCH_CARD_VALIDITY_DAYS)
+    cycle_end = cycle_start + timedelta(days=SCRATCH_CARD_VALIDITY_DAYS)
+    return cycle_start, cycle_end
+
+
+def _scratch_reward_for_card(user_id: int, cycle_key: str, slot_number: int) -> Decimal:
+    seed = f"{user_id}:{cycle_key}:{slot_number}".encode("utf-8")
+    pick = hashlib.sha256(seed).digest()[0] % len(SCRATCH_CARD_REWARD_POOL)
+    return SCRATCH_CARD_REWARD_POOL[pick]
+
+
+def _scratch_card_reference(user_id: int, card_id: str) -> str:
+    return f"SCRATCH_CARD_{user_id}_{card_id}"
+
+
+def _build_scratch_card_deck(current_user: User, db: Session) -> ScratchCardDeckResponse:
+    now_utc = datetime.utcnow()
+    cycle_start, cycle_end = _scratch_cycle_window(current_user, now_utc)
+    cycle_key = cycle_start.strftime("%Y%m%d")
+    expires_at = cycle_end.isoformat() + "Z"
+    valid_for_days = max((cycle_end.date() - now_utc.date()).days, 0)
+
+    planned_cards: list[tuple[str, Decimal, str]] = []
+    for slot in range(1, SCRATCH_CARDS_PER_CYCLE + 1):
+        card_id = f"{cycle_key}-{slot}"
+        reward_amount = to_money(_scratch_reward_for_card(current_user.id, cycle_key, slot))
+        reference_id = _scratch_card_reference(current_user.id, card_id)
+        planned_cards.append((card_id, reward_amount, reference_id))
+
+    reference_ids = [reference_id for _, _, reference_id in planned_cards]
+    scratched_refs: set[str] = set()
+    if reference_ids:
+        scratched_rows = (
+            db.query(WalletTransaction.reference_id)
+            .filter(
+                WalletTransaction.user_id == current_user.id,
+                WalletTransaction.status == "SUCCESS",
+                WalletTransaction.reference_id.in_(reference_ids),
+                WalletTransaction.transaction_type.in_(
+                    [SCRATCH_CARD_REWARD_TX_TYPE, SCRATCH_CARD_REVEAL_TX_TYPE]
+                ),
+            )
+            .all()
+        )
+        scratched_refs = {reference for (reference,) in scratched_rows if reference}
+
+    cards = [
+        ScratchCard(
+            card_id=card_id,
+            reward_amount=float(reward_amount),
+            is_scratched=reference_id in scratched_refs,
+            valid_for_days=valid_for_days,
+            expires_at=expires_at,
+        )
+        for card_id, reward_amount, reference_id in planned_cards
+    ]
+    revealed_count = sum(1 for card in cards if card.is_scratched)
+
+    return ScratchCardDeckResponse(
+        total_cards=len(cards),
+        active_cards=max(len(cards) - revealed_count, 0),
+        revealed_cards=revealed_count,
+        cards=cards,
+    )
+
+
 def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
     referral_code = _ensure_referral_code(current_user, db)
     total_referrals = _count_referrals(db, current_user.id)
@@ -183,6 +311,95 @@ def get_referral_stats(
     db: Session = Depends(get_db),
 ) -> Any:
     return _build_referral_stats(current_user, db)
+
+
+@router.get("/scratch-cards", response_model=ScratchCardDeckResponse)
+def get_scratch_cards(
+    current_user: User = Depends(get_current_user_referral),
+    db: Session = Depends(get_db),
+) -> Any:
+    return _build_scratch_card_deck(current_user, db)
+
+
+@router.post("/scratch-cards/{card_id}/reveal", response_model=ScratchCardRevealResponse)
+def reveal_scratch_card(
+    card_id: str,
+    current_user: User = Depends(get_current_user_referral),
+    db: Session = Depends(get_db),
+) -> Any:
+    user = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    deck = _build_scratch_card_deck(user, db)
+    card = next((entry for entry in deck.cards if entry.card_id == card_id), None)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Scratch card not found or expired")
+
+    reference_id = _scratch_card_reference(user.id, card.card_id)
+    existing_tx = (
+        db.query(WalletTransaction)
+        .filter(
+            WalletTransaction.user_id == user.id,
+            WalletTransaction.reference_id == reference_id,
+            WalletTransaction.status == "SUCCESS",
+            WalletTransaction.transaction_type.in_(
+                [SCRATCH_CARD_REWARD_TX_TYPE, SCRATCH_CARD_REVEAL_TX_TYPE]
+            ),
+        )
+        .first()
+    )
+
+    if existing_tx:
+        wallet_breakdown = get_wallet_breakdown(user)
+        reward_amount = max(float(to_money(existing_tx.amount)), 0.0)
+        return {
+            "message": "Scratch card already revealed",
+            "card_id": card.card_id,
+            "reward_amount": reward_amount,
+            "credited_to": "DEPOSIT" if reward_amount > 0 else "NONE",
+            "wallet_balance": wallet_breakdown["balance"],
+            "deposit_balance": wallet_breakdown["deposit_balance"],
+            "winning_balance": wallet_breakdown["winning_balance"],
+            "bonus_balance": wallet_breakdown["bonus_balance"],
+        }
+
+    reward_amount = to_money(card.reward_amount)
+    credited_to = "NONE"
+    tx_type = SCRATCH_CARD_REVEAL_TX_TYPE
+    tx_amount = Decimal("0.00")
+
+    if reward_amount > Decimal("0.00"):
+        credit_wallet(user, reward_amount, WALLET_BUCKET_DEPOSIT)
+        credited_to = "DEPOSIT"
+        tx_type = SCRATCH_CARD_REWARD_TX_TYPE
+        tx_amount = reward_amount
+
+    db.add(
+        WalletTransaction(
+            user_id=user.id,
+            amount=tx_amount,
+            transaction_type=tx_type,
+            status="SUCCESS",
+            reference_id=reference_id,
+            payment_mode="SCRATCH",
+        )
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    wallet_breakdown = get_wallet_breakdown(user)
+    return {
+        "message": "Scratch card revealed",
+        "card_id": card.card_id,
+        "reward_amount": reward_amount,
+        "credited_to": credited_to,
+        "wallet_balance": wallet_breakdown["balance"],
+        "deposit_balance": wallet_breakdown["deposit_balance"],
+        "winning_balance": wallet_breakdown["winning_balance"],
+        "bonus_balance": wallet_breakdown["bonus_balance"],
+    }
 
 
 @router.post("/missions/{mission_key}/claim", response_model=MissionClaimResponse)
