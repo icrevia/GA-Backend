@@ -431,6 +431,7 @@ def create_tournament(
         game_name=data.game_name,
         entry_fee=data.entry_fee,
         prize_pool=data.prize_pool,
+        per_kill_prize=data.per_kill_prize,
         commission_percentage=data.commission_percentage,
         match_type=data.match_type,
         match_time=dt,
@@ -514,42 +515,34 @@ def conclude_tournament(
     if tournament.status == "COMPLETED":
         raise HTTPException(status_code=400, detail="Tournament already completed")
 
-    mode = (tournament.match_type or "SOLO").upper()
-    is_team_match = mode in ("DUO", "SQUAD")
+    per_kill_prize = to_money(getattr(tournament, 'per_kill_prize', 0.0))
 
-    # ── TEAM-BASED CONCLUDE (DUO / SQUAD) ────────────────────────
-    if is_team_match and data.winning_team_code:
-        join_code = data.winning_team_code.strip().upper()
-        winning_participants = db.query(TournamentParticipant).filter(
+    total_paid = Decimal("0.00")
+    top_kills = -1
+    best_player_id = None
+
+    winners_set = set()
+
+    for entry in data.kill_rewards:
+        user_id = entry.user_id
+        kills = entry.kills
+
+        if kills <= 0:
+            continue
+            
+        participant = db.query(TournamentParticipant).filter(
             TournamentParticipant.tournament_id == tournament_id,
-            TournamentParticipant.team_join_code == join_code,
-        ).all()
+            TournamentParticipant.user_id == user_id
+        ).first()
+        if not participant:
+            continue
 
-        if not winning_participants:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No team found with join code '{join_code}' in this tournament"
-            )
+        member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
+        if not member_user:
+            continue
 
-        prize = to_money(tournament.prize_pool)
-        team_size = len(winning_participants)
-        base_share = prize / team_size
-
-        kill_map: dict[int, int] = {entry.user_id: entry.kills for entry in data.kill_rewards}
-        kill_value = Decimal(str(data.kill_value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-        total_paid = Decimal("0.00")
-        first_winner_id = winning_participants[0].user_id
-
-        for p in winning_participants:
-            member_user = db.query(User).filter(User.id == p.user_id).with_for_update().first()
-            if not member_user:
-                continue
-
-            kills = kill_map.get(p.user_id, 0)
-            kill_bonus = kill_value * kills
-            member_prize = to_money(base_share) + kill_bonus
-
+        member_prize = per_kill_prize * kills
+        if member_prize > 0:
             credit_wallet(member_user, member_prize, WALLET_BUCKET_WINNING)
 
             tx = WalletTransaction(
@@ -562,106 +555,50 @@ def conclude_tournament(
             db.add(tx)
             db.add(member_user)
             total_paid += member_prize
+            winners_set.add(user_id)
+
+            if kills > top_kills:
+                top_kills = kills
+                best_player_id = user_id
 
             try:
                 add_user_notification(
                     db, member_user.id,
-                    "CHAMPION! 🏆",
-                    f"Your team won '{tournament.title}'! ₹{member_prize:.2f} credited to your wallet.",
+                    "KILLS REWARD! 🔫",
+                    f"You got {kills} kills in '{tournament.title}'! ₹{member_prize:.2f} credited to your wallet.",
                     "APP"
                 )
             except Exception:
                 pass
 
-        tournament.winner_id = first_winner_id  # track captain as primary winner
-        tournament.status = "COMPLETED"
-        db.add(tournament)
-        db.commit()
-
-        # Notify non-winners
-        try:
-            all_parts = db.query(TournamentParticipant).filter(
-                TournamentParticipant.tournament_id == tournament_id
-            ).all()
-            winning_ids = {p.user_id for p in winning_participants}
-            for p in all_parts:
-                if p.user_id not in winning_ids:
-                    add_user_notification(
-                        db, p.user_id,
-                        "Tournament Completed 🏆",
-                        f"'{tournament.title}' has ended. Better luck next time!",
-                        "APP"
-                    )
-        except Exception:
-            pass
-
-        logger.info(
-            f"Tournament {tournament_id} concluded (TEAM). Winning team: {join_code}, "
-            f"Members: {[p.user_id for p in winning_participants]}, Total paid: ₹{total_paid}"
-        )
-        return {"message": f"Tournament concluded. {team_size} team members paid ₹{total_paid:.2f} total."}
-
-    # ── SOLO CONCLUDE ─────────────────────────────────────────────
-    winner_id = int(data.winner_id) if isinstance(data.winner_id, str) else data.winner_id
-    if not winner_id:
-        raise HTTPException(status_code=422, detail="winner_id or winning_team_code is required")
-
-    # FIXED: Validate winner is actually a participant
-    participant = db.query(TournamentParticipant).filter(
-        TournamentParticipant.tournament_id == tournament_id,
-        TournamentParticipant.user_id == winner_id
-    ).first()
-    if not participant:
-        raise HTTPException(status_code=400, detail="Winner must be a registered participant in this tournament")
-
-    winner = db.query(User).filter(User.id == winner_id).with_for_update().first()
-    if not winner:
-        raise HTTPException(status_code=404, detail="Winner user not found")
-
-    prize = to_money(tournament.prize_pool)
-    credit_wallet(winner, prize, WALLET_BUCKET_WINNING)
-
-    win_tx = WalletTransaction(
-        user_id=winner.id,
-        amount=prize,
-        transaction_type="PRIZE_WIN",
-        status="SUCCESS",
-        reference_id=f"WIN_TRN_{tournament_id}"
-    )
-    db.add(win_tx)
-    db.add(winner)
-    tournament.winner_id = winner_id
-    tournament.status    = "COMPLETED"
+    if best_player_id:
+        tournament.winner_id = best_player_id
+        
+    tournament.status = "COMPLETED"
     db.add(tournament)
     db.commit()
 
+    # Notify non-winners
     try:
-        add_user_notification(
-            db,
-            winner.id,
-            "CHAMPION! 🏆",
-            f"You won ₹{prize} in {tournament.title}! Check your wallet.",
-            "APP"
-        )
-    except Exception:
-        pass
-
-    logger.info(f"Tournament {tournament_id} concluded. Winner: {winner_id}, Prize: ₹{prize}")
-    
-    # BROADCAST TO ALL PARTICIPANTS
-    try:
-        parts = db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == tournament_id).all()
-        for p in parts:
-            if p.user_id != winner_id: # Winner already gets a notification
+        all_parts = db.query(TournamentParticipant).filter(
+            TournamentParticipant.tournament_id == tournament_id
+        ).all()
+        for p in all_parts:
+            if p.user_id not in winners_set:
                 add_user_notification(
                     db, p.user_id,
                     "Tournament Completed 🏆",
-                    f"'{tournament.title}' has ended. Check the results in the app. Better luck next time!",
+                    f"'{tournament.title}' has ended. Better luck next time!",
                     "APP"
                 )
-    except Exception: pass
+    except Exception:
+        pass
 
-    return {"message": f"Tournament concluded. Winner paid ₹{prize}"}
+    logger.info(
+        f"Tournament {tournament_id} concluded. "
+        f"Total prize paid: ₹{total_paid} based on per_kill_prize ₹{per_kill_prize}"
+    )
+    return {"message": f"Tournament concluded. Paid a total of ₹{total_paid:.2f} based on kills."}
 
 
 # ─────────────────────────────────────────────────────────────────

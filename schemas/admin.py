@@ -51,27 +51,21 @@ class TournamentRoomUpdate(BaseModel):
     room_password: Optional[str] = None
 
 class KillRewardEntry(BaseModel):
-    """Per-member kill data for DUO/SQUAD prize distribution."""
+    """Per-member kill data for prize distribution."""
     user_id: int
     kills: int = Field(0, ge=0)
 
-
 class TournamentConclude(BaseModel):
-    # ── SOLO: provide winner_id only ──────────────────────────────
-    winner_id: Optional[Union[int, str]] = None
-
-    # ── DUO / SQUAD: provide winning_team_code + kill data ────────
-    winning_team_code: Optional[str] = None  # 6-char join code of the winning team
-    kill_value: float = Field(0.0, ge=0)     # ₹ per kill (e.g. 10.0)
-    kill_rewards: list[KillRewardEntry] = []  # kills per member
+    kill_rewards: list[KillRewardEntry] = []
 
 class TournamentCreateAdmin(BaseModel):
     title: str
     game_name: str
     entry_fee: float
     prize_pool: float
+    per_kill_prize: float = 0.0
     commission_percentage: float = Field(10.0, ge=0.0, le=100.0)
-    match_type: str
+    match_type: str = "SOLO"
     match_time: str
     game_image_url: Optional[str] = None
     max_slots: Optional[int] = 100

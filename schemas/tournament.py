@@ -13,6 +13,7 @@ class TournamentBase(BaseModel):
     game_name: str
     entry_fee: float
     prize_pool: float
+    per_kill_prize: float = 0.0
     commission_percentage: Optional[float] = 10.0
     match_time: datetime
     match_type: str = "SOLO"

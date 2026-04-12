@@ -14,6 +14,7 @@ class Tournament(Base):
     entry_fee            = Column(Numeric(precision=12, scale=2), nullable=False)
     prize_pool           = Column(Numeric(precision=12, scale=2), nullable=False)
     commission_percentage = Column(Numeric(precision=5,  scale=2), default=10.00)
+    per_kill_prize       = Column(Numeric(precision=12, scale=2), default=0.00, server_default="0.0")
 
     match_time = Column(DateTime(timezone=True), nullable=False)
 
