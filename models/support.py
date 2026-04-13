@@ -37,18 +37,22 @@ class ChatMessage(Base):
     __table_args__ = (
         CheckConstraint("length(content) <= 1000", name="ck_chat_messages_content_len"),
         CheckConstraint("(media_type IS NULL) OR (media_type IN ('photo', 'video'))", name="ck_chat_messages_media_type"),
-        Index("ix_chat_messages_session_timestamp", "session_id", "timestamp"),
-        Index("ix_chat_messages_unread", "session_id", "is_admin", "is_read"),
+        Index("ix_chat_messages_thread_timestamp", "thread_user_id", "timestamp"),
+        Index("ix_chat_messages_status", "thread_user_id", "is_admin", "is_read", "is_delivered"),
         Index("ix_chat_messages_media_expires_at", "media_expires_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(Integer, ForeignKey("chat_sessions.id"))
-    sender_id = Column(Integer, ForeignKey("users.id"))
+    session_id = Column(Integer, ForeignKey("chat_sessions.id"), nullable=True)
+    thread_user_id = Column(Integer, ForeignKey("users.id"), index=True) # The user whose thread this is
+    sender_id = Column(Integer, ForeignKey("users.id"), index=True)
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=_utcnow_naive)
     is_admin = Column(Boolean, default=False)
     is_read = Column(Boolean, default=False)
+    read_at = Column(DateTime, nullable=True)
+    is_delivered = Column(Boolean, default=False)
+    delivered_at = Column(DateTime, nullable=True)
     media_type = Column(String(16), nullable=True)
     media_url = Column(Text, nullable=True)
     media_path = Column(Text, nullable=True)
@@ -57,3 +61,5 @@ class ChatMessage(Base):
     media_expires_at = Column(DateTime, nullable=True)
 
     session = relationship("ChatSession", back_populates="messages")
+    thread_user = relationship("User", foreign_keys=[thread_user_id])
+    sender = relationship("User", foreign_keys=[sender_id])
