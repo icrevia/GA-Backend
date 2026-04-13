@@ -23,13 +23,18 @@ def save_device_token(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Save / refresh the FCM push notification token for this device."""
+    """Save / refresh the FCM push notification token for this device with redundant write protection."""
     token = payload.fcm_token.strip()
     if not token:
         raise HTTPException(status_code=400, detail="fcm_token cannot be empty")
-    current_user.fcm_token = token
-    db.add(current_user)
-    db.commit()
+    
+    # Optimization: Only write to DB if the token actually changed.
+    # This prevents an expensive DB write on every app startup.
+    if current_user.fcm_token != token:
+        current_user.fcm_token = token
+        db.add(current_user)
+        db.commit()
+    
     return {"message": "Device token saved"}
 
 
@@ -111,7 +116,16 @@ def read_user_me(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    active_restrictions = get_active_restrictions_for_user(db, current_user.id)
+    # Optimization: Use pre-loaded restrictions from memory (joinedload) instead of a new DB call.
+    from services.restrictions import is_restriction_currently_active, serialize_user_restriction
+    from datetime import datetime
+    now_value = datetime.utcnow()
+    
+    active_restrictions = [
+        r for r in getattr(current_user, "restrictions", [])
+        if is_restriction_currently_active(r, now_value)
+    ]
+    
     wallet_breakdown = get_wallet_breakdown(current_user)
     return {
         "id": current_user.id,
