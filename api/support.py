@@ -401,6 +401,7 @@ async def get_sessions(
             latest_message_sq.c.timestamp.label("last_timestamp"),
             func.coalesce(unread_sq.c.unread, 0).label("unread"),
         )
+        .distinct(ChatSession.user_id)
         .join(User, User.id == ChatSession.user_id)
         .outerjoin(attended_admin, attended_admin.id == ChatSession.attended_by_admin_id)
         .outerjoin(blocked_admin, blocked_admin.id == ChatSession.blocked_by_admin_id)
@@ -411,6 +412,7 @@ async def get_sessions(
         )
         .outerjoin(unread_sq, unread_sq.c.session_id == ChatSession.id)
         .order_by(
+            ChatSession.user_id,
             ChatSession.status == "ACTIVE",  # Active sessions first
             func.coalesce(latest_message_sq.c.timestamp, ChatSession.created_at).desc()
         )
@@ -577,6 +579,14 @@ async def send_message(
     if not msg_data.get("timestamp"):
         msg_data["timestamp"] = now_ist().isoformat()
 
+    escalation_data = {
+        "type": "support_escalation",
+        "session_id": session.id,
+        "user_id": session.user_id,
+        "issue_type": msg_data.get("issue_type") or (normalized_issue_type if 'normalized_issue_type' in locals() else issue_type),
+        "preview": msg_data.get("content", ""),
+        "timestamp": msg_data["timestamp"],
+    }
     await notify_support_message(db, session.user_id, msg_data)
     await notify_admin_escalation(db, escalation_data, msg_data=msg_data)
 
