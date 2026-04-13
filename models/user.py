@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Numeric, ForeignKey
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from core.database import Base
 
@@ -14,6 +15,9 @@ class User(Base):
 
     profile_pic     = Column(String, nullable=True)
     bio             = Column(String(30), nullable=True)
+
+    # Relationships
+    restrictions = relationship("UserRestriction", primaryjoin="User.id == UserRestriction.user_id", foreign_keys="UserRestriction.user_id")
 
 
     # Game IDs

@@ -239,9 +239,14 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         request_id = str(uuid.uuid4())[:8]
         request.state.request_id = request_id
         start = time.perf_counter()
+        
+        # Add a flag to track if this is a heavy request
         response = await call_next(request)
+        
         duration_ms = (time.perf_counter() - start) * 1000
         response.headers["X-Request-ID"] = request_id
+        response.headers["X-Process-Time-MS"] = f"{duration_ms:.2f}"
+        
         logger.info(f"rid={request_id} {request.method} {request.url.path} {response.status_code} {duration_ms:.1f}ms")
         return response
 

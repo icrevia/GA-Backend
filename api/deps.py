@@ -1,3 +1,4 @@
+from datetime import datetime
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -45,11 +46,15 @@ def _enforce_full_app_restriction(db: Session, user: User) -> None:
     if user.role == "ADMIN":
         return
 
-    active_full_app_restrictions = get_active_restrictions_for_user(
-        db,
-        user.id,
-        scope=RESTRICTION_SCOPE_FULL_APP,
-    )
+    # Use pre-loaded restrictions from memory (joinedload)
+    from services.restrictions import is_restriction_currently_active, RESTRICTION_SCOPE_FULL_APP
+    now_value = datetime.utcnow()
+    
+    active_full_app_restrictions = [
+        r for r in getattr(user, "restrictions", [])
+        if r.scope == RESTRICTION_SCOPE_FULL_APP and is_restriction_currently_active(r, now_value)
+    ]
+
     if active_full_app_restrictions:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -61,12 +66,18 @@ def _enforce_page_restriction(db: Session, user: User, page_key: str) -> None:
     if user.role == "ADMIN":
         return
 
-    active_page_restrictions = get_active_restrictions_for_user(
-        db,
-        user.id,
-        scope=RESTRICTION_SCOPE_PAGE,
-        page_key=page_key,
-    )
+    # Use pre-loaded restrictions from memory (joinedload)
+    from services.restrictions import is_restriction_currently_active, RESTRICTION_SCOPE_PAGE, normalize_restriction_page_key
+    now_value = datetime.utcnow()
+    normalized_key = normalize_restriction_page_key(page_key)
+    
+    active_page_restrictions = [
+        r for r in getattr(user, "restrictions", [])
+        if r.scope == RESTRICTION_SCOPE_PAGE 
+        and normalize_restriction_page_key(r.page_key) == normalized_key 
+        and is_restriction_currently_active(r, now_value)
+    ]
+
     if active_page_restrictions:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -107,6 +118,8 @@ async def _enforce_page_restriction_async(db: AsyncSession, user: User, page_key
         )
 
 
+from sqlalchemy.orm import Session, joinedload
+
 def get_current_user(
     db: Session = Depends(get_db_sync),
     token: str | None = Depends(oauth2_scheme),
@@ -124,7 +137,13 @@ def get_current_user(
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    # Optimization: Eagerly load active restrictions to avoid extra DB roundtrips later.
+    user = (
+        db.query(User)
+        .options(joinedload(User.restrictions))
+        .filter(User.id == int(user_id))
+        .first()
+    )
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
@@ -132,8 +151,6 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
 
     # ── Token version check — instant revocation ──────────────────────────────
-    # When a user is banned or force-logged-out, their token_version is incremented.
-    # Any token issued before that increment carries the old version and is rejected here.
     token_version = payload.get("tv", 0)
     db_token_version = getattr(user, "token_version", 0) or 0
     if int(token_version) != int(db_token_version):
@@ -162,7 +179,14 @@ async def get_current_user_async(
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
 
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    # Optimization: Eagerly load active restrictions to avoid extra DB roundtrips later.
+    from sqlalchemy.orm import selectinload
+    stmt = (
+        select(User)
+        .options(selectinload(User.restrictions))
+        .where(User.id == int(user_id))
+    )
+    result = await db.execute(stmt)
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")

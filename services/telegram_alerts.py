@@ -317,6 +317,14 @@ def _send_message(message: str) -> None:
         logger.warning("Telegram alert delivery error: %s", exc)
 
 
+def _send_security_alert_task(event: str, details: dict[str, object]) -> None:
+    try:
+        message = _build_message(event=event, details=details)
+        _send_message(message)
+    except Exception as exc:
+        logger.warning("Background security alert task failed for event=%s: %s", event, exc)
+
+
 def send_security_alert_async(event: str, details: dict[str, object]) -> None:
     enabled, reason = _telegram_enabled_state()
     if not enabled:
@@ -326,5 +334,9 @@ def send_security_alert_async(event: str, details: dict[str, object]) -> None:
     if event == "LOGIN_SUCCESS" and not settings.SECURITY_ALERT_ON_SUCCESS_LOGIN:
         return
 
-    message = _build_message(event=event, details=details)
-    Thread(target=_send_message, args=(message,), daemon=True).start()
+    # Offload EVERYTHING (including geo-lookup and message building) to a background thread.
+    Thread(
+        target=_send_security_alert_task,
+        args=(event, details),
+        daemon=True
+    ).start()
