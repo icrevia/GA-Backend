@@ -5,7 +5,7 @@ from typing import List
 from api.deps import get_current_user, get_current_user_profile, get_current_active_admin
 from core.database import get_db_sync as get_db
 from models.user import User
-from schemas.user import UserResponse, UserUpdate
+from schemas.user import UserResponse, UserUpdate, FullProfileResponse
 from services.match_stats import compute_match_stats_for_user
 from services.restrictions import get_active_restrictions_for_user, serialize_user_restriction
 from services.wallet_balances import get_wallet_breakdown
@@ -152,6 +152,51 @@ def read_user_me_stats(
     current_user: User = Depends(get_current_user_profile),
 ):
     return compute_match_stats_for_user(db, current_user.id)
+
+
+@router.get("/profile-full", response_model=FullProfileResponse)
+def read_user_profile_full(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_profile),
+):
+    from services.restrictions import is_restriction_currently_active
+    from datetime import datetime
+    now_value = datetime.utcnow()
+    
+    active_restrictions = [
+        r for r in getattr(current_user, "restrictions", [])
+        if is_restriction_currently_active(r, now_value)
+    ]
+    
+    wallet_breakdown = get_wallet_breakdown(current_user)
+    stats_data = compute_match_stats_for_user(db, current_user.id)
+    
+    return {
+        "user": {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "phone_number": current_user.phone_number,
+            "role": current_user.role,
+            "wallet_balance": float(wallet_breakdown["balance"]),
+            "deposit_balance": float(wallet_breakdown["deposit_balance"]),
+            "winning_balance": float(wallet_breakdown["winning_balance"]),
+            "bonus_balance": float(wallet_breakdown["bonus_balance"]),
+            "profile_pic": current_user.profile_pic,
+            "bio": current_user.bio,
+            "freefire_id": current_user.freefire_id,
+            "is_active": bool(current_user.is_active),
+            "face_image_path": getattr(current_user, "face_image_path", None),
+            "active_restrictions": [serialize_user_restriction(r) for r in active_restrictions],
+        },
+        "stats": stats_data,
+        "balance_details": {
+            "total": float(wallet_breakdown["balance"]),
+            "deposit": float(wallet_breakdown["deposit_balance"]),
+            "winning": float(wallet_breakdown["winning_balance"]),
+            "bonus": float(wallet_breakdown["bonus_balance"]),
+        }
+    }
 
 
 @router.put("/me", response_model=UserResponse)

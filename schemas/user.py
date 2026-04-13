@@ -63,6 +63,12 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class FullProfileResponse(BaseModel):
+    user: UserResponse
+    stats: dict
+    balance_details: dict
+
+
 class UserUpdate(BaseModel):
     username: Optional[str] = Field(None, min_length=3, max_length=32)
     email: Optional[EmailStr] = None
