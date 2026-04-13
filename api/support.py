@@ -330,6 +330,25 @@ async def admin_reply(
     await notify_support_message(db, req.user_id, event, is_to_admin=False)
     return {"status": "success", "message": _serialize_msg(new_msg)}
 
+@router.post("/admin/attend")
+async def admin_attend(req: AdminStatusRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user_async)):
+    if current_user.role != "ADMIN": raise HTTPException(status_code=403)
+    meta = await _get_init_support_metadata(db, req.user_id)
+    meta.attended_by_admin_id = current_user.id
+    meta.requires_admin = False
+    await db.commit()
+    return {"status": "attended"}
+
+@router.post("/admin/end")
+async def admin_end(req: AdminStatusRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user_async)):
+    if current_user.role != "ADMIN": raise HTTPException(status_code=403)
+    meta = await _get_init_support_metadata(db, req.user_id)
+    meta.requires_admin = False
+    meta.issue_type = None
+    # Optionally we could send a message: "Chat marked as resolved by admin."
+    await db.commit()
+    return {"status": "resolved"}
+
 @router.post("/admin/block")
 async def admin_block(req: AdminStatusRequest, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user_async)):
     if current_user.role != "ADMIN": raise HTTPException(status_code=403)
