@@ -357,11 +357,9 @@ async def get_sessions(
             ChatMessage.session_id.label("session_id"),
             ChatMessage.content.label("content"),
             ChatMessage.timestamp.label("timestamp"),
-            func.row_number().over(
-                partition_by=ChatMessage.session_id,
-                order_by=(ChatMessage.timestamp.desc(), ChatMessage.id.desc()),
-            ).label("rn"),
         )
+        .distinct(ChatMessage.session_id)
+        .order_by(ChatMessage.session_id, ChatMessage.timestamp.desc(), ChatMessage.id.desc())
         .subquery()
     )
 
@@ -407,10 +405,7 @@ async def get_sessions(
         .outerjoin(ended_by_user, ended_by_user.id == ChatSession.ended_by_user_id)
         .outerjoin(
             latest_message_sq,
-            and_(
-                latest_message_sq.c.session_id == ChatSession.id,
-                latest_message_sq.c.rn == 1,
-            ),
+            latest_message_sq.c.session_id == ChatSession.id,
         )
         .outerjoin(unread_sq, unread_sq.c.session_id == ChatSession.id)
         .order_by(
