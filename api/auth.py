@@ -178,48 +178,59 @@ def _generate_admin_login_otp(length: int = 4) -> str:
 
 async def _send_admin_login_otp_to_telegram(*, otp_code: str, phone: str, identifier: str) -> None:
     bot_token = _clean_env_value(settings.TELEGRAM_BOT_TOKEN)
-    chat_id = _resolve_admin_login_chat_id()
+    chat_ids_raw = _resolve_admin_login_chat_id()
 
     if not bot_token:
         raise RuntimeError("Admin OTP bot token is missing. Set TELEGRAM_BOT_TOKEN in Railway.")
-    if not chat_id:
+    if not chat_ids_raw:
         raise RuntimeError(
             "Admin Telegram chat ID is missing. Set ADMIN_LOGIN_TELEGRAM_CHAT_ID in Railway."
         )
 
+    chat_ids = [cid.strip() for cid in chat_ids_raw.replace(";", ",").split(",") if cid.strip()]
+    if not chat_ids:
+        raise RuntimeError("No valid chat IDs found in ADMIN_LOGIN_TELEGRAM_CHAT_ID.")
+
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": (
-            "GamerzAdda Admin Login OTP\n"
-            f"OTP: {otp_code}\n"
-            "Valid for 5 minutes.\n"
-            f"Identifier: {identifier or '--'}\n"
-            f"Phone: {phone}\n"
-            "Do not share this code."
-        ),
-        "disable_web_page_preview": True,
-    }
+    text_content = (
+        "GamerzAdda Admin Login OTP\n"
+        f"OTP: {otp_code}\n"
+        "Valid for 5 minutes.\n"
+        f"Identifier: {identifier or '--'}\n"
+        f"Phone: {phone}\n"
+        "Do not share this code."
+    )
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.post(url, json=payload)
+        errors = []
+        for chat_id in chat_ids:
+            payload = {
+                "chat_id": chat_id,
+                "text": text_content,
+                "disable_web_page_preview": True,
+            }
+            try:
+                response = await client.post(url, json=payload)
+                if response.status_code >= 400:
+                    logger.error(
+                        "Admin OTP Telegram send failed for %s. status=%s body=%s",
+                        chat_id,
+                        response.status_code,
+                        (response.text or "")[:240],
+                    )
+                    errors.append(f"Failed for {chat_id}")
+                    continue
+                
+                body = response.json()
+                if isinstance(body, dict) and body.get("ok") is False:
+                    logger.error("Admin OTP Telegram rejected by API for %s: %s", chat_id, body)
+                    errors.append(f"Rejected for {chat_id}")
+            except Exception as e:
+                logger.error("Admin OTP Telegram send error for %s: %s", chat_id, e)
+                errors.append(f"Network err for {chat_id}")
 
-    if response.status_code >= 400:
-        logger.error(
-            "Admin OTP Telegram send failed. status=%s body=%s",
-            response.status_code,
-            (response.text or "")[:240],
-        )
-        raise RuntimeError("Failed to send OTP on Telegram")
-
-    try:
-        body = response.json()
-    except Exception:
-        body = {}
-
-    if isinstance(body, dict) and body.get("ok") is False:
-        logger.error("Admin OTP Telegram rejected by API: %s", body)
-        raise RuntimeError("Failed to send OTP on Telegram")
+        if len(errors) >= len(chat_ids):
+            raise RuntimeError("Failed to send OTP to any Telegram chat ID")
 
 
 async def _issue_admin_login_otp(*, identifier: str, phone: str) -> None:
@@ -587,12 +598,13 @@ async def verify_otp(
     client_ip = extract_client_ip(request)
     device_name = _resolve_login_device(request)
 
-    await manager.force_logout_user(
-        db_user.id,
-        reason=f"Account logged in from {device_name} (IP {client_ip})."
-    )
+    if db_user.role != "ADMIN":
+        await manager.force_logout_user(
+            db_user.id,
+            reason=f"Account logged in from {device_name} (IP {client_ip})."
+        )
 
-    db_user.token_version = (getattr(db_user, "token_version", 0) or 0) + 1
+        db_user.token_version = (getattr(db_user, "token_version", 0) or 0) + 1
     db_user.last_login_ip = (client_ip or "")[:64] or None
     db_user.last_login_device = device_name
     db_user.last_login_at = datetime.utcnow()
