@@ -18,6 +18,10 @@ class PaymentInitResponse(BaseModel):
     pay0_init: Optional[Pay0InitResponse] = None
 
 
+class CancelPaymentRequest(BaseModel):
+    txnid: str
+
+
 class WithdrawalRequest(BaseModel):
     amount: Decimal
     upi_id: str

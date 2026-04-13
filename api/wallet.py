@@ -27,6 +27,7 @@ from schemas.wallet import (
     WithdrawUpiAccountListRequest,
     WithdrawUpiAccountResponse,
     SpinPlayResponse,
+    CancelPaymentRequest,
 )
 from core.config import settings
 from services.notifications import add_user_notification
@@ -703,6 +704,26 @@ def get_payment_status(
 # ─────────────────────────────────────────────────────────────────
 # Withdrawal Logic
 # ─────────────────────────────────────────────────────────────────
+
+@router.post("/cancel")
+def cancel_payment(
+    req: CancelPaymentRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_wallet)
+):
+    tx = db.query(WalletTransaction).filter(
+        WalletTransaction.reference_id == req.txnid,
+        WalletTransaction.user_id == current_user.id
+    ).with_for_update().first()
+    
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+        
+    if tx.status == "PENDING":
+        tx.status = "FAILED"
+        tx.failure_reason = "Cancelled by user"
+        db.commit()
+    return {"status": tx.status}
 
 @router.post("/withdraw")
 def request_withdrawal(
