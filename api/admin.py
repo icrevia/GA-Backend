@@ -410,8 +410,28 @@ def list_tournaments(
     current_user: User = Depends(get_current_active_admin)
 ):
     from api.tournaments import _with_count
-    tournaments = db.query(Tournament).order_by(Tournament.created_at.desc()).all()
-    return [_with_count(t, db) for t in tournaments]
+    
+    joined_subq = (
+        db.query(
+            TournamentParticipant.tournament_id,
+            func.count(func.distinct(TournamentParticipant.slot_no)).label('j_count')
+        )
+        .group_by(TournamentParticipant.tournament_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(Tournament, func.coalesce(joined_subq.c.j_count, 0))
+        .outerjoin(joined_subq, Tournament.id == joined_subq.c.tournament_id)
+        .order_by(Tournament.created_at.desc())
+        .all()
+    )
+
+    result = []
+    for t, count in rows:
+        t.joined_count = count
+        result.append(t)
+    return result
 
 
 @router.post("/tournaments", response_model=TournamentResponse)

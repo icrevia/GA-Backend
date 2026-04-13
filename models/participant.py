@@ -1,6 +1,5 @@
 import json
-
-from sqlalchemy import Column, Integer, Boolean, ForeignKey, DateTime, String, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, Boolean, ForeignKey, DateTime, String, Text, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from core.database import Base
@@ -9,6 +8,8 @@ class TournamentParticipant(Base):
     __tablename__ = "tournament_participants"
     __table_args__ = (
         UniqueConstraint("tournament_id", "user_id", name="uq_tournament_participant_user"),
+        Index("uq_tournament_participant_slot_idx", "tournament_id", "slot_no", unique=True, postgresql_where=text("slot_no IS NOT NULL")),
+        Index("ix_tp_team_join_code", "team_join_code", postgresql_where=text("team_join_code IS NOT NULL")),
     )
 
     id = Column(Integer, primary_key=True, index=True)

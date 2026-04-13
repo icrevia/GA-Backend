@@ -38,6 +38,7 @@ class ChatMessage(Base):
         CheckConstraint("length(content) <= 1000", name="ck_chat_messages_content_len"),
         CheckConstraint("(media_type IS NULL) OR (media_type IN ('photo', 'video'))", name="ck_chat_messages_media_type"),
         Index("ix_chat_messages_session_timestamp", "session_id", "timestamp"),
+        Index("ix_chat_messages_unread", "session_id", "is_admin", "is_read"),
         Index("ix_chat_messages_media_expires_at", "media_expires_at"),
     )
 

@@ -69,14 +69,22 @@ def ensure_wallet_buckets(user: User) -> None:
     bonus = _bucket_value(user, WALLET_BUCKET_BONUS)
 
     # Backward compatibility for pre-bucket users: preserve legacy total in deposit bucket.
-    legacy_total = to_money(getattr(user, "wallet_balance", ZERO_MONEY))
     if legacy_total > ZERO_MONEY and deposit == ZERO_MONEY and winning == ZERO_MONEY and bonus == ZERO_MONEY:
         deposit = legacy_total
 
-    _set_bucket_value(user, WALLET_BUCKET_DEPOSIT, deposit)
-    _set_bucket_value(user, WALLET_BUCKET_WINNING, winning)
-    _set_bucket_value(user, WALLET_BUCKET_BONUS, bonus)
-    sync_wallet_total(user)
+    changes = False
+    if _bucket_value(user, WALLET_BUCKET_DEPOSIT) != deposit:
+        _set_bucket_value(user, WALLET_BUCKET_DEPOSIT, deposit)
+        changes = True
+    if _bucket_value(user, WALLET_BUCKET_WINNING) != winning:
+        _set_bucket_value(user, WALLET_BUCKET_WINNING, winning)
+        changes = True
+    if _bucket_value(user, WALLET_BUCKET_BONUS) != bonus:
+        _set_bucket_value(user, WALLET_BUCKET_BONUS, bonus)
+        changes = True
+
+    if changes or to_money(getattr(user, "wallet_balance", ZERO_MONEY)) != (deposit + winning + bonus):
+        sync_wallet_total(user)
 
 
 def get_wallet_breakdown(user: User) -> dict[str, Decimal]:

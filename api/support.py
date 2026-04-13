@@ -413,7 +413,10 @@ async def get_sessions(
             ),
         )
         .outerjoin(unread_sq, unread_sq.c.session_id == ChatSession.id)
-        .order_by(func.coalesce(latest_message_sq.c.timestamp, ChatSession.created_at).desc())
+        .order_by(
+            ChatSession.status == "ACTIVE",  # Active sessions first
+            func.coalesce(latest_message_sq.c.timestamp, ChatSession.created_at).desc()
+        )
     )
     rows = rows_result.all()
 

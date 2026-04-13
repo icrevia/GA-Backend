@@ -1,10 +1,13 @@
-from sqlalchemy import Column, Integer, String, Numeric, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, Boolean, Index
 from sqlalchemy.sql import func
 from core.database import Base
 
 
 class Tournament(Base):
     __tablename__ = "tournaments"
+    __table_args__ = (
+        Index("ix_tournaments_status_match_time", "status", "match_time"),
+    )
 
     id          = Column(Integer, primary_key=True, index=True)
     title       = Column(String, nullable=False)

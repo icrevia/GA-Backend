@@ -351,10 +351,29 @@ def get_upcoming_tournaments(
     db: Session = Depends(get_db),
     _current_user: User = Depends(get_current_user_tournaments),
 ):
-    tournaments = db.query(Tournament).filter(
-        or_(Tournament.status == "UPCOMING", Tournament.status == "LIVE")
-    ).order_by(Tournament.match_time.asc()).all()
-    return _attach_joined_counts(tournaments, db)
+    joined_subq = (
+        db.query(
+            TournamentParticipant.tournament_id,
+            func.count(func.distinct(TournamentParticipant.slot_no)).label('j_count')
+        )
+        .group_by(TournamentParticipant.tournament_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(Tournament, func.coalesce(joined_subq.c.j_count, 0))
+        .outerjoin(joined_subq, Tournament.id == joined_subq.c.tournament_id)
+        .filter(or_(Tournament.status == "UPCOMING", Tournament.status == "LIVE"))
+        .order_by(Tournament.match_time.asc())
+        .all()
+    )
+
+    result = []
+    for t, count in rows:
+        t.joined_count = count
+        result.append(t)
+        
+    return result
 
 
 @router.post("/", response_model=TournamentResponse)
@@ -1002,22 +1021,33 @@ def get_my_tournaments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_tournaments)
 ):
-    participants = db.query(TournamentParticipant).filter(
-        TournamentParticipant.user_id == current_user.id
-    ).all()
-    tournament_ids = [p.tournament_id for p in participants]
+    joined_subq = (
+        db.query(
+            TournamentParticipant.tournament_id,
+            func.count(func.distinct(TournamentParticipant.slot_no)).label('j_count')
+        )
+        .group_by(TournamentParticipant.tournament_id)
+        .subquery()
+    )
 
-    if not tournament_ids:
-        return []
+    rows = (
+        db.query(Tournament, func.coalesce(joined_subq.c.j_count, 0))
+        .join(TournamentParticipant, Tournament.id == TournamentParticipant.tournament_id)
+        .outerjoin(joined_subq, Tournament.id == joined_subq.c.tournament_id)
+        .filter(TournamentParticipant.user_id == current_user.id)
+        .order_by(Tournament.match_time.desc())
+        .all()
+    )
 
-    tournaments = db.query(Tournament).filter(Tournament.id.in_(tournament_ids)).all()
-
-    for t in tournaments:
+    result = []
+    for t, count in rows:
         if t.status != "LIVE":
-            t.room_id       = None
+            t.room_id = None
             t.room_password = None
+        t.joined_count = count
+        result.append(t)
 
-    return _attach_joined_counts(tournaments, db)
+    return result
 
 
 @router.get("/{tournament_id}", response_model=TournamentResponse)
