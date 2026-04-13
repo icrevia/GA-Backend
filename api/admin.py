@@ -571,7 +571,7 @@ def conclude_tournament(
                 amount=member_prize,
                 transaction_type="PRIZE_WIN",
                 status="SUCCESS",
-                reference_id=f"WIN_TRN_{tournament_id}_{member_user.id}"
+                reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}"
             )
             db.add(tx)
             db.add(member_user)
@@ -659,7 +659,7 @@ def refund_tournament(
                 amount=entry_fee,
                 transaction_type="REFUND",
                 status="SUCCESS",
-                reference_id=f"REFUND_{tournament_id}_{user.id}"
+                reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}"
             )
             db.add(ref_tx)
             db.add(user)
@@ -2070,7 +2070,7 @@ def adjust_user_funds(
         amount=decimal_amount,
         transaction_type="ADMIN_ADJUSTMENT",
         status="SUCCESS",
-        reference_id=f"ADJ_{uuid.uuid4().hex[:8].upper()}"
+        reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}"
     )
     db.add(tx)
     db.add(user)
@@ -2097,24 +2097,51 @@ def update_user_wallet_buckets(
     # Keep existing migration-safe behavior before direct bucket assignment.
     ensure_wallet_buckets(user)
 
+    old_deposit = float(user.deposit_balance or 0)
+    old_winning = float(user.winning_balance or 0)
+    old_bonus = float(user.bonus_balance or 0)
+
     user.deposit_balance = to_money(payload.deposit_balance)
     user.winning_balance = to_money(payload.winning_balance)
     user.bonus_balance = to_money(payload.bonus_balance)
     sync_wallet_total(user)
 
+    new_deposit = float(user.deposit_balance or 0)
+    new_winning = float(user.winning_balance or 0)
+    new_bonus = float(user.bonus_balance or 0)
+
     reason = (payload.reason or "Manual wallet bucket update").strip()[:200]
-    total_amount = to_money(user.wallet_balance)
+
+    # Build per-bucket change summaries for user-facing display
+    def _change_str(name: str, old: float, new: float) -> str:
+        diff = new - old
+        if diff > 0:
+            return f"{name}: +₹{diff:.2f}"
+        elif diff < 0:
+            return f"{name}: -₹{abs(diff):.2f}"
+        return f"{name}: no change"
+
+    changes = []
+    if new_deposit != old_deposit:
+        changes.append(_change_str("Deposit", old_deposit, new_deposit))
+    if new_winning != old_winning:
+        changes.append(_change_str("Winning", old_winning, new_winning))
+    if new_bonus != old_bonus:
+        changes.append(_change_str("Bonus", old_bonus, new_bonus))
+
+    # Net amount for the transaction record: positive = net credit, negative = net debit
+    net_change = (new_deposit + new_winning + new_bonus) - (old_deposit + old_winning + old_bonus)
+    total_amount = to_money(net_change)
+
     tx = WalletTransaction(
         user_id=user_id,
         amount=total_amount,
         transaction_type="ADMIN_BUCKET_SET",
         status="SUCCESS",
-        reference_id=f"BUCKET_SET_{uuid.uuid4().hex[:12].upper()}",
+        reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
         failure_reason=(
             f"ADMIN:{current_user.username};"
-            f"DEPOSIT:{float(user.deposit_balance):.2f};"
-            f"WINNING:{float(user.winning_balance):.2f};"
-            f"BONUS:{float(user.bonus_balance):.2f};"
+            + ";".join(changes) + ";"
             f"REASON:{reason}"
         ),
     )

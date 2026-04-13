@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import secrets
 import string
+import uuid
 
 from api.deps import get_current_user_tournaments, get_current_active_admin
 from core.database import get_db_sync as get_db
@@ -594,7 +595,8 @@ def join_tournament(
             amount=-total_fee,
             transaction_type="JOIN_TOURNAMENT",
             status="SUCCESS",
-            reference_id=f"TOUR_{tournament_id}_{current_user.id}"
+            reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+            failure_reason=f"TOUR:{tournament_id}"
         )
         db.add(transaction)
 
@@ -799,7 +801,8 @@ def join_tournament(
         amount=-entry_fee,
         transaction_type="JOIN_TOURNAMENT",
         status="SUCCESS",
-        reference_id=f"TOUR_{tournament_id}_{current_user.id}"
+        reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+        failure_reason=f"TOUR:{tournament_id}"
     )
     db.add(transaction)
 
@@ -904,7 +907,7 @@ def cancel_tournament_participation(
             WalletTransaction.user_id == current_user.id,
             WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
             WalletTransaction.status == "SUCCESS",
-            WalletTransaction.reference_id == f"TOUR_{tournament_id}_{current_user.id}",
+            WalletTransaction.failure_reason.contains(f"TOUR:{tournament_id}"),
         ).order_by(WalletTransaction.id.desc()).first()
 
         if join_tx:
@@ -919,9 +922,12 @@ def cancel_tournament_participation(
         raise HTTPException(status_code=404, detail="User not found")
 
     if refund_amount > Decimal("0.00"):
-        refund_reference = f"CANCEL_REFUND_{tournament_id}_{current_user.id}"
+        cancel_dedup_key = f"CANCEL:{tournament_id}:{current_user.id}"
         existing_refund = db.query(WalletTransaction).filter(
-            WalletTransaction.reference_id == refund_reference
+            WalletTransaction.user_id == current_user.id,
+            WalletTransaction.transaction_type == "TOURNAMENT_CANCEL_REFUND",
+            WalletTransaction.status == "SUCCESS",
+            WalletTransaction.failure_reason.contains(cancel_dedup_key),
         ).first()
         if existing_refund:
             raise HTTPException(status_code=409, detail="Cancellation refund already processed")
@@ -933,7 +939,8 @@ def cancel_tournament_participation(
                 amount=refund_amount,
                 transaction_type="TOURNAMENT_CANCEL_REFUND",
                 status="SUCCESS",
-                reference_id=refund_reference,
+                reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+                failure_reason=cancel_dedup_key,
             )
         )
 

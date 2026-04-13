@@ -1,3 +1,4 @@
+import time
 import threading
 import logging
 from sqlalchemy.orm import Session
@@ -7,8 +8,22 @@ from services.push_notifications import send_push
 
 logger = logging.getLogger(__name__)
 
-def add_user_notification(db: Session, user_id: int, title: str, content: str, type: str = "APP"):
-    """Easily create a user-specific notification."""
+def add_user_notification(
+    db: Session,
+    user_id: int,
+    title: str,
+    content: str,
+    type: str = "APP",
+    delay_push_seconds: int = 0,
+):
+    """Easily create a user-specific notification.
+
+    Args:
+        delay_push_seconds: If > 0, the push notification (FCM) is delayed
+            by this many seconds. The in-app notification record is still
+            saved immediately. Useful for spin rewards where the wheel
+            animation needs to finish before the user sees the alert.
+    """
     notif = Notification(
         user_id=user_id,
         title=title,
@@ -28,6 +43,8 @@ def add_user_notification(db: Session, user_id: int, title: str, content: str, t
         if fcm_token:
             def _bg_push():
                 try:
+                    if delay_push_seconds > 0:
+                        time.sleep(delay_push_seconds)
                     send_push(
                         fcm_token=fcm_token,
                         title=title,

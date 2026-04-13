@@ -204,7 +204,7 @@ def play_spin(
     total_spins = total_spins_before + 1
     prize_amount = to_money(_planned_prize_for_spin(total_spins))
 
-    spin_reference = f"SPIN_{user.id}_{uuid.uuid4().hex[:10].upper()}"
+    spin_reference = f"GA-{uuid.uuid4().hex[:6].upper()}"
     db.add(
         WalletTransaction(
             user_id=user.id,
@@ -224,7 +224,7 @@ def play_spin(
                 amount=prize_amount,
                 transaction_type="SPIN_REWARD",
                 status="SUCCESS",
-                reference_id=f"{spin_reference}_REWARD",
+                reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
                 payment_mode="SPIN",
             )
         )
@@ -244,6 +244,7 @@ def play_spin(
             "Spin Reward Credited",
             f"You won ₹{prize_amount:.2f}. Amount credited to your Winning Wallet.",
             "WALLET",
+            delay_push_seconds=7,  # Delay push until after wheel animation (4s) + win popup
         )
 
     remaining_spins = max(0, daily_spin_limit - spins_used_today)
@@ -305,13 +306,16 @@ def redeem_promo_code(
     if _is_promo_expired(promo):
         raise HTTPException(status_code=400, detail="Promo code has expired")
 
-    reference_id = f"PROMO_{promo.id}_{current_user.id}"
     already_redeemed = db.query(WalletTransaction.id).filter(
-        WalletTransaction.reference_id == reference_id,
+        WalletTransaction.user_id == current_user.id,
+        WalletTransaction.transaction_type == "PROMO_REWARD",
         WalletTransaction.status == "SUCCESS",
+        WalletTransaction.failure_reason.contains(f"PROMO:{normalized_code}"),
     ).first()
     if already_redeemed:
         raise HTTPException(status_code=409, detail="Promo code already redeemed")
+
+    reference_id = f"GA-{uuid.uuid4().hex[:6].upper()}"
 
     reward_amount = Decimal(str(promo.discount_amount or Decimal("0"))).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -333,6 +337,7 @@ def redeem_promo_code(
         status="SUCCESS",
         reference_id=reference_id,
         payment_mode="PROMO",
+        failure_reason=f"PROMO:{normalized_code}",
     )
 
     db.add(user)
@@ -434,7 +439,7 @@ def init_add_money(
     if req.amount > 100_000:
         raise HTTPException(status_code=400, detail="Maximum recharge amount is ₹1,00,000")
 
-    txnid = f"GA_{uuid.uuid4().hex[:12].upper()}"
+    txnid = f"GA-{uuid.uuid4().hex[:6].upper()}"
 
     tx = WalletTransaction(
         user_id=current_user.id,
@@ -787,7 +792,7 @@ def request_withdrawal(
         amount=-amount_to_withdraw,
         transaction_type="WITHDRAWAL",
         status="PENDING",
-        reference_id=f"WITHDRAW_{uuid.uuid4().hex[:8].upper()}",
+        reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
         payment_mode="UPI",
         payu_txn_id=normalized_upi_id,
     )
