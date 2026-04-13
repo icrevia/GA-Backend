@@ -61,8 +61,14 @@ class AdminStatusRequest(BaseModel):
 
 async def _get_or_init_support_metadata(db: AsyncSession, user_id: int) -> ChatSession:
     """Gets the single persistent metadata record for a user's support thread."""
-    result = await db.execute(select(ChatSession).where(ChatSession.user_id == user_id))
-    session = result.scalar_one_or_none()
+    # Handle legacy duplicates by picking the most recent session record
+    result = await db.execute(
+        select(ChatSession)
+        .where(ChatSession.user_id == user_id)
+        .order_by(ChatSession.id.desc())
+        .limit(1)
+    )
+    session = result.scalars().first()
     if not session:
         session = ChatSession(user_id=user_id, status=SESSION_STATUS_ACTIVE)
         db.add(session)
@@ -243,6 +249,12 @@ async def get_admin_threads(
 ):
     if current_user.role != "ADMIN": raise HTTPException(status_code=403)
     
+    # Subquery for latest session per user to avoid duplications
+    latest_session_sq = select(
+        ChatSession.user_id,
+        func.max(ChatSession.id).label("max_id")
+    ).group_by(ChatSession.user_id).subquery()
+
     # Subquery for latest message
     latest_sq = select(
         ChatMessage.thread_user_id,
@@ -266,7 +278,8 @@ async def get_admin_threads(
         latest_sq.c.content.label("last_msg"),
         latest_sq.c.timestamp.label("last_time"),
         func.coalesce(unread_sq.c.count, 0).label("unread")
-    ).join(ChatSession, ChatSession.user_id == User.id)\
+    ).join(latest_session_sq, latest_session_sq.c.user_id == User.id)\
+     .join(ChatSession, ChatSession.id == latest_session_sq.c.max_id)\
      .outerjoin(latest_sq, latest_sq.c.thread_user_id == User.id)\
      .outerjoin(unread_sq, unread_sq.c.thread_user_id == User.id)\
      .order_by(ChatSession.requires_admin.desc(), latest_sq.c.timestamp.desc())
