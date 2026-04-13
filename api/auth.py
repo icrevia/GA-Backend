@@ -551,6 +551,7 @@ async def verify_otp(
         result = await db.execute(select(User).where(User.phone_number == normalized_phone))
     db_user = result.scalar_one_or_none()
 
+    signup_bonus_amount = None
     if normalized_phone in _pending_signups:
         pending_data = _pending_signups.pop(normalized_phone)
 
@@ -586,6 +587,28 @@ async def verify_otp(
         await db.commit()
         await db.refresh(db_user)
 
+        # ── Credit instant signup bonus for referred users ────────
+        if db_user.referred_by_id:
+            try:
+                from core.database import SyncSessionLocal
+                from services.referral_rewards import credit_signup_bonus
+
+                sync_db = SyncSessionLocal()
+                try:
+                    sync_user = sync_db.query(User).filter(User.id == db_user.id).with_for_update().first()
+                    if sync_user:
+                        bonus = credit_signup_bonus(sync_db, sync_user)
+                        if bonus:
+                            sync_db.commit()
+                            signup_bonus_amount = float(bonus)
+                            # Refresh async session to pick up balance updates
+                            await db.refresh(db_user)
+                finally:
+                    sync_db.close()
+            except Exception as bonus_err:
+                logger.error("Signup bonus credit failed for user %s: %s", db_user.id, bonus_err)
+        # ──────────────────────────────────────────────────────────
+
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -613,12 +636,16 @@ async def verify_otp(
 
     token_version = getattr(db_user, "token_version", 0) or 0
     user_payload = UserResponse.model_validate(db_user).model_dump(mode="json")
-    return {
+    response = {
         "access_token": create_access_token({"sub": str(db_user.id), "tv": token_version}),
         "token_type": "bearer",
         "role": db_user.role,
-        "user": user_payload
+        "user": user_payload,
     }
+    # Include signup bonus in response so Android can show the welcome popup
+    if signup_bonus_amount is not None:
+        response["signup_bonus_amount"] = signup_bonus_amount
+    return response
 
 @router.post("/login")
 @limiter.limit("10/minute")

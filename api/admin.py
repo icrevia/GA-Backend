@@ -2780,3 +2780,22 @@ def clear_transaction_history(
         "refunded_withdrawals": refunded_count,
         "refund_total": float(refunded_total),
     }
+
+
+@router.post("/run-bonus-expiry", tags=["admin"])
+def run_bonus_expiry(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Manually trigger the bonus expiry cycle.
+    Processes expired bonuses and sends reminders.
+    """
+    from services.bonus_expiry import run_bonus_expiry_cycle
+
+    result = run_bonus_expiry_cycle(db)
+    return {
+        "message": "Bonus expiry cycle completed",
+        "expired": result["expired"],
+        "reminders": result["reminders"],
+    }
+

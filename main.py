@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
     # STARTUP
     logger.info("GamerzAdda API starting up (Lifespan)...")
     support_media_cleanup_task: asyncio.Task | None = None
+    bonus_expiry_task: asyncio.Task | None = None
 
     async with engine.begin() as conn:
         # Create all tables asynchronously
@@ -189,6 +190,35 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_send_startup_notification())
     # ─────────────────────────────────────────────────────────────
 
+    # ── Automated Bonus Expiry Worker (runs every 6 hours) ───────
+    BONUS_EXPIRY_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
+
+    async def _bonus_expiry_worker():
+        await asyncio.sleep(30)  # initial delay to let DB settle
+        while True:
+            try:
+                from core.database import SyncSessionLocal
+                from services.bonus_expiry import run_bonus_expiry_cycle
+
+                db = SyncSessionLocal()
+                try:
+                    result = run_bonus_expiry_cycle(db)
+                    if result["expired"] > 0 or result["reminders"] > 0:
+                        logger.info(
+                            "Bonus expiry worker: expired=%d, reminders=%d",
+                            result["expired"], result["reminders"],
+                        )
+                finally:
+                    db.close()
+            except Exception as expiry_err:
+                logger.error("Bonus expiry worker error: %s", expiry_err)
+
+            await asyncio.sleep(BONUS_EXPIRY_INTERVAL_SECONDS)
+
+    bonus_expiry_task = asyncio.create_task(_bonus_expiry_worker())
+    logger.info("Bonus expiry background worker started (interval: 6h)")
+    # ─────────────────────────────────────────────────────────────
+
     try:
         yield
     finally:
@@ -196,6 +226,10 @@ async def lifespan(app: FastAPI):
             support_media_cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
                 await support_media_cleanup_task
+        if bonus_expiry_task is not None:
+            bonus_expiry_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await bonus_expiry_task
         # SHUTDOWN
         logger.info("GamerzAdda API shutting down...")
 
