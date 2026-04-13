@@ -1002,17 +1002,18 @@ def get_tournament_slots(
     if not tournament:
         raise HTTPException(status_code=404, detail="Tournament not found")
 
-    my_participant = db.query(TournamentParticipant).filter(
+    # Optimization: Use joinedload('user') to avoid N+1 queries inside _build_slots_board
+    from sqlalchemy.orm import joinedload
+    participants = db.query(TournamentParticipant).options(
+        joinedload(TournamentParticipant.user)
+    ).filter(
         TournamentParticipant.tournament_id == tournament_id,
-        TournamentParticipant.user_id == current_user.id,
-    ).first()
+    ).all()
 
+    my_participant = any(p.user_id == current_user.id for p in participants)
     if current_user.role != "ADMIN" and not my_participant:
         raise HTTPException(status_code=403, detail="Join this tournament to view slot board")
 
-    participants = db.query(TournamentParticipant).filter(
-        TournamentParticipant.tournament_id == tournament_id,
-    ).all()
     return _build_slots_board(tournament, participants, current_user_id=current_user.id)
 
 
@@ -1056,17 +1057,46 @@ def get_tournament(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_tournaments)
 ):
-    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-    if not tournament:
+    # Optimized: One query to get Tournament, Participant Count, and User Participation Status
+    count_subq = (
+        db.query(
+            TournamentParticipant.tournament_id,
+            func.count(func.distinct(TournamentParticipant.slot_no)).label('j_count')
+        )
+        .filter(TournamentParticipant.tournament_id == tournament_id)
+        .group_by(TournamentParticipant.tournament_id)
+        .subquery()
+    )
+
+    is_p_subq = (
+        db.query(TournamentParticipant.tournament_id)
+        .filter(
+            TournamentParticipant.tournament_id == tournament_id,
+            TournamentParticipant.user_id == current_user.id
+        )
+        .exists()
+    )
+
+    result_row = (
+        db.query(
+            Tournament, 
+            func.coalesce(count_subq.c.j_count, 0).label('total_joined'),
+            is_p_subq.label('is_user_joined')
+        )
+        .outerjoin(count_subq, Tournament.id == count_subq.c.tournament_id)
+        .filter(Tournament.id == tournament_id)
+        .first()
+    )
+
+    if not result_row:
         raise HTTPException(status_code=404, detail="Tournament not found")
 
-    is_participant = db.query(TournamentParticipant).filter(
-        TournamentParticipant.tournament_id == tournament_id,
-        TournamentParticipant.user_id == current_user.id
-    ).first()
-
+    tournament, joined_count, is_participant = result_row
+    
+    # Secure room credentials
     if not is_participant or tournament.status != "LIVE":
         tournament.room_id       = None
         tournament.room_password = None
 
-    return _with_count(tournament, db)
+    tournament.joined_count = joined_count
+    return tournament
