@@ -11,6 +11,7 @@ from models.user import User
 from core.websockets import manager
 from core.config import settings
 from services.support_media import SupportMediaValidationError, store_support_media
+from services.support_notifications import notify_support_message, notify_admin_escalation
 from datetime import datetime, timezone, timedelta
 import logging
 
@@ -274,7 +275,7 @@ def _chat_message_event(
 # ─────────────────────────────────────────────────────────────────
 
 @router.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: int, token: str = ""):
+async def websocket_endpoint(websocket: WebSocket, user_id: int, token: str = "", db: AsyncSession = Depends(get_db)):
     """Support WebSocket — authenticated, user can only connect as themselves."""
     from jose import jwt, JWTError
 
@@ -289,13 +290,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int, token: str = ""
         await websocket.close(code=1008)
         return
 
-    if token_uid != user_id:
-        await websocket.close(code=1008)
-        return
+    # Fetch user to verify role for broadcast routing.
+    user_result = await db.execute(select(User.role).where(User.id == token_uid))
+    user_role = user_result.scalar_one_or_none() or "USER"
+    is_admin_ws = (user_role == "ADMIN")
 
     await websocket.accept()
-    await manager.connect(user_id, websocket)
-    logger.info("Support WS connected: user_id=%s", user_id)
+    await manager.connect(user_id, websocket, is_admin=is_admin_ws)
+    logger.info("Support WS connected: user_id=%s admin=%s", user_id, is_admin_ws)
     try:
         while True:
             await websocket.receive_text()
@@ -544,7 +546,7 @@ async def send_message(
                 "is_admin": True,
                 "timestamp": now_ist().isoformat()
             }
-            await manager.send_personal_message(auto_reply_data, session.user_id)
+            await notify_support_message(db, session.user_id, auto_reply_data)
             
         return {
             "status": "success",
@@ -575,18 +577,8 @@ async def send_message(
     if not msg_data.get("timestamp"):
         msg_data["timestamp"] = now_ist().isoformat()
 
-    await manager.send_personal_message(msg_data, session.user_id)
-    await manager.broadcast_to_admins(msg_data)
-
-    escalation_data = {
-        "type": "support_escalation",
-        "session_id": session.id,
-        "user_id": session.user_id,
-        "issue_type": issue_type,
-        "preview": clean_message,
-        "timestamp": msg_data["timestamp"],
-    }
-    await manager.broadcast_to_admins(escalation_data)
+    await notify_support_message(db, session.user_id, msg_data)
+    await notify_admin_escalation(db, escalation_data, msg_data=msg_data)
 
     return {
         "status": "success",
@@ -674,18 +666,8 @@ async def upload_media_message(
     if not msg_data.get("timestamp"):
         msg_data["timestamp"] = now_ist().isoformat()
 
-    await manager.send_personal_message(msg_data, session.user_id)
-    await manager.broadcast_to_admins(msg_data)
-
-    escalation_data = {
-        "type": "support_escalation",
-        "session_id": session.id,
-        "user_id": session.user_id,
-        "issue_type": normalized_issue_type,
-        "preview": message_content,
-        "timestamp": msg_data["timestamp"],
-    }
-    await manager.broadcast_to_admins(escalation_data)
+    await notify_support_message(db, session.user_id, msg_data)
+    await notify_admin_escalation(db, escalation_data, msg_data=msg_data)
 
     if auto_reply_msg is not None:
         auto_reply_data = _chat_message_event(
@@ -695,8 +677,8 @@ async def upload_media_message(
         )
         if not auto_reply_data.get("timestamp"):
             auto_reply_data["timestamp"] = now_ist().isoformat()
-        await manager.send_personal_message(auto_reply_data, session.user_id)
-        await manager.broadcast_to_admins(auto_reply_data)
+        await notify_support_message(db, session.user_id, auto_reply_data)
+        await notify_admin_escalation(db, auto_reply_data)
 
     return {
         "status": "success",
@@ -756,8 +738,8 @@ async def end_chat_by_user(
         "end_notice": _build_end_notice("USER", current_user.username),
         "timestamp": now_ist().isoformat(),
     }
-    await manager.send_personal_message(event, current_user.id)
-    await manager.broadcast_to_admins(event)
+    await notify_support_message(db, current_user.id, event)
+    await notify_admin_escalation(db, event)
 
     return {
         "status": "success",
@@ -798,8 +780,8 @@ async def end_chat_by_admin(
         "end_notice": _build_end_notice("ADMIN", current_user.username),
         "timestamp": now_ist().isoformat(),
     }
-    await manager.send_personal_message(event, session.user_id)
-    await manager.broadcast_to_admins(event)
+    await notify_support_message(db, session.user_id, event)
+    await notify_admin_escalation(db, event)
 
     return {
         "status": "success",
@@ -842,7 +824,7 @@ async def admin_attend(
         "attended_by_admin_name": current_user.username,
         "timestamp": now_ist().isoformat(),
     }
-    await manager.broadcast_to_admins(event)
+    await notify_admin_escalation(db, event)
 
     return {
         "status": "success",
@@ -878,8 +860,8 @@ async def admin_block_user(
         "blocked_by_admin_name": current_user.username,
         "timestamp": now_ist().isoformat(),
     }
-    await manager.send_personal_message(blocked_notice, session.user_id)
-    await manager.broadcast_to_admins(blocked_notice)
+    await notify_support_message(db, session.user_id, blocked_notice)
+    await notify_admin_escalation(db, blocked_notice)
 
     return {
         "status": "success",
@@ -914,8 +896,8 @@ async def admin_unblock_user(
         "unblocked_by_admin_name": current_user.username,
         "timestamp": now_ist().isoformat(),
     }
-    await manager.send_personal_message(unblocked_notice, session.user_id)
-    await manager.broadcast_to_admins(unblocked_notice)
+    await notify_support_message(db, session.user_id, unblocked_notice)
+    await notify_admin_escalation(db, unblocked_notice)
 
     return {
         "status": "success",
@@ -971,8 +953,8 @@ async def admin_reply(
     if not msg_data.get("timestamp"):
         msg_data["timestamp"] = now_ist().isoformat()
 
-    await manager.send_personal_message(msg_data, session.user_id)
-    await manager.broadcast_to_admins(msg_data)
+    await notify_support_message(db, session.user_id, msg_data)
+    await notify_admin_escalation(db, msg_data)
     return {"status": "success"}
 
 
@@ -1044,8 +1026,8 @@ async def admin_upload_media(
     if not msg_data.get("timestamp"):
         msg_data["timestamp"] = now_ist().isoformat()
 
-    await manager.send_personal_message(msg_data, session.user_id)
-    await manager.broadcast_to_admins(msg_data)
+    await notify_support_message(db, session.user_id, msg_data)
+    await notify_admin_escalation(db, msg_data)
 
     return {
         "status": "success",
