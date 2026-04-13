@@ -521,8 +521,41 @@ async def send_message(
     if any(bool(s.is_user_blocked) for s in all_sessions):
         raise HTTPException(status_code=403, detail=DEFAULT_BLOCKED_MESSAGE)
 
-    issue_type = _normalize_issue_type(body.issue_type)
+    if body.is_issue_selection:
+        issue_type = _normalize_issue_type(body.issue_type)
+        await _mark_user_requires_admin(db, session.user_id, issue_type=issue_type)
+        
+        auto_reply_sent = False
+        if issue_type and not bool(session.issue_ack_sent):
+            await db.execute(
+                update(ChatSession)
+                .where(ChatSession.user_id == session.user_id)
+                .values(issue_ack_sent=True)
+            )
+            auto_reply_sent = True
+            
+        await db.commit()
+        
+        if auto_reply_sent:
+            auto_reply_data = {
+                "type": "chat_message",
+                "session_id": session.id,
+                "user_id": session.user_id,
+                "id": -abs(current_user.id * 1000), # Fake ID
+                "content": AUTO_REPLY_TEXT,
+                "is_admin": True,
+                "timestamp": now_ist().isoformat()
+            }
+            await manager.send_personal_message(auto_reply_data, session.user_id)
+            
+        return {
+            "status": "success",
+            "issue_type": issue_type,
+            "auto_reply_sent": auto_reply_sent,
+        }
 
+    # Normal message flow
+    issue_type = _normalize_issue_type(body.issue_type)
     new_msg = ChatMessage(
         session_id=session.id,
         sender_id=current_user.id,
@@ -532,26 +565,8 @@ async def send_message(
     db.add(new_msg)
 
     await _mark_user_requires_admin(db, session.user_id, issue_type=issue_type)
-
-    auto_reply_msg = None
-    if body.is_issue_selection and issue_type and not bool(session.issue_ack_sent):
-        await db.execute(
-            update(ChatSession)
-            .where(ChatSession.user_id == session.user_id)
-            .values(issue_ack_sent=True)
-        )
-        auto_reply_msg = ChatMessage(
-            session_id=session.id,
-            sender_id=current_user.id,
-            content=AUTO_REPLY_TEXT,
-            is_admin=True,
-        )
-        db.add(auto_reply_msg)
-
     await db.commit()
     await db.refresh(new_msg)
-    if auto_reply_msg is not None:
-        await db.refresh(auto_reply_msg)
 
     msg_data = _chat_message_event(
         message=new_msg,
@@ -575,21 +590,10 @@ async def send_message(
     }
     await manager.broadcast_to_admins(escalation_data)
 
-    if auto_reply_msg is not None:
-        auto_reply_data = _chat_message_event(
-            message=auto_reply_msg,
-            session_id=session.id,
-            user_id=session.user_id,
-        )
-        if not auto_reply_data.get("timestamp"):
-            auto_reply_data["timestamp"] = now_ist().isoformat()
-        await manager.send_personal_message(auto_reply_data, session.user_id)
-        await manager.broadcast_to_admins(auto_reply_data)
-
     return {
         "status": "success",
         "issue_type": issue_type,
-        "auto_reply_sent": auto_reply_msg is not None,
+        "auto_reply_sent": False,
     }
 
 

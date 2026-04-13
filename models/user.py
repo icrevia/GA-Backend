@@ -44,6 +44,6 @@ class User(Base):
     # FCM push notification token (refreshed by Android app automatically)
     fcm_token       = Column(String(512), nullable=True)
 
-    created_at      = Column(DateTime(timezone=True), server_default=func.now())
+    created_at      = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
 

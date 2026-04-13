@@ -24,7 +24,7 @@ class ChatSession(Base):
     issue_type = Column(String(120), nullable=True)
     issue_ack_sent = Column(Boolean, default=False, nullable=False)
     is_user_blocked = Column(Boolean, default=False, nullable=False)
-    status = Column(String, default="ACTIVE")
+    status = Column(String, default="ACTIVE", index=True)
     requires_admin = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=_utcnow_naive)
 
