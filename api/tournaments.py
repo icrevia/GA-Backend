@@ -1018,7 +1018,8 @@ def get_tournament_slots(
     ).all()
 
     my_participant = any(p.user_id == current_user.id for p in participants)
-    if current_user.role != "ADMIN" and not my_participant:
+    is_clash_squad_tournament = "clash" in (tournament.game_name or "").lower()
+    if current_user.role != "ADMIN" and is_clash_squad_tournament and not my_participant:
         raise HTTPException(status_code=403, detail="Join this tournament to view slot board")
 
     return _build_slots_board(tournament, participants, current_user_id=current_user.id)
