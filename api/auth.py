@@ -8,6 +8,7 @@ from core.config import settings
 from core.security import hash_password, verify_password, create_access_token
 from core.websockets import manager
 from models.user import User
+from models.email_otp_log import EmailOtpLog
 from schemas.user import UserCreate, UserResponse, LoginRequest
 from schemas.token import Token
 from typing import Any
@@ -20,6 +21,7 @@ import string
 import random
 import httpx
 from services.login_security import extract_client_ip
+from services.email_otp import is_email_otp_available, send_login_otp_email
 from services.referral_codes import generate_unique_referral_code_async
 from services.restrictions import RESTRICTION_SCOPE_FULL_APP, get_active_restrictions_for_user_async
 from services.otp_limits import (
@@ -38,6 +40,7 @@ from services.activity_limits import (
 _otp_store: dict[str, str] = {}
 _pending_signups: dict[str, dict] = {}
 _admin_login_otp_store: dict[str, dict[str, Any]] = {}
+_email_login_otp_store: dict[str, dict[str, Any]] = {}
 
 logger = logging.getLogger("GamerzAdda.auth")
 limiter = Limiter(key_func=get_remote_address)
@@ -178,6 +181,198 @@ def _resolve_admin_login_chat_id() -> str:
 
 def _generate_admin_login_otp(length: int = 4) -> str:
     return "".join(random.choices(string.digits, k=length))
+
+
+def _generate_email_login_otp(length: int) -> str:
+    safe_length = max(4, min(length, 8))
+    return "".join(random.choices(string.digits, k=safe_length))
+
+
+def _email_login_otp_digest(*, phone: str, email: str, otp_code: str) -> str:
+    payload = f"{settings.SECRET_KEY}|email-login-otp|{_normalize_signup_phone(phone)}|{(email or '').strip().lower()}|{(otp_code or '').strip()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _mask_email(email: str) -> str:
+    normalized = (email or "").strip().lower()
+    if "@" not in normalized:
+        return ""
+
+    local, domain = normalized.split("@", 1)
+    if len(local) <= 2:
+        masked_local = local[:1] + "*"
+    else:
+        masked_local = local[:1] + ("*" * max(1, len(local) - 2)) + local[-1:]
+    return f"{masked_local}@{domain}"
+
+
+def _store_email_login_otp(*, phone: str, email: str, user_id: int | None, otp_code: str) -> None:
+    normalized_phone = _normalize_signup_phone(phone)
+    _email_login_otp_store[normalized_phone] = {
+        "otp_hash": _email_login_otp_digest(phone=normalized_phone, email=email, otp_code=otp_code),
+        "expires_at": datetime.utcnow() + timedelta(seconds=max(30, int(settings.EMAIL_OTP_TTL_SECONDS))),
+        "attempts": 0,
+        "max_attempts": max(1, int(settings.EMAIL_OTP_MAX_VERIFY_ATTEMPTS)),
+        "email": (email or "").strip().lower(),
+        "user_id": user_id,
+    }
+
+
+def _clear_email_login_otp(phone: str) -> None:
+    _email_login_otp_store.pop(_normalize_signup_phone(phone), None)
+
+
+def _verify_email_login_otp(*, phone: str, otp_code: str) -> tuple[bool, str, dict[str, Any] | None]:
+    normalized_phone = _normalize_signup_phone(phone)
+    otp_entry = _email_login_otp_store.get(normalized_phone)
+    if not otp_entry:
+        return False, "missing", None
+
+    expires_at = otp_entry.get("expires_at")
+    if not isinstance(expires_at, datetime) or datetime.utcnow() > expires_at:
+        _email_login_otp_store.pop(normalized_phone, None)
+        return False, "expired", otp_entry
+
+    attempts = int(otp_entry.get("attempts", 0) or 0)
+    max_attempts = int(otp_entry.get("max_attempts", settings.EMAIL_OTP_MAX_VERIFY_ATTEMPTS) or settings.EMAIL_OTP_MAX_VERIFY_ATTEMPTS)
+    if attempts >= max_attempts:
+        _email_login_otp_store.pop(normalized_phone, None)
+        return False, "expired", otp_entry
+
+    incoming_hash = _email_login_otp_digest(
+        phone=normalized_phone,
+        email=str(otp_entry.get("email") or ""),
+        otp_code=otp_code,
+    )
+    stored_hash = str(otp_entry.get("otp_hash") or "")
+    if not hmac.compare_digest(incoming_hash, stored_hash):
+        otp_entry["attempts"] = attempts + 1
+        if otp_entry["attempts"] >= max_attempts:
+            _email_login_otp_store.pop(normalized_phone, None)
+            return False, "expired", otp_entry
+        _email_login_otp_store[normalized_phone] = otp_entry
+        return False, "invalid", otp_entry
+
+    _email_login_otp_store.pop(normalized_phone, None)
+    return True, "ok", otp_entry
+
+
+async def _log_email_otp_event(
+    db: AsyncSession,
+    *,
+    user: User | None,
+    email: str | None,
+    phone: str | None,
+    source: str,
+    event_type: str,
+    status: str,
+    message: str | None,
+    request: Request,
+    commit: bool = False,
+) -> None:
+    try:
+        user_agent = (request.headers.get("user-agent") or "").strip()[:220] or None
+        client_ip = extract_client_ip(request)
+        log_row = EmailOtpLog(
+            user_id=user.id if user else None,
+            email=(email or "").strip().lower() or None,
+            phone_number=_normalize_signup_phone(phone or "") or None,
+            source=(source or "LOGIN").strip().upper()[:32],
+            event_type=(event_type or "SEND").strip().upper()[:16],
+            status=(status or "UNKNOWN").strip().upper()[:24],
+            message=(message or "").strip()[:400] or None,
+            client_ip=(client_ip or "").strip()[:64] or None,
+            user_agent=user_agent,
+        )
+        db.add(log_row)
+        if commit:
+            await db.commit()
+    except Exception as exc:
+        logger.warning("EMAIL OTP LOG WRITE ERR: %s", exc)
+        if commit:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
+
+async def _send_login_email_otp_if_available(
+    *,
+    request: Request,
+    db: AsyncSession,
+    user: User,
+    source: str,
+) -> tuple[bool, str | None]:
+    normalized_phone = _normalize_signup_phone(user.phone_number or "")
+    normalized_email = (user.email or "").strip().lower()
+    if not normalized_phone or not normalized_email or not is_email_otp_available():
+        return False, None
+
+    otp_code = _generate_email_login_otp(int(settings.EMAIL_OTP_LENGTH))
+    _store_email_login_otp(
+        phone=normalized_phone,
+        email=normalized_email,
+        user_id=user.id,
+        otp_code=otp_code,
+    )
+
+    try:
+        await send_login_otp_email(
+            to_email=normalized_email,
+            otp_code=otp_code,
+            recipient_name=user.username,
+        )
+        await _log_email_otp_event(
+            db,
+            user=user,
+            email=normalized_email,
+            phone=normalized_phone,
+            source=source,
+            event_type="SEND",
+            status="SENT",
+            message="Email OTP sent",
+            request=request,
+            commit=True,
+        )
+        return True, _mask_email(normalized_email)
+    except Exception as exc:
+        _clear_email_login_otp(normalized_phone)
+        await _log_email_otp_event(
+            db,
+            user=user,
+            email=normalized_email,
+            phone=normalized_phone,
+            source=source,
+            event_type="SEND",
+            status="FAILED",
+            message=f"Send failed: {str(exc)[:260]}",
+            request=request,
+            commit=True,
+        )
+        logger.warning("EMAIL OTP SEND ERR for %s: %s", normalized_phone, exc)
+        return False, None
+
+
+def _build_login_otp_response(*, phone: str, email_sent: bool, masked_email: str | None) -> dict[str, Any]:
+    channels = ["SMS"]
+    message = "OTP sent"
+    payload: dict[str, Any] = {
+        "message": message,
+        "phone": phone,
+        "status": "pending_verification",
+        "otp_channels": channels,
+    }
+
+    if email_sent:
+        channels.append("EMAIL")
+        payload["message"] = "OTP sent on SMS and email"
+        payload["email_otp_sent"] = True
+        if masked_email:
+            payload["masked_email"] = masked_email
+    else:
+        payload["email_otp_sent"] = False
+
+    return payload
 
 
 async def _send_admin_login_otp_to_telegram(*, otp_code: str, phone: str, identifier: str) -> None:
@@ -519,6 +714,14 @@ async def verify_otp(
 ) -> Any:
     normalized_phone = _normalize_signup_phone(phone)
     is_admin_phone = _is_admin_login_phone_value(normalized_phone)
+    is_signup_pending = normalized_phone in _pending_signups
+
+    phone_candidates = list(_phone_variants(normalized_phone))
+    if phone_candidates:
+        result = await db.execute(select(User).where(User.phone_number.in_(phone_candidates)))
+    else:
+        result = await db.execute(select(User).where(User.phone_number == normalized_phone))
+    db_user = result.scalar_one_or_none()
 
     if is_admin_phone:
         is_valid, reason = _verify_admin_login_otp(phone=normalized_phone, otp_code=otp)
@@ -528,35 +731,74 @@ async def verify_otp(
             raise HTTPException(status_code=400, detail="Invalid OTP")
     else:
         verification_id = _otp_store.get(normalized_phone)
-        if not verification_id:
-            raise HTTPException(status_code=400, detail="OTP expired or not requested.")
+        sms_valid = False
+        sms_invalid = False
+        sms_provider_error = False
 
-        from services import otp as otp_service
-        # Async verify with await
-        try:
-            is_valid = await otp_service.verify_otp(verification_id, otp)
-        except Exception as e:
-            logger.error(f"OTP verify provider error: {e}")
-            raise HTTPException(
-                status_code=503,
-                detail="OTP verification service is temporarily unavailable. Please retry in 30 seconds."
-            )
+        if verification_id:
+            from services import otp as otp_service
+            try:
+                sms_valid = await otp_service.verify_otp(verification_id, otp)
+                sms_invalid = not sms_valid
+            except Exception as e:
+                sms_provider_error = True
+                logger.error(f"OTP verify provider error: {e}")
 
-        if not is_valid:
-            raise HTTPException(status_code=400, detail="Invalid OTP")
+        email_valid = False
+        email_reason = "missing"
+        email_entry: dict[str, Any] | None = None
+
+        # Signup verification remains SMS-only. Email OTP is login-only fallback.
+        if not sms_valid and not is_signup_pending:
+            email_valid, email_reason, email_entry = _verify_email_login_otp(phone=normalized_phone, otp_code=otp)
+            if email_valid:
+                email_for_log = (db_user.email if db_user else None) or str(email_entry.get("email") or "")
+                await _log_email_otp_event(
+                    db,
+                    user=db_user,
+                    email=email_for_log,
+                    phone=normalized_phone,
+                    source="LOGIN",
+                    event_type="VERIFY",
+                    status="VERIFIED",
+                    message="Verified using email OTP",
+                    request=request,
+                    commit=False,
+                )
+
+        if not sms_valid and not email_valid:
+            if not is_signup_pending and email_entry:
+                email_for_log = (db_user.email if db_user else None) or str(email_entry.get("email") or "")
+                log_status = "INVALID" if email_reason == "invalid" else "EXPIRED" if email_reason == "expired" else "FAILED"
+                await _log_email_otp_event(
+                    db,
+                    user=db_user,
+                    email=email_for_log,
+                    phone=normalized_phone,
+                    source="LOGIN",
+                    event_type="VERIFY",
+                    status=log_status,
+                    message="Email OTP verification failed",
+                    request=request,
+                    commit=True,
+                )
+
+            if sms_provider_error:
+                raise HTTPException(
+                    status_code=503,
+                    detail="OTP verification service is temporarily unavailable. Please retry in 30 seconds."
+                )
+
+            if sms_invalid or email_reason == "invalid":
+                raise HTTPException(status_code=400, detail="Invalid OTP")
+
+            raise HTTPException(status_code=400, detail="OTP expired or not requested. Please resend.")
 
         _otp_store.pop(normalized_phone, None)
-    
-    # Existing user?
-    phone_candidates = list(_phone_variants(normalized_phone))
-    if phone_candidates:
-        result = await db.execute(select(User).where(User.phone_number.in_(phone_candidates)))
-    else:
-        result = await db.execute(select(User).where(User.phone_number == normalized_phone))
-    db_user = result.scalar_one_or_none()
+        _clear_email_login_otp(normalized_phone)
 
     signup_bonus_amount = None
-    if normalized_phone in _pending_signups:
+    if is_signup_pending:
         pending_data = _pending_signups.pop(normalized_phone)
 
         ref_code = await generate_unique_referral_code_async(
@@ -773,8 +1015,20 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
             source="LOGIN",
             user=user,
         )
+
+        email_sent, masked_email = await _send_login_email_otp_if_available(
+            request=request,
+            db=db,
+            user=user,
+            source="LOGIN",
+        )
+
         logger.info(f"OTP successfully sent for login: {user.phone_number}")
-        return {"message": "OTP sent", "phone": user.phone_number, "status": "pending_verification"}
+        return _build_login_otp_response(
+            phone=user.phone_number,
+            email_sent=email_sent,
+            masked_email=masked_email,
+        )
     except Exception as e:
         logger.error(f"OTP SEND ERR LOGIN: {e}")
         raise HTTPException(status_code=503, detail=f"Failed to send OTP login: {str(e)}")
@@ -857,7 +1111,22 @@ async def send_otp(
             source="RESEND",
             user=existing_user,
         )
-        return {"message": "OTP sent", "phone": normalized_phone, "status": "pending_verification"}
+
+        email_sent = False
+        masked_email: str | None = None
+        if existing_user:
+            email_sent, masked_email = await _send_login_email_otp_if_available(
+                request=request,
+                db=db,
+                user=existing_user,
+                source="RESEND",
+            )
+
+        return _build_login_otp_response(
+            phone=normalized_phone,
+            email_sent=email_sent,
+            masked_email=masked_email,
+        )
     except Exception as e:
         logger.error(f"OTP SEND ERR RESEND: {e}")
         raise HTTPException(status_code=503, detail=f"Failed to resend OTP: {str(e)}")

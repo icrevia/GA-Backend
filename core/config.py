@@ -83,6 +83,22 @@ class Settings(BaseSettings):
     MC_CUSTOMER_ID: str = ""
     MC_AUTH_TOKEN:  str = ""
 
+    # ── Email OTP (login only) ───────────────────────────────────────────────
+    EMAIL_OTP_ENABLED: bool = True
+    EMAIL_OTP_LENGTH: int = 4
+    EMAIL_OTP_TTL_SECONDS: int = 300
+    EMAIL_OTP_MAX_VERIFY_ATTEMPTS: int = 5
+
+    EMAIL_SMTP_HOST: str = ""
+    EMAIL_SMTP_PORT: int = 587
+    EMAIL_SMTP_USERNAME: str = ""
+    EMAIL_SMTP_PASSWORD: str = ""
+    EMAIL_SMTP_STARTTLS: bool = True
+    EMAIL_SMTP_USE_SSL: bool = False
+    EMAIL_SMTP_TIMEOUT_SECONDS: float = 15.0
+    EMAIL_FROM_ADDRESS: str = ""
+    EMAIL_FROM_NAME: str = "GamerzAdda Security"
+
     class Config:
         env_file = ".env"
         case_sensitive = True
@@ -203,6 +219,57 @@ class Settings(BaseSettings):
                 "Payments via UPI will fail.",
                 file=sys.stderr
             )
+
+        if self.EMAIL_OTP_LENGTH < 4 or self.EMAIL_OTP_LENGTH > 8:
+            print(
+                "[CONFIG WARNING] EMAIL_OTP_LENGTH must be between 4 and 8. Falling back to 4.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "EMAIL_OTP_LENGTH", 4)
+
+        if self.EMAIL_OTP_TTL_SECONDS <= 0:
+            print(
+                "[CONFIG WARNING] EMAIL_OTP_TTL_SECONDS must be positive. Falling back to 300.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "EMAIL_OTP_TTL_SECONDS", 300)
+
+        if self.EMAIL_OTP_MAX_VERIFY_ATTEMPTS <= 0:
+            print(
+                "[CONFIG WARNING] EMAIL_OTP_MAX_VERIFY_ATTEMPTS must be positive. Falling back to 5.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "EMAIL_OTP_MAX_VERIFY_ATTEMPTS", 5)
+
+        if self.EMAIL_SMTP_TIMEOUT_SECONDS <= 0:
+            print(
+                "[CONFIG WARNING] EMAIL_SMTP_TIMEOUT_SECONDS must be positive. Falling back to 15.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "EMAIL_SMTP_TIMEOUT_SECONDS", 15.0)
+
+        if self.EMAIL_SMTP_USE_SSL and self.EMAIL_SMTP_STARTTLS:
+            print(
+                "[CONFIG WARNING] Both EMAIL_SMTP_USE_SSL and EMAIL_SMTP_STARTTLS are enabled. "
+                "Disabling STARTTLS and using SSL.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "EMAIL_SMTP_STARTTLS", False)
+
+        if self.EMAIL_OTP_ENABLED:
+            missing_email_fields = []
+            if not self.EMAIL_SMTP_HOST:
+                missing_email_fields.append("EMAIL_SMTP_HOST")
+            if not self.EMAIL_FROM_ADDRESS:
+                missing_email_fields.append("EMAIL_FROM_ADDRESS")
+
+            if missing_email_fields:
+                print(
+                    "[CONFIG WARNING] EMAIL_OTP_ENABLED is true but required SMTP settings are missing "
+                    f"({', '.join(missing_email_fields)}). Disabling email OTP.",
+                    file=sys.stderr,
+                )
+                object.__setattr__(self, "EMAIL_OTP_ENABLED", False)
 
         if self.SECURITY_ALERTS_ENABLED and (not self.TELEGRAM_BOT_TOKEN or not self.TELEGRAM_ALERT_CHAT_ID):
             print(
