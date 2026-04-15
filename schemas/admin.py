@@ -176,3 +176,37 @@ class DepositBonusConfigUpdate(BaseModel):
 class DepositBonusConfigResponse(BaseModel):
     enabled: bool
     rules: list[DepositBonusRule]
+
+
+class ReferralRewardRule(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=64)
+    label: Optional[str] = Field(default=None, max_length=80)
+    trigger: Literal["REFERRAL_SIGNUP", "FIRST_SUCCESSFUL_DEPOSIT"] = "REFERRAL_SIGNUP"
+    referred_user_reward: float = Field(default=0.0, ge=0)
+    referrer_reward: float = Field(default=0.0, ge=0)
+    min_recharge_amount: Optional[float] = Field(default=None, ge=0)
+    max_reward_count_per_referrer: Optional[int] = Field(default=None, ge=1)
+    is_active: bool = True
+
+    @model_validator(mode="after")
+    def validate_rule(self):
+        if self.trigger == "REFERRAL_SIGNUP" and self.min_recharge_amount not in (None, 0):
+            raise ValueError("min_recharge_amount is only supported for FIRST_SUCCESSFUL_DEPOSIT trigger")
+
+        if self.trigger == "FIRST_SUCCESSFUL_DEPOSIT" and self.min_recharge_amount is None:
+            self.min_recharge_amount = 0.0
+
+        if self.referred_user_reward <= 0 and self.referrer_reward <= 0:
+            raise ValueError("At least one of referred_user_reward or referrer_reward must be greater than 0")
+
+        return self
+
+
+class ReferralRewardConfigUpdate(BaseModel):
+    enabled: bool = True
+    rules: list[ReferralRewardRule] = Field(default_factory=list)
+
+
+class ReferralRewardConfigResponse(BaseModel):
+    enabled: bool
+    rules: list[ReferralRewardRule]

@@ -27,6 +27,7 @@ from services.referral_rewards import (
     REFERRAL_LOW_BONUS_MIN,
     REFERRAL_LOW_BAND_PROBABILITY,
     REFERRAL_REWARD_TX_TYPE,
+    get_referral_reward_config,
 )
 from services.wallet_balances import (
     WALLET_BUCKET_DEPOSIT,
@@ -156,20 +157,54 @@ def _ensure_referral_code(current_user: User, db: Session) -> str:
     return current_user.referral_code
 
 
-def _build_reward_policy() -> ReferralRewardPolicy:
+def _build_reward_policy(db: Session) -> ReferralRewardPolicy:
+    config = get_referral_reward_config(db)
+    active_rules = [rule for rule in config.get("rules", []) if bool(rule.get("is_active", True))]
+
+    if not bool(config.get("enabled", False)) or not active_rules:
+        return ReferralRewardPolicy(
+            per_referral_min=0.0,
+            per_referral_max=0.0,
+            low_band_min=0.0,
+            low_band_max=0.0,
+            low_band_probability=0.0,
+            high_band_min=0.0,
+            high_band_max=0.0,
+            high_band_probability=0.0,
+            jackpot_band_min=0.0,
+            jackpot_band_max=0.0,
+            jackpot_band_probability=0.0,
+            first_deposit_match_multiplier=0.0,
+        )
+
+    reward_values = []
+    for rule in active_rules:
+        referred = float(rule.get("referred_user_reward") or 0.0)
+        referrer = float(rule.get("referrer_reward") or 0.0)
+        if referred > 0:
+            reward_values.append(referred)
+        if referrer > 0:
+            reward_values.append(referrer)
+
+    if not reward_values:
+        reward_values = [0.0]
+
+    signup_rules = [rule for rule in active_rules if str(rule.get("trigger") or "").upper() == "REFERRAL_SIGNUP"]
+    deposit_rules = [rule for rule in active_rules if str(rule.get("trigger") or "").upper() == "FIRST_SUCCESSFUL_DEPOSIT"]
+
     return ReferralRewardPolicy(
-        per_referral_min=float(REFERRAL_LOW_BONUS_MIN),
-        per_referral_max=float(REFERRAL_JACKPOT_BONUS_MAX),
-        low_band_min=float(REFERRAL_LOW_BONUS_MIN),
-        low_band_max=float(REFERRAL_LOW_BONUS_MAX),
-        low_band_probability=REFERRAL_LOW_BAND_PROBABILITY,
-        high_band_min=float(REFERRAL_HIGH_BONUS_MIN),
-        high_band_max=float(REFERRAL_HIGH_BONUS_MAX),
-        high_band_probability=REFERRAL_HIGH_BAND_PROBABILITY,
-        jackpot_band_min=float(REFERRAL_JACKPOT_BONUS_MIN),
-        jackpot_band_max=float(REFERRAL_JACKPOT_BONUS_MAX),
-        jackpot_band_probability=REFERRAL_JACKPOT_BAND_PROBABILITY,
-        first_deposit_match_multiplier=float(FIRST_DEPOSIT_MATCH_MULTIPLIER),
+        per_referral_min=min(reward_values),
+        per_referral_max=max(reward_values),
+        low_band_min=min(reward_values),
+        low_band_max=max(reward_values),
+        low_band_probability=1.0,
+        high_band_min=min(reward_values),
+        high_band_max=max(reward_values),
+        high_band_probability=0.0,
+        jackpot_band_min=min(reward_values),
+        jackpot_band_max=max(reward_values),
+        jackpot_band_probability=0.0,
+        first_deposit_match_multiplier=1.0 if deposit_rules else (0.0 if signup_rules else float(FIRST_DEPOSIT_MATCH_MULTIPLIER)),
     )
 
 
@@ -346,7 +381,7 @@ def _build_referral_stats(current_user: User, db: Session) -> ReferralStats:
         claimable_rewards_total=0.0,
         missions=[],
         next_milestone=None,
-        reward_policy=_build_reward_policy(),
+        reward_policy=_build_reward_policy(db),
         recent_referrals=recent_referrals,
     )
 

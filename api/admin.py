@@ -78,11 +78,17 @@ from services.deposit_bonus import (
     get_deposit_bonus_config,
     set_deposit_bonus_config,
 )
+from services.referral_rewards import (
+    get_referral_reward_config,
+    set_referral_reward_config,
+)
 
 from schemas.admin import (
     SystemConfigUpdate,
     DepositBonusConfigUpdate,
     DepositBonusConfigResponse,
+    ReferralRewardConfigUpdate,
+    ReferralRewardConfigResponse,
     NotificationSendRequest,
     UserStatusUpdate,
     RestrictionCreateRequest,
@@ -2303,6 +2309,26 @@ def update_admin_deposit_bonus_config(
     updated_payload = set_deposit_bonus_config(db, data.model_dump())
     db.commit()
     logger.info("Deposit bonus config updated by admin=%s", current_user.username)
+    return updated_payload
+
+
+@router.get("/referral-reward/config", response_model=ReferralRewardConfigResponse)
+def get_admin_referral_reward_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    return get_referral_reward_config(db)
+
+
+@router.put("/referral-reward/config", response_model=ReferralRewardConfigResponse)
+def update_admin_referral_reward_config(
+    data: ReferralRewardConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    updated_payload = set_referral_reward_config(db, data.model_dump())
+    db.commit()
+    logger.info("Referral reward config updated by admin=%s", current_user.username)
     return updated_payload
 
 

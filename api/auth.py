@@ -649,9 +649,6 @@ async def verify_otp(
         "role": db_user.role,
         "user": user_payload,
     }
-    # Include signup bonus in response so Android can show the welcome popup
-    if signup_bonus_amount is not None:
-        response["signup_bonus_amount"] = signup_bonus_amount
     return response
 
 @router.post("/login")
