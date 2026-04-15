@@ -32,6 +32,7 @@ from schemas.wallet import (
 from core.config import settings
 from services.notifications import add_user_notification
 from services.referral_rewards import maybe_credit_referrer_for_first_successful_deposit
+from services.deposit_bonus import apply_deposit_bonus_if_eligible
 from core.websockets import manager as ws_manager
 from services.wallet_balances import (
     WALLET_BUCKET_BONUS,
@@ -623,6 +624,12 @@ async def pay0_callback_handler(
             tx.gateway_payment_id = status_res.get("utr") or form_data.get("utr")
             user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
             credit_wallet(user, tx.amount, WALLET_BUCKET_DEPOSIT)
+            deposit_bonus = apply_deposit_bonus_if_eligible(
+                db=db,
+                user=user,
+                deposit_tx=tx,
+                source="PAY0_CALLBACK",
+            )
             referral_bonus = maybe_credit_referrer_for_first_successful_deposit(
                 db=db,
                 referred_user=user,
@@ -639,7 +646,11 @@ async def pay0_callback_handler(
             add_user_notification(
                 db, user.id,
                 "Payment Confirmed ✅",
-                f"₹{tx.amount:.0f} has been added to your wallet via UPI.",
+                (
+                    f"₹{tx.amount:.0f} has been added to your wallet via UPI."
+                    if deposit_bonus <= Decimal("0.00")
+                    else f"₹{tx.amount:.0f} added + ₹{deposit_bonus:.2f} deposit bonus credited to your wallet."
+                ),
                 "WALLET"
             )
             background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
@@ -709,6 +720,12 @@ def get_payment_status(
                 tx.gateway_order_id = status_res.get("order_id") or tx.gateway_order_id or txnid
                 user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
                 credit_wallet(user, tx.amount, WALLET_BUCKET_DEPOSIT)
+                deposit_bonus = apply_deposit_bonus_if_eligible(
+                    db=db,
+                    user=user,
+                    deposit_tx=tx,
+                    source="PAY0_STATUS_POLL",
+                )
                 referral_bonus = maybe_credit_referrer_for_first_successful_deposit(
                     db=db,
                     referred_user=user,
@@ -719,6 +736,12 @@ def get_payment_status(
                         "Referral first-deposit bonus credited via status poll | ref_user=%s amount=%s",
                         user.id,
                         referral_bonus,
+                    )
+                if deposit_bonus > Decimal("0.00"):
+                    logger.info(
+                        "Deposit bonus credited via status poll | user=%s amount=%s",
+                        user.id,
+                        deposit_bonus,
                     )
                 register_payment_success_sync(db, user.id)
                 db.commit()

@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional, Union, Any
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Optional, Union, Any, Literal
 from datetime import datetime
 
 class SystemConfigResponse(BaseModel):
@@ -138,3 +138,41 @@ class BannerUpdateRequest(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=300)
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
+
+
+class DepositBonusRule(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=64)
+    label: Optional[str] = Field(default=None, max_length=80)
+    min_amount: float = Field(..., gt=0)
+    max_amount: Optional[float] = Field(default=None, gt=0)
+    bonus_type: Literal["PERCENT", "FIXED"] = "PERCENT"
+    bonus_value: float = Field(..., gt=0)
+    max_bonus_amount: Optional[float] = Field(default=None, gt=0)
+    is_active: bool = True
+
+    @field_validator("bonus_type", mode="before")
+    @classmethod
+    def normalize_bonus_type(cls, value: str) -> str:
+        if value is None:
+            return "PERCENT"
+        return str(value).strip().upper()
+
+    @model_validator(mode="after")
+    def validate_rule(self):
+        if self.max_amount is not None and self.max_amount < self.min_amount:
+            raise ValueError("max_amount must be greater than or equal to min_amount")
+
+        if self.bonus_type == "PERCENT" and self.bonus_value > 100:
+            raise ValueError("Percent bonus cannot exceed 100")
+
+        return self
+
+
+class DepositBonusConfigUpdate(BaseModel):
+    enabled: bool = True
+    rules: list[DepositBonusRule] = Field(default_factory=list)
+
+
+class DepositBonusConfigResponse(BaseModel):
+    enabled: bool
+    rules: list[DepositBonusRule]

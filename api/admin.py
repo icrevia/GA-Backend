@@ -73,9 +73,16 @@ from services.wallet_balances import (
     get_total_balance,
     to_money,
 )
+from services.deposit_bonus import (
+    apply_deposit_bonus_if_eligible,
+    get_deposit_bonus_config,
+    set_deposit_bonus_config,
+)
 
 from schemas.admin import (
     SystemConfigUpdate,
+    DepositBonusConfigUpdate,
+    DepositBonusConfigResponse,
     NotificationSendRequest,
     UserStatusUpdate,
     RestrictionCreateRequest,
@@ -2279,6 +2286,26 @@ def update_developer_system_config(
     return update_system_config(data=data, db=db, current_user=current_user)
 
 
+@router.get("/deposit-bonus/config", response_model=DepositBonusConfigResponse)
+def get_admin_deposit_bonus_config(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    return get_deposit_bonus_config(db)
+
+
+@router.put("/deposit-bonus/config", response_model=DepositBonusConfigResponse)
+def update_admin_deposit_bonus_config(
+    data: DepositBonusConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    updated_payload = set_deposit_bonus_config(db, data.model_dump())
+    db.commit()
+    logger.info("Deposit bonus config updated by admin=%s", current_user.username)
+    return updated_payload
+
+
 # ─────────────────────────────────────────────────────────────────
 # Notifications
 # ─────────────────────────────────────────────────────────────────
@@ -2551,6 +2578,13 @@ def manual_credit_transaction(
     tx.payment_mode = tx.payment_mode or "MANUAL_APPROVE"
     tx.failure_reason = None
 
+    deposit_bonus = apply_deposit_bonus_if_eligible(
+        db=db,
+        user=user,
+        deposit_tx=tx,
+        source="ADMIN_MANUAL_CREDIT",
+    )
+
     db.add(tx)
     db.add(user)
     db.commit()
@@ -2559,7 +2593,14 @@ def manual_credit_transaction(
         add_user_notification(
             db, tx.user_id,
             "Payment Confirmed ✅",
-            f"₹{float(credit_amount):.0f} has been added to your GamerzAdda wallet.",
+            (
+                f"₹{float(credit_amount):.0f} has been added to your GamerzAdda wallet."
+                if deposit_bonus <= Decimal("0.00")
+                else (
+                    f"₹{float(credit_amount):.0f} added + ₹{float(deposit_bonus):.2f} "
+                    "deposit bonus credited to your wallet."
+                )
+            ),
             "WALLET"
         )
     except Exception:
@@ -2567,10 +2608,13 @@ def manual_credit_transaction(
 
     logger.warning(
         f"Manual credit approved by admin={current_user.username} for tx={transaction_id} "
-        f"user={tx.user_id} amount={float(credit_amount):.2f}"
+        f"user={tx.user_id} amount={float(credit_amount):.2f} bonus={float(deposit_bonus):.2f}"
     )
     background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
-    return {"message": f"Transaction #{transaction_id} approved and credited."}
+    return {
+        "message": f"Transaction #{transaction_id} approved and credited.",
+        "deposit_bonus": float(deposit_bonus),
+    }
 
 
 @router.post("/transactions/{transaction_id}/mark-failed")
