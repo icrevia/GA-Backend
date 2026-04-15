@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from typing import List
+from typing import Any, List
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 import uuid
@@ -18,9 +18,12 @@ from models.withdraw_upi_account import WithdrawUpiAccount
 from services.pay0 import create_pay0_order, check_pay0_order_status
 from schemas.wallet import (
     AddMoneyRequest,
+    DepositBonusOffersResponse,
+    DepositBonusPreviewResponse,
     PaymentInitResponse,
     PromoRedeemRequest,
     PromoRedeemResponse,
+    DepositBonusOfferRule,
     WithdrawalRequest,
     WalletTransactionResponse,
     WalletBalanceResponse,
@@ -32,7 +35,11 @@ from schemas.wallet import (
 from core.config import settings
 from services.notifications import add_user_notification
 from services.referral_rewards import maybe_credit_referrer_for_first_successful_deposit
-from services.deposit_bonus import apply_deposit_bonus_if_eligible
+from services.deposit_bonus import (
+    apply_deposit_bonus_if_eligible,
+    evaluate_deposit_bonus,
+    get_deposit_bonus_config,
+)
 from core.websockets import manager as ws_manager
 from services.wallet_balances import (
     WALLET_BUCKET_BONUS,
@@ -124,6 +131,72 @@ def _normalize_promo_code(raw_value: str) -> str:
     return normalized[:40]
 
 
+def _format_rupee(value: Decimal | int | float | str | None) -> str:
+    amount = to_money(value)
+    if amount == amount.to_integral_value():
+        return str(int(amount))
+    return f"{amount:.2f}"
+
+
+def _serialize_deposit_bonus_rule(rule: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": (str(rule.get("id") or "").strip() or "rule"),
+        "label": (str(rule.get("label") or "").strip() or None),
+        "min_amount": to_money(rule.get("min_amount")),
+        "max_amount": (
+            to_money(rule.get("max_amount"))
+            if rule.get("max_amount") is not None
+            else None
+        ),
+        "bonus_type": str(rule.get("bonus_type") or "PERCENT").upper(),
+        "bonus_value": to_money(rule.get("bonus_value")),
+        "max_bonus_amount": (
+            to_money(rule.get("max_bonus_amount"))
+            if rule.get("max_bonus_amount") is not None
+            else None
+        ),
+    }
+
+
+def _active_deposit_bonus_rules(config_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    active_rules = []
+    for rule in config_payload.get("rules", []):
+        if not bool(rule.get("is_active", True)):
+            continue
+        active_rules.append(_serialize_deposit_bonus_rule(rule))
+
+    active_rules.sort(
+        key=lambda item: (
+            item["min_amount"],
+            item["max_amount"] if item["max_amount"] is not None else Decimal("999999999.99"),
+            item["id"],
+        )
+    )
+    return active_rules
+
+
+def _format_deposit_bonus_offer_line(rule: dict[str, Any]) -> str:
+    min_amount = rule["min_amount"]
+    max_amount = rule["max_amount"]
+    bonus_type = str(rule["bonus_type"]).upper()
+    bonus_value = rule["bonus_value"]
+    max_bonus_amount = rule["max_bonus_amount"]
+
+    if max_amount is None:
+        range_text = f"₹{_format_rupee(min_amount)}+"
+    else:
+        range_text = f"₹{_format_rupee(min_amount)}-₹{_format_rupee(max_amount)}"
+
+    if bonus_type == "FIXED":
+        bonus_text = f"+₹{_format_rupee(bonus_value)}"
+    else:
+        bonus_text = f"{_format_rupee(bonus_value)}%"
+        if max_bonus_amount is not None:
+            bonus_text = f"{bonus_text} (max ₹{_format_rupee(max_bonus_amount)})"
+
+    return f"{range_text}: {bonus_text} bonus"
+
+
 def _is_promo_expired(promo: PromoCode) -> bool:
     if not promo.expires_at:
         return False
@@ -136,6 +209,76 @@ def _is_promo_expired(promo: PromoCode) -> bool:
 # ─────────────────────────────────────────────────────────────────
 # Wallet balance & history
 # ─────────────────────────────────────────────────────────────────
+
+@router.get("/deposit-bonus/offers", response_model=DepositBonusOffersResponse)
+def get_deposit_bonus_offers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_wallet),
+):
+    _ = current_user
+
+    config_payload = get_deposit_bonus_config(db)
+    enabled = bool(config_payload.get("enabled", False))
+    rules = _active_deposit_bonus_rules(config_payload)
+
+    if enabled and rules:
+        preview_lines = [_format_deposit_bonus_offer_line(rule) for rule in rules[:2]]
+        display_text = " | ".join(preview_lines)
+    elif not enabled and rules:
+        display_text = "Deposit bonus offers are configured but currently paused."
+    elif enabled:
+        display_text = "No active deposit bonus offers right now."
+    else:
+        display_text = "Deposit bonus offers are currently unavailable."
+
+    return {
+        "enabled": enabled,
+        "rules": [DepositBonusOfferRule.model_validate(rule) for rule in rules],
+        "display_text": display_text,
+    }
+
+
+@router.get("/deposit-bonus/preview", response_model=DepositBonusPreviewResponse)
+def preview_deposit_bonus(
+    amount: Decimal,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_wallet),
+):
+    _ = current_user
+
+    deposit_amount = to_money(amount)
+    if deposit_amount <= Decimal("0.00"):
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+
+    config_payload = get_deposit_bonus_config(db)
+    matched_rule, bonus_amount = evaluate_deposit_bonus(deposit_amount, config_payload)
+
+    rule_payload = None
+    eligible = matched_rule is not None and bonus_amount > Decimal("0.00")
+
+    if eligible:
+        rule_payload = DepositBonusOfferRule.model_validate(
+            _serialize_deposit_bonus_rule(matched_rule)
+        )
+        message = (
+            f"Recharge ₹{_format_rupee(deposit_amount)} and get extra ₹{_format_rupee(bonus_amount)} bonus."
+        )
+    else:
+        active_rules = _active_deposit_bonus_rules(config_payload)
+        if not bool(config_payload.get("enabled", False)):
+            message = "Deposit bonus offers are currently disabled."
+        elif not active_rules:
+            message = "No active deposit bonus offers right now."
+        else:
+            message = "No bonus offer is available for this amount."
+
+    return {
+        "eligible": eligible,
+        "amount": deposit_amount,
+        "bonus_amount": to_money(bonus_amount),
+        "message": message,
+        "rule": rule_payload,
+    }
 
 @router.get("/balance", response_model=WalletBalanceResponse)
 def get_balance(current_user: User = Depends(get_current_user_wallet)):

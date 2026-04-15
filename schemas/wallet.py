@@ -18,6 +18,30 @@ class PaymentInitResponse(BaseModel):
     pay0_init: Optional[Pay0InitResponse] = None
 
 
+class DepositBonusOfferRule(BaseModel):
+    id: str
+    label: Optional[str] = None
+    min_amount: Decimal
+    max_amount: Optional[Decimal] = None
+    bonus_type: str
+    bonus_value: Decimal
+    max_bonus_amount: Optional[Decimal] = None
+
+
+class DepositBonusOffersResponse(BaseModel):
+    enabled: bool
+    rules: List[DepositBonusOfferRule]
+    display_text: Optional[str] = None
+
+
+class DepositBonusPreviewResponse(BaseModel):
+    eligible: bool
+    amount: Decimal
+    bonus_amount: Decimal
+    message: str
+    rule: Optional[DepositBonusOfferRule] = None
+
+
 class CancelPaymentRequest(BaseModel):
     txnid: str
 
