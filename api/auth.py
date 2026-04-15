@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import or_, select, func
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from core.database import get_db
+from core.database import get_db, SessionLocal
 from core.config import settings
 from core.security import hash_password, verify_password, create_access_token
 from core.websockets import manager
@@ -14,6 +14,7 @@ from schemas.token import Token
 from typing import Any
 from decimal import Decimal
 from datetime import datetime, timedelta
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -296,17 +297,62 @@ async def _log_email_otp_event(
                 pass
 
 
+async def _send_login_email_otp_in_background(
+    *,
+    user_id: int | None,
+    username: str | None,
+    email: str,
+    phone: str,
+    source: str,
+    otp_code: str,
+    client_ip: str | None,
+    user_agent: str | None,
+) -> None:
+    status = "SENT"
+    message = "Email OTP sent"
+
+    try:
+        await send_login_otp_email(
+            to_email=email,
+            otp_code=otp_code,
+            recipient_name=username,
+        )
+    except Exception as exc:
+        _clear_email_login_otp(phone)
+        status = "FAILED"
+        message = f"Send failed: {str(exc)[:260]}"
+        logger.warning("EMAIL OTP SEND ERR for %s: %s", phone, exc)
+
+    try:
+        async with SessionLocal() as bg_db:
+            log_row = EmailOtpLog(
+                user_id=user_id,
+                email=(email or "").strip().lower() or None,
+                phone_number=_normalize_signup_phone(phone or "") or None,
+                source=(source or "LOGIN").strip().upper()[:32],
+                event_type="SEND",
+                status=status,
+                message=(message or "").strip()[:400] or None,
+                client_ip=(client_ip or "").strip()[:64] or None,
+                user_agent=(user_agent or "").strip()[:220] or None,
+            )
+            bg_db.add(log_row)
+            await bg_db.commit()
+    except Exception as log_exc:
+        logger.warning("EMAIL OTP LOG WRITE ERR: %s", log_exc)
+
+
 async def _send_login_email_otp_if_available(
     *,
     request: Request,
     db: AsyncSession,
     user: User,
     source: str,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, bool]:
     normalized_phone = _normalize_signup_phone(user.phone_number or "")
     normalized_email = (user.email or "").strip().lower()
     if not normalized_phone or not normalized_email or not is_email_otp_available():
-        return False, None
+        return False, None, False
 
     otp_code = _generate_email_login_otp(int(settings.EMAIL_OTP_LENGTH))
     _store_email_login_otp(
@@ -316,25 +362,37 @@ async def _send_login_email_otp_if_available(
         otp_code=otp_code,
     )
 
+    masked_email = _mask_email(normalized_email)
+    client_ip = extract_client_ip(request)
+    user_agent = (request.headers.get("user-agent") or "").strip()[:220] or None
+
+    await _log_email_otp_event(
+        db,
+        user=user,
+        email=normalized_email,
+        phone=normalized_phone,
+        source=source,
+        event_type="SEND",
+        status="QUEUED",
+        message="Email OTP queued",
+        request=request,
+        commit=True,
+    )
+
     try:
-        await send_login_otp_email(
-            to_email=normalized_email,
-            otp_code=otp_code,
-            recipient_name=user.username,
+        asyncio.create_task(
+            _send_login_email_otp_in_background(
+                user_id=user.id,
+                username=user.username,
+                email=normalized_email,
+                phone=normalized_phone,
+                source=source,
+                otp_code=otp_code,
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
         )
-        await _log_email_otp_event(
-            db,
-            user=user,
-            email=normalized_email,
-            phone=normalized_phone,
-            source=source,
-            event_type="SEND",
-            status="SENT",
-            message="Email OTP sent",
-            request=request,
-            commit=True,
-        )
-        return True, _mask_email(normalized_email)
+        return False, masked_email, True
     except Exception as exc:
         _clear_email_login_otp(normalized_phone)
         await _log_email_otp_event(
@@ -345,22 +403,29 @@ async def _send_login_email_otp_if_available(
             source=source,
             event_type="SEND",
             status="FAILED",
-            message=f"Send failed: {str(exc)[:260]}",
+            message=f"Queue failed: {str(exc)[:260]}",
             request=request,
             commit=True,
         )
-        logger.warning("EMAIL OTP SEND ERR for %s: %s", normalized_phone, exc)
-        return False, None
+        logger.warning("EMAIL OTP QUEUE ERR for %s: %s", normalized_phone, exc)
+        return False, None, False
 
 
-def _build_login_otp_response(*, phone: str, email_sent: bool, masked_email: str | None) -> dict[str, Any]:
+def _build_login_otp_response(
+    *,
+    phone: str,
+    email_sent: bool,
+    masked_email: str | None,
+    email_queued: bool = False,
+) -> dict[str, Any]:
     channels = ["SMS"]
-    message = "OTP sent"
     payload: dict[str, Any] = {
-        "message": message,
+        "message": "OTP sent",
         "phone": phone,
         "status": "pending_verification",
         "otp_channels": channels,
+        "email_otp_sent": False,
+        "email_otp_queued": False,
     }
 
     if email_sent:
@@ -369,11 +434,16 @@ def _build_login_otp_response(*, phone: str, email_sent: bool, masked_email: str
         payload["email_otp_sent"] = True
         if masked_email:
             payload["masked_email"] = masked_email
-    else:
-        payload["email_otp_sent"] = False
+        return payload
+
+    if email_queued:
+        payload["message"] = "OTP sent on SMS. Email delivery in progress"
+        payload["email_otp_queued"] = True
+        if masked_email:
+            payload["masked_email"] = masked_email
+        return payload
 
     return payload
-
 
 async def _send_admin_login_otp_to_telegram(*, otp_code: str, phone: str, identifier: str) -> None:
     bot_token = _clean_env_value(settings.TELEGRAM_BOT_TOKEN)
@@ -1016,7 +1086,7 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
             user=user,
         )
 
-        email_sent, masked_email = await _send_login_email_otp_if_available(
+        email_sent, masked_email, email_queued = await _send_login_email_otp_if_available(
             request=request,
             db=db,
             user=user,
@@ -1028,6 +1098,7 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
             phone=user.phone_number,
             email_sent=email_sent,
             masked_email=masked_email,
+            email_queued=email_queued,
         )
     except Exception as e:
         logger.error(f"OTP SEND ERR LOGIN: {e}")
@@ -1113,9 +1184,10 @@ async def send_otp(
         )
 
         email_sent = False
+        email_queued = False
         masked_email: str | None = None
         if existing_user:
-            email_sent, masked_email = await _send_login_email_otp_if_available(
+            email_sent, masked_email, email_queued = await _send_login_email_otp_if_available(
                 request=request,
                 db=db,
                 user=existing_user,
@@ -1126,6 +1198,7 @@ async def send_otp(
             phone=normalized_phone,
             email_sent=email_sent,
             masked_email=masked_email,
+            email_queued=email_queued,
         )
     except Exception as e:
         logger.error(f"OTP SEND ERR RESEND: {e}")
