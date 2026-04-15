@@ -5,21 +5,16 @@ import smtplib
 from email.message import EmailMessage
 from html import escape
 
-import httpx
-
 from core.config import settings
 
 
 def is_email_otp_available() -> bool:
     if not settings.EMAIL_OTP_ENABLED:
         return False
-    if not settings.EMAIL_FROM_ADDRESS:
+    from_address = (settings.EMAIL_FROM_ADDRESS or "").strip()
+    if not from_address:
         return False
-    if settings.EMAIL_SMTP_HOST:
-        return True
-    if settings.EMAIL_HTTP_RELAY_URL:
-        return True
-    return False
+    return bool(_resolve_smtp_host())
 
 
 def _build_sender_header() -> str:
@@ -38,8 +33,19 @@ def _smtp_mode_label() -> str:
     return "PLAINTEXT"
 
 
-def _is_http_relay_configured() -> bool:
-    return bool((settings.EMAIL_HTTP_RELAY_URL or "").strip())
+def _extract_domain_from_email(email_address: str) -> str:
+    local, sep, domain = (email_address or "").strip().lower().rpartition("@")
+    if not sep or not local or not domain:
+        return ""
+    return domain
+
+
+def _resolve_smtp_host() -> str:
+    configured_host = (settings.EMAIL_SMTP_HOST or "").strip()
+    if configured_host:
+        return configured_host
+    from_address = (settings.EMAIL_FROM_ADDRESS or "").strip()
+    return _extract_domain_from_email(from_address)
 
 
 def _build_login_email_html(*, otp_code: str, expires_minutes: int, recipient_name: str | None) -> str:
@@ -107,7 +113,9 @@ def _send_email_sync(*, to_email: str, subject: str, text_body: str, html_body: 
     msg.add_alternative(html_body, subtype="html")
 
     timeout = float(settings.EMAIL_SMTP_TIMEOUT_SECONDS)
-    host = settings.EMAIL_SMTP_HOST
+    host = _resolve_smtp_host()
+    if not host:
+        raise RuntimeError("SMTP host is empty and could not be derived from EMAIL_FROM_ADDRESS")
     port = int(settings.EMAIL_SMTP_PORT)
     mode = _smtp_mode_label()
     stage = "connect"
@@ -155,44 +163,9 @@ def _send_email_sync(*, to_email: str, subject: str, text_body: str, html_body: 
         ) from exc
 
 
-async def _send_email_via_http_relay(*, to_email: str, subject: str, html_body: str) -> None:
-    relay_url = (settings.EMAIL_HTTP_RELAY_URL or "").strip()
-    if not relay_url:
-        raise RuntimeError("EMAIL_HTTP_RELAY_URL is empty")
-
-    headers: dict[str, str] = {}
-    relay_token = (settings.EMAIL_HTTP_RELAY_AUTH_TOKEN or "").strip()
-    if relay_token:
-        headers["Authorization"] = f"Bearer {relay_token}"
-
-    timeout = float(settings.EMAIL_HTTP_RELAY_TIMEOUT_SECONDS)
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                relay_url,
-                data={
-                    "to": to_email,
-                    "subject": subject,
-                    "message": html_body,
-                },
-                headers=headers or None,
-            )
-    except (httpx.TimeoutException, httpx.RequestError) as exc:
-        raise RuntimeError(
-            f"HTTP email relay request failed (url={relay_url}, timeout={timeout}s): {exc}"
-        ) from exc
-
-    if response.status_code < 200 or response.status_code >= 300:
-        body_preview = (response.text or "")[:300]
-        raise RuntimeError(
-            "HTTP email relay returned non-success status "
-            f"(url={relay_url}, status={response.status_code}, body={body_preview})"
-        )
-
-
 async def send_login_otp_email(*, to_email: str, otp_code: str, recipient_name: str | None = None) -> None:
     if not is_email_otp_available():
-        raise RuntimeError("Email OTP is disabled or email transport configuration is incomplete")
+        raise RuntimeError("Email OTP is disabled or SMTP configuration is incomplete")
 
     email = (to_email or "").strip().lower()
     if not email:
@@ -212,36 +185,10 @@ async def send_login_otp_email(*, to_email: str, otp_code: str, recipient_name: 
         recipient_name=recipient_name,
     )
 
-    smtp_error: Exception | None = None
-    if settings.EMAIL_SMTP_HOST:
-        try:
-            await asyncio.to_thread(
-                _send_email_sync,
-                to_email=email,
-                subject=subject,
-                text_body=text_body,
-                html_body=html_body,
-            )
-            return
-        except Exception as exc:  # noqa: BLE001
-            smtp_error = exc
-
-    if _is_http_relay_configured():
-        try:
-            await _send_email_via_http_relay(
-                to_email=email,
-                subject=subject,
-                html_body=html_body,
-            )
-            return
-        except Exception as relay_exc:  # noqa: BLE001
-            if smtp_error is not None:
-                raise RuntimeError(
-                    f"SMTP failed first: {smtp_error}; HTTP relay failed next: {relay_exc}"
-                ) from relay_exc
-            raise
-
-    if smtp_error is not None:
-        raise smtp_error
-
-    raise RuntimeError("Email OTP is disabled or no email transport is configured")
+    await asyncio.to_thread(
+        _send_email_sync,
+        to_email=email,
+        subject=subject,
+        text_body=text_body,
+        html_body=html_body,
+    )

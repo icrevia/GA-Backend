@@ -96,9 +96,6 @@ class Settings(BaseSettings):
     EMAIL_SMTP_STARTTLS: bool = True
     EMAIL_SMTP_USE_SSL: bool = False
     EMAIL_SMTP_TIMEOUT_SECONDS: float = 15.0
-    EMAIL_HTTP_RELAY_URL: str = ""
-    EMAIL_HTTP_RELAY_AUTH_TOKEN: str = ""
-    EMAIL_HTTP_RELAY_TIMEOUT_SECONDS: float = 8.0
     EMAIL_FROM_ADDRESS: str = ""
     EMAIL_FROM_NAME: str = "GamerzAdda Security"
 
@@ -251,13 +248,6 @@ class Settings(BaseSettings):
             )
             object.__setattr__(self, "EMAIL_SMTP_TIMEOUT_SECONDS", 15.0)
 
-        if self.EMAIL_HTTP_RELAY_TIMEOUT_SECONDS <= 0:
-            print(
-                "[CONFIG WARNING] EMAIL_HTTP_RELAY_TIMEOUT_SECONDS must be positive. Falling back to 8.",
-                file=sys.stderr,
-            )
-            object.__setattr__(self, "EMAIL_HTTP_RELAY_TIMEOUT_SECONDS", 8.0)
-
         if self.EMAIL_SMTP_USE_SSL and self.EMAIL_SMTP_STARTTLS:
             print(
                 "[CONFIG WARNING] Both EMAIL_SMTP_USE_SSL and EMAIL_SMTP_STARTTLS are enabled. "
@@ -268,13 +258,18 @@ class Settings(BaseSettings):
 
         if self.EMAIL_OTP_ENABLED:
             missing_email_fields = []
-            has_smtp_transport = bool(self.EMAIL_SMTP_HOST)
-            has_http_transport = bool(self.EMAIL_HTTP_RELAY_URL)
+            smtp_host = (self.EMAIL_SMTP_HOST or "").strip()
+            from_address = (self.EMAIL_FROM_ADDRESS or "").strip()
+            derived_host = ""
+            if from_address:
+                _, sep, email_domain = from_address.rpartition("@")
+                if sep and email_domain.strip():
+                    derived_host = email_domain.strip().lower()
 
-            if not has_smtp_transport and not has_http_transport:
-                missing_email_fields.append("EMAIL_SMTP_HOST or EMAIL_HTTP_RELAY_URL")
-            if not self.EMAIL_FROM_ADDRESS:
+            if not from_address:
                 missing_email_fields.append("EMAIL_FROM_ADDRESS")
+            if not smtp_host and not derived_host:
+                missing_email_fields.append("EMAIL_SMTP_HOST or valid EMAIL_FROM_ADDRESS domain")
 
             if missing_email_fields:
                 print(
@@ -283,6 +278,12 @@ class Settings(BaseSettings):
                     file=sys.stderr,
                 )
                 object.__setattr__(self, "EMAIL_OTP_ENABLED", False)
+            elif not smtp_host and derived_host:
+                print(
+                    "[CONFIG WARNING] EMAIL_SMTP_HOST is empty. "
+                    f"Falling back to SMTP host derived from EMAIL_FROM_ADDRESS domain ({derived_host}).",
+                    file=sys.stderr,
+                )
 
         if self.SECURITY_ALERTS_ENABLED and (not self.TELEGRAM_BOT_TOKEN or not self.TELEGRAM_ALERT_CHAT_ID):
             print(
