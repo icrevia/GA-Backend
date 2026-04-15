@@ -192,7 +192,7 @@ async def _send_email_via_http_relay(*, to_email: str, subject: str, html_body: 
 
 async def send_login_otp_email(*, to_email: str, otp_code: str, recipient_name: str | None = None) -> None:
     if not is_email_otp_available():
-        raise RuntimeError("Email OTP is disabled or SMTP configuration is incomplete")
+        raise RuntimeError("Email OTP is disabled or email transport configuration is incomplete")
 
     email = (to_email or "").strip().lower()
     if not email:
