@@ -419,26 +419,28 @@ def _build_login_otp_response(
     email_queued: bool = False,
 ) -> dict[str, Any]:
     channels = ["SMS"]
-    payload: dict[str, Any] = {
+    payload: dict[str, str] = {
         "message": "OTP sent",
         "phone": phone,
         "status": "pending_verification",
-        "otp_channels": channels,
-        "email_otp_sent": False,
-        "email_otp_queued": False,
+        "otp_channels": "SMS",
+        "email_otp_sent": "false",
+        "email_otp_queued": "false",
     }
 
     if email_sent:
         channels.append("EMAIL")
         payload["message"] = "OTP sent on SMS and email"
-        payload["email_otp_sent"] = True
+        payload["email_otp_sent"] = "true"
+        payload["otp_channels"] = ",".join(channels)
         if masked_email:
             payload["masked_email"] = masked_email
         return payload
 
     if email_queued:
         payload["message"] = "OTP sent on SMS. Email delivery in progress"
-        payload["email_otp_queued"] = True
+        payload["email_otp_queued"] = "true"
+        payload["otp_channels"] = ",".join(channels)
         if masked_email:
             payload["masked_email"] = masked_email
         return payload
