@@ -8,6 +8,7 @@ from models.config import SystemConfig
 from models.promo import PromoCode
 from models.restriction import UserRestriction
 from models.otp_phone_lock import OtpPhoneLock
+from models.user_activity_lock import UserActivityLock
 from models.support import ChatSession, ChatMessage
 from models.notification import Notification
 

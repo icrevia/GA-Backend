@@ -44,6 +44,11 @@ from services.wallet_balances import (
     get_withdrawable_balance,
     to_money,
 )
+from services.activity_limits import (
+    register_payment_failure_sync,
+    register_payment_init_attempt_sync,
+    register_payment_success_sync,
+)
 
 logger = logging.getLogger("GamerzAdda.wallet")
 
@@ -451,6 +456,8 @@ def init_add_money(
     if req.amount > 100_000:
         raise HTTPException(status_code=400, detail="Maximum recharge amount is ₹1,00,000")
 
+    register_payment_init_attempt_sync(db, current_user.id)
+
     txnid = f"GA-{uuid.uuid4().hex[:6].upper()}"
 
     tx = WalletTransaction(
@@ -519,6 +526,11 @@ def init_add_money(
             failure_reason=failure_reason,
         )
         db.add(failed_tx)
+        register_payment_failure_sync(
+            db,
+            user_id=current_user.id,
+            failure_reason=failure_reason,
+        )
         db.commit()
 
         add_user_notification(
@@ -596,6 +608,11 @@ async def pay0_callback_handler(
             if status_amount != tx.amount:
                 tx.status = "FAILED"
                 tx.failure_reason = f"PAY0_AMOUNT_MISMATCH expected={tx.amount} got={status_amount}"
+                register_payment_failure_sync(
+                    db,
+                    user_id=tx.user_id,
+                    failure_reason=tx.failure_reason,
+                )
                 db.add(tx)
                 db.commit()
                 if "/webhook" in str(request.url):
@@ -626,6 +643,7 @@ async def pay0_callback_handler(
                 "WALLET"
             )
             background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+            register_payment_success_sync(db, user.id)
     
     elif status_res["status"] == "FAILED":
         final_status = "failed"
@@ -639,6 +657,11 @@ async def pay0_callback_handler(
                 "WALLET"
             )
             background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+            register_payment_failure_sync(
+                db,
+                user_id=tx.user_id,
+                failure_reason=tx.failure_reason,
+            )
             
     db.add(tx)
     db.commit()
@@ -697,14 +720,25 @@ def get_payment_status(
                         user.id,
                         referral_bonus,
                     )
+                register_payment_success_sync(db, user.id)
                 db.commit()
             else:
                 tx.status = "FAILED"
                 tx.failure_reason = f"PAY0_AMOUNT_MISMATCH expected={tx.amount} got={status_amount}"
+                register_payment_failure_sync(
+                    db,
+                    user_id=tx.user_id,
+                    failure_reason=tx.failure_reason,
+                )
                 db.commit()
         elif status_res["status"] == "FAILED":
             tx.status = "FAILED"
             tx.failure_reason = status_res.get("error") or "PAY0_CONFIRMED_FAILED"
+            register_payment_failure_sync(
+                db,
+                user_id=tx.user_id,
+                failure_reason=tx.failure_reason,
+            )
             db.commit()
 
     return {
@@ -739,6 +773,11 @@ def cancel_payment(
     if tx.status == "PENDING":
         tx.status = "FAILED"
         tx.failure_reason = "Cancelled by user"
+        register_payment_failure_sync(
+            db,
+            user_id=tx.user_id,
+            failure_reason=tx.failure_reason,
+        )
         db.commit()
     return {"status": tx.status}
 

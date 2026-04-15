@@ -29,6 +29,10 @@ from services.otp_limits import (
     register_otp_send_success_async,
     reset_otp_lock_after_success_async,
 )
+from services.activity_limits import (
+    ensure_login_session_lock_not_blocking_async,
+    register_login_session_success_async,
+)
 
 # In-memory store
 _otp_store: dict[str, str] = {}
@@ -618,6 +622,9 @@ async def verify_otp(
         user=db_user,
     )
 
+    if db_user.role != "ADMIN":
+        await register_login_session_success_async(db, db_user)
+
     client_ip = extract_client_ip(request)
     device_name = _resolve_login_device(request)
 
@@ -731,6 +738,7 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
 
     if not _is_admin_web_login_request(request):
         await _raise_if_phone_otp_locked(db, user.phone_number)
+        await ensure_login_session_lock_not_blocking_async(db, user)
 
     if not _is_admin_web_login_request(request):
         if await _is_blocked_for_login_support(db, user):
@@ -832,6 +840,9 @@ async def send_otp(
     existing_user = user_result.scalar_one_or_none()
 
     await _raise_if_phone_otp_locked(db, normalized_phone)
+
+    if existing_user:
+        await ensure_login_session_lock_not_blocking_async(db, existing_user)
 
     if existing_user and await _is_blocked_for_login_support(db, existing_user):
         return _build_banned_support_response(existing_user, normalized_phone)

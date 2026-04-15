@@ -21,6 +21,7 @@ from models.user import User
 from models.banner import HomeBanner
 from models.promo import PromoCode
 from models.otp_phone_lock import OtpPhoneLock
+from models.user_activity_lock import UserActivityLock
 from models.restriction import UserRestriction
 from models.tournament import Tournament
 from models.wallet import WalletTransaction
@@ -54,6 +55,11 @@ from services.otp_limits import (
     list_otp_locks_sync,
     reset_otp_lock_sync,
 )
+from services.activity_limits import (
+    clear_activity_locks_for_user_sync,
+    list_activity_locks_sync,
+    reset_activity_lock_sync,
+)
 from core.websockets import manager as ws_manager
 from services.wallet_balances import (
     WALLET_BUCKET_BONUS,
@@ -75,6 +81,7 @@ from schemas.admin import (
     RestrictionCreateRequest,
     RestrictionUnlockRequest,
     OtpLockResetRequest,
+    ActivityLockResetRequest,
     UserWalletBucketsUpdate,
     TournamentRoomUpdate,
     TournamentConclude,
@@ -1704,6 +1711,12 @@ def update_user_status(
             admin_id=current_user.id,
             note="OTP limit reset from admin status update",
         )
+        clear_activity_locks_for_user_sync(
+            db,
+            user=user,
+            admin_id=current_user.id,
+            note="Activity limits reset from admin status update",
+        )
 
     db.add(user)
     db.commit()
@@ -2702,6 +2715,29 @@ def _serialize_admin_otp_lock(lock: OtpPhoneLock, user: User | None) -> dict:
     }
 
 
+def _serialize_admin_activity_lock(lock: UserActivityLock, user: User | None) -> dict:
+    return {
+        "id": lock.id,
+        "user_id": lock.user_id,
+        "username": user.username if user else None,
+        "email": user.email if user else None,
+        "user_is_active": bool(user.is_active) if user else None,
+        "activity_type": lock.activity_type,
+        "cycle_key": lock.cycle_key,
+        "daily_count": int(lock.daily_count or 0),
+        "failed_streak": int(lock.failed_streak or 0),
+        "is_locked": bool(lock.is_locked),
+        "lock_status": lock.lock_status,
+        "lock_reason": lock.lock_reason,
+        "locked_at": lock.locked_at,
+        "lock_expires_at": lock.lock_expires_at,
+        "last_attempt_at": lock.last_attempt_at,
+        "last_success_at": lock.last_success_at,
+        "unlocked_at": lock.unlocked_at,
+        "reset_note": lock.reset_note,
+    }
+
+
 @router.get("/otp-locks")
 def get_otp_locks(
     include_unlocked: bool = False,
@@ -2743,6 +2779,55 @@ def reset_otp_lock(
     return {
         "message": "OTP limit reset successfully",
         "lock": _serialize_admin_otp_lock(updated, user),
+    }
+
+
+@router.get("/activity-locks")
+def get_activity_locks(
+    include_unlocked: bool = False,
+    activity_type: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    locks = list_activity_locks_sync(
+        db,
+        include_unlocked=include_unlocked,
+        activity_type=activity_type,
+    )
+    user_ids = {lock.user_id for lock in locks if lock.user_id}
+    users_by_id = {
+        item.id: item
+        for item in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
+
+    return [
+        _serialize_admin_activity_lock(lock, users_by_id.get(lock.user_id))
+        for lock in locks
+    ]
+
+
+@router.post("/activity-locks/{lock_id}/reset")
+def reset_activity_lock(
+    lock_id: int,
+    payload: ActivityLockResetRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    lock = db.query(UserActivityLock).filter(UserActivityLock.id == lock_id).with_for_update().first()
+    if not lock:
+        raise HTTPException(status_code=404, detail="Activity lock not found")
+
+    updated = reset_activity_lock_sync(
+        db,
+        lock=lock,
+        admin_id=current_user.id,
+        note=(payload.note or "").strip() or "Activity limit reset from admin panel",
+    )
+
+    user = db.query(User).filter(User.id == updated.user_id).first()
+    return {
+        "message": "Activity lock reset successfully",
+        "lock": _serialize_admin_activity_lock(updated, user),
     }
 
 @router.post("/transactions/reject-all-pending")
