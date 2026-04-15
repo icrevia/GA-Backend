@@ -24,6 +24,14 @@ def _build_sender_header() -> str:
     return from_address
 
 
+def _smtp_mode_label() -> str:
+    if settings.EMAIL_SMTP_USE_SSL:
+        return "SSL"
+    if settings.EMAIL_SMTP_STARTTLS:
+        return "STARTTLS"
+    return "PLAINTEXT"
+
+
 def _build_login_email_html(*, otp_code: str, expires_minutes: int, recipient_name: str | None) -> str:
     safe_name = escape((recipient_name or "Gamer").strip() or "Gamer")
     safe_code = escape(otp_code)
@@ -89,21 +97,52 @@ def _send_email_sync(*, to_email: str, subject: str, text_body: str, html_body: 
     msg.add_alternative(html_body, subtype="html")
 
     timeout = float(settings.EMAIL_SMTP_TIMEOUT_SECONDS)
-    if settings.EMAIL_SMTP_USE_SSL:
-        with smtplib.SMTP_SSL(settings.EMAIL_SMTP_HOST, settings.EMAIL_SMTP_PORT, timeout=timeout) as client:
-            if settings.EMAIL_SMTP_USERNAME and settings.EMAIL_SMTP_PASSWORD:
-                client.login(settings.EMAIL_SMTP_USERNAME, settings.EMAIL_SMTP_PASSWORD)
-            client.send_message(msg)
-        return
+    host = settings.EMAIL_SMTP_HOST
+    port = int(settings.EMAIL_SMTP_PORT)
+    mode = _smtp_mode_label()
+    stage = "connect"
 
-    with smtplib.SMTP(settings.EMAIL_SMTP_HOST, settings.EMAIL_SMTP_PORT, timeout=timeout) as client:
-        client.ehlo()
-        if settings.EMAIL_SMTP_STARTTLS:
-            client.starttls()
+    try:
+        if settings.EMAIL_SMTP_USE_SSL:
+            with smtplib.SMTP_SSL(host, port, timeout=timeout) as client:
+                stage = "ehlo"
+                client.ehlo()
+                if settings.EMAIL_SMTP_USERNAME and settings.EMAIL_SMTP_PASSWORD:
+                    stage = "auth"
+                    client.login(settings.EMAIL_SMTP_USERNAME, settings.EMAIL_SMTP_PASSWORD)
+                stage = "send"
+                client.send_message(msg)
+            return
+
+        with smtplib.SMTP(host, port, timeout=timeout) as client:
+            stage = "ehlo"
             client.ehlo()
-        if settings.EMAIL_SMTP_USERNAME and settings.EMAIL_SMTP_PASSWORD:
-            client.login(settings.EMAIL_SMTP_USERNAME, settings.EMAIL_SMTP_PASSWORD)
-        client.send_message(msg)
+            if settings.EMAIL_SMTP_STARTTLS:
+                stage = "starttls"
+                client.starttls()
+                stage = "ehlo_after_starttls"
+                client.ehlo()
+            if settings.EMAIL_SMTP_USERNAME and settings.EMAIL_SMTP_PASSWORD:
+                stage = "auth"
+                client.login(settings.EMAIL_SMTP_USERNAME, settings.EMAIL_SMTP_PASSWORD)
+            stage = "send"
+            client.send_message(msg)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise RuntimeError(
+            f"SMTP auth failed during {stage} (host={host}, port={port}, mode={mode})"
+        ) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"SMTP timeout during {stage} (host={host}, port={port}, mode={mode}, timeout={timeout}s)"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"SMTP network error during {stage} (host={host}, port={port}, mode={mode}): {exc}"
+        ) from exc
+    except smtplib.SMTPException as exc:
+        raise RuntimeError(
+            f"SMTP protocol error during {stage} (host={host}, port={port}, mode={mode}): {exc}"
+        ) from exc
 
 
 async def send_login_otp_email(*, to_email: str, otp_code: str, recipient_name: str | None = None) -> None:
