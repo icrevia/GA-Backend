@@ -52,6 +52,8 @@ MAX_WITHDRAW_UPI_ACCOUNTS = 3
 SPIN_COST = Decimal("10.00")
 DAILY_SPIN_LIMIT = 1
 SPIN_DAILY_RESET_MINUTE_IST = 1
+WITHDRAWAL_DAILY_RESET_MINUTE_IST = 1
+WITHDRAWAL_SAME_DAY_FEE = Decimal("5.00")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -75,12 +77,12 @@ def _planned_prize_for_spin(spin_number: int) -> Decimal:
     return _common_spin_prize_amount()
 
 
-def _current_spin_cycle_ist() -> tuple[str, datetime, datetime]:
-    """Return cycle key and UTC-naive window for daily reset at 12:01 AM IST."""
+def _current_daily_cycle_ist(reset_minute_ist: int) -> tuple[str, datetime, datetime]:
+    """Return cycle key and UTC-naive window for a daily reset minute in IST."""
     now_ist = datetime.now(IST)
     reset_point_ist = now_ist.replace(
         hour=0,
-        minute=SPIN_DAILY_RESET_MINUTE_IST,
+        minute=reset_minute_ist,
         second=0,
         microsecond=0,
     )
@@ -90,6 +92,16 @@ def _current_spin_cycle_ist() -> tuple[str, datetime, datetime]:
     cycle_start_utc = cycle_start_ist.astimezone(timezone.utc).replace(tzinfo=None)
     cycle_end_utc = cycle_end_ist.astimezone(timezone.utc).replace(tzinfo=None)
     return cycle_key, cycle_start_utc, cycle_end_utc
+
+
+def _current_spin_cycle_ist() -> tuple[str, datetime, datetime]:
+    """Return cycle key and UTC-naive window for daily reset at 12:01 AM IST."""
+    return _current_daily_cycle_ist(SPIN_DAILY_RESET_MINUTE_IST)
+
+
+def _current_withdrawal_cycle_ist() -> tuple[str, datetime, datetime]:
+    """Return cycle key and UTC-naive window for daily withdrawal reset at 12:01 AM IST."""
+    return _current_daily_cycle_ist(WITHDRAWAL_DAILY_RESET_MINUTE_IST)
 
 
 def _normalize_upi_id(raw_value: str) -> str:
@@ -749,26 +761,60 @@ def request_withdrawal(
     if not normalized_upi_id:
         raise HTTPException(status_code=400, detail="UPI ID is required")
 
+    _, cycle_start, cycle_end = _current_withdrawal_cycle_ist()
+    same_day_withdraw_count = (
+        db.query(WalletTransaction.id)
+        .filter(
+            WalletTransaction.user_id == user.id,
+            WalletTransaction.transaction_type == "WITHDRAWAL",
+            WalletTransaction.created_at >= cycle_start,
+            WalletTransaction.created_at < cycle_end,
+        )
+        .count()
+    )
+    withdrawal_fee = (
+        WITHDRAWAL_SAME_DAY_FEE
+        if same_day_withdraw_count >= 1
+        else Decimal("0.00")
+    )
+    total_wallet_debit = amount_to_withdraw + withdrawal_fee
+
     withdrawable_balance = get_withdrawable_balance(user)
-    if withdrawable_balance < amount_to_withdraw:
-        raise HTTPException(
-            status_code=400,
-            detail=(
+    if withdrawable_balance < total_wallet_debit:
+        if withdrawal_fee > Decimal("0.00"):
+            detail = (
+                f"Insufficient winning balance. Available ₹{withdrawable_balance:.2f}, "
+                f"requested ₹{amount_to_withdraw:.2f} + fee ₹{withdrawal_fee:.2f}."
+            )
+        else:
+            detail = (
                 f"Insufficient winning balance. Available ₹{withdrawable_balance:.2f}, "
                 f"requested ₹{amount_to_withdraw:.2f}."
-            ),
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=detail,
         )
 
     try:
         debit_wallet(
             user,
-            amount_to_withdraw,
+            total_wallet_debit,
             spend_order=(WALLET_BUCKET_WINNING,),
         )
     except InsufficientWalletBalanceError as exc:
+        if withdrawal_fee > Decimal("0.00"):
+            detail = (
+                f"Insufficient winning balance. Available ₹{exc.available:.2f}, requested ₹{amount_to_withdraw:.2f} "
+                f"+ fee ₹{withdrawal_fee:.2f}."
+            )
+        else:
+            detail = (
+                f"Insufficient winning balance. Available ₹{exc.available:.2f}, requested ₹{exc.required:.2f}."
+            )
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient winning balance. Available ₹{exc.available:.2f}, requested ₹{exc.required:.2f}.",
+            detail=detail,
         )
 
     existing_accounts = (
@@ -787,26 +833,58 @@ def request_withdrawal(
             )
         )
 
+    withdraw_reference = f"GA-{uuid.uuid4().hex[:6].upper()}"
     tx = WalletTransaction(
         user_id=user.id,
         amount=-amount_to_withdraw,
         transaction_type="WITHDRAWAL",
         status="PENDING",
-        reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+        reference_id=withdraw_reference,
         payment_mode="UPI",
         payu_txn_id=normalized_upi_id,
     )
 
     db.add(tx)
+    if withdrawal_fee > Decimal("0.00"):
+        db.add(
+            WalletTransaction(
+                user_id=user.id,
+                amount=-withdrawal_fee,
+                transaction_type="WITHDRAWAL_FEE",
+                status="SUCCESS",
+                reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+                payment_mode="UPI",
+                failure_reason=(
+                    f"SOURCE_WITHDRAWAL_REF:{withdraw_reference};"
+                    f"DAILY_RESET:00:{WITHDRAWAL_DAILY_RESET_MINUTE_IST:02d}_IST"
+                ),
+            )
+        )
     db.add(user)
     db.commit()
+
+    if withdrawal_fee > Decimal("0.00"):
+        notification_body = (
+            f"Your withdrawal request of ₹{amount_to_withdraw:.2f} has been submitted. "
+            f"A processing fee of ₹{withdrawal_fee:.2f} was charged because this is an additional same-day withdrawal."
+        )
+    else:
+        notification_body = (
+            f"Your withdrawal request of ₹{amount_to_withdraw:.2f} has been submitted with no processing fee."
+        )
 
     add_user_notification(
         db,
         user.id,
         "Withdrawal Requested",
-        f"Your withdrawal request of ₹{amount_to_withdraw:.2f} has been submitted.",
+        notification_body,
         "WALLET"
     )
 
-    return {"message": "Withdrawal requested successfully."}
+    if withdrawal_fee > Decimal("0.00"):
+        return {
+            "message": (
+                f"Withdrawal requested successfully. ₹{withdrawal_fee:.2f} fee applied for additional same-day withdrawal."
+            )
+        }
+    return {"message": "Withdrawal requested successfully. No processing fee applied."}

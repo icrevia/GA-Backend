@@ -755,7 +755,7 @@ def _refund_withdrawal_if_needed(
     admin_username: str,
     reason: str,
 ) -> Decimal:
-    """Refund a pending withdrawal exactly once and write an immutable refund ledger entry."""
+    """Refund a pending withdrawal (and linked fee, if any) exactly once with immutable ledger entries."""
     if tx.transaction_type != "WITHDRAWAL":
         return Decimal("0.00")
 
@@ -763,32 +763,80 @@ def _refund_withdrawal_if_needed(
     existing_refund = db.query(WalletTransaction).filter(
         WalletTransaction.reference_id == refund_reference
     ).first()
-    if existing_refund:
+    fee_refund_reference = f"REFUND_WDF_{tx.id}"
+    existing_fee_refund = db.query(WalletTransaction).filter(
+        WalletTransaction.reference_id == fee_refund_reference
+    ).first()
+    if existing_refund and existing_fee_refund:
         return Decimal("0.00")
 
     user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found for refund")
 
-    refund_amount = abs(Decimal(tx.amount or Decimal("0.00")))
-    if refund_amount <= Decimal("0.00"):
-        return Decimal("0.00")
+    total_refund_amount = Decimal("0.00")
+    refund_markers: list[str] = []
 
-    # Withdrawal is debited from winning only, so refund goes back to winning.
-    credit_wallet(user, refund_amount, WALLET_BUCKET_WINNING)
-    refund_tx = WalletTransaction(
-        user_id=tx.user_id,
-        amount=refund_amount,
-        transaction_type="WITHDRAWAL_REFUND",
-        status="SUCCESS",
-        reference_id=refund_reference,
-        payment_mode="SYSTEM_REFUND",
-        failure_reason=f"SOURCE_WITHDRAWAL:{tx.id};REASON:{reason};ADMIN:{admin_username}",
-    )
+    if not existing_refund:
+        withdrawal_refund_amount = abs(Decimal(tx.amount or Decimal("0.00")))
+        if withdrawal_refund_amount > Decimal("0.00"):
+            # Withdrawal is debited from winning only, so refund goes back to winning.
+            credit_wallet(user, withdrawal_refund_amount, WALLET_BUCKET_WINNING)
+            refund_tx = WalletTransaction(
+                user_id=tx.user_id,
+                amount=withdrawal_refund_amount,
+                transaction_type="WITHDRAWAL_REFUND",
+                status="SUCCESS",
+                reference_id=refund_reference,
+                payment_mode="SYSTEM_REFUND",
+                failure_reason=f"SOURCE_WITHDRAWAL:{tx.id};REASON:{reason};ADMIN:{admin_username}",
+            )
+            db.add(refund_tx)
+            total_refund_amount += withdrawal_refund_amount
+            refund_markers.append(f"WITHDRAW_REFUNDED:{refund_reference}")
+
+    if not existing_fee_refund and tx.reference_id:
+        fee_tx = (
+            db.query(WalletTransaction)
+            .filter(
+                WalletTransaction.user_id == tx.user_id,
+                WalletTransaction.transaction_type == "WITHDRAWAL_FEE",
+                WalletTransaction.status == "SUCCESS",
+                WalletTransaction.amount < Decimal("0.00"),
+                WalletTransaction.failure_reason.contains(f"SOURCE_WITHDRAWAL_REF:{tx.reference_id}"),
+            )
+            .order_by(WalletTransaction.id.desc())
+            .first()
+        )
+
+        if fee_tx:
+            fee_refund_amount = abs(Decimal(fee_tx.amount or Decimal("0.00")))
+            if fee_refund_amount > Decimal("0.00"):
+                credit_wallet(user, fee_refund_amount, WALLET_BUCKET_WINNING)
+                fee_refund_tx = WalletTransaction(
+                    user_id=tx.user_id,
+                    amount=fee_refund_amount,
+                    transaction_type="WITHDRAWAL_FEE_REFUND",
+                    status="SUCCESS",
+                    reference_id=fee_refund_reference,
+                    payment_mode="SYSTEM_REFUND",
+                    failure_reason=(
+                        f"SOURCE_WITHDRAWAL:{tx.id};SOURCE_WITHDRAWAL_FEE:{fee_tx.id};"
+                        f"REASON:{reason};ADMIN:{admin_username}"
+                    ),
+                )
+                db.add(fee_refund_tx)
+                total_refund_amount += fee_refund_amount
+                refund_markers.append(f"FEE_REFUNDED:{fee_refund_reference}")
+
+    if refund_markers:
+        tx.failure_reason = (
+            f"REASON:{reason};ADMIN:{admin_username};"
+            + ";".join(refund_markers)
+        )
+
     db.add(user)
-    db.add(refund_tx)
-    tx.failure_reason = f"{reason}|REFUNDED:{refund_reference}"
-    return refund_amount
+    return total_refund_amount
 
 @router.get("/withdrawals")
 def list_pending_withdrawals(
@@ -890,7 +938,10 @@ def reject_withdrawal(
         add_user_notification(
             db, tx.user_id,
             "Withdrawal Rejected ❌",
-            f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. The amount has been refunded to your wallet balance.",
+            (
+                f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. "
+                "The debited amount and any applicable withdrawal fee have been refunded to your winning wallet."
+            ),
             "WALLET"
         )
     except Exception: pass
