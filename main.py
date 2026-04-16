@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -179,7 +180,7 @@ async def lifespan(app: FastAPI):
                     args=(
                         tokens,
                         "🚀 GamerzAdda is Live!",
-                        "Server is active — App is running smooth! Check out new tournaments 🎮",
+                        "Server is active — Check out new tournaments, powered by Zxtni Studio! 🎮",
                     ),
                     daemon=True,
                 ).start()
@@ -312,9 +313,180 @@ app.add_middleware(
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+BROWSER_UA_HINTS = (
+    "mozilla/",
+    "chrome/",
+    "safari/",
+    "firefox/",
+    "edg/",
+    "opera/",
+)
+
+
+def _is_browser_navigation(request: Request) -> bool:
+    accept = request.headers.get("accept", "").lower()
+    user_agent = request.headers.get("user-agent", "").lower()
+    sec_fetch_mode = request.headers.get("sec-fetch-mode", "").lower()
+    sec_fetch_dest = request.headers.get("sec-fetch-dest", "").lower()
+
+    accepts_document = (
+        "text/html" in accept
+        or "application/xhtml+xml" in accept
+        or (sec_fetch_mode == "navigate" and sec_fetch_dest == "document")
+    )
+    has_browser_ua = any(hint in user_agent for hint in BROWSER_UA_HINTS)
+    return accepts_document and has_browser_ua
+
+
 @app.get("/")
-def root():
-    return {"message": "GamerzAdda API — Online", "version": "2.0"}
+def root(request: Request):
+    json_payload = {"message": "GamerzAdda API — Online", "version": "2.0"}
+
+    if not _is_browser_navigation(request):
+        return JSONResponse(content=json_payload)
+
+    html = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>GamerzAdda API Gateway</title>
+            <style>
+                :root {
+                    --bg-a: #0a0f1f;
+                    --bg-b: #131f36;
+                    --panel: rgba(10, 15, 31, 0.78);
+                    --line: rgba(96, 165, 250, 0.35);
+                    --text: #e5ecff;
+                    --muted: #a7b6d9;
+                    --accent: #60a5fa;
+                    --danger: #f87171;
+                }
+
+                * { box-sizing: border-box; }
+
+                body {
+                    margin: 0;
+                    min-height: 100vh;
+                    display: grid;
+                    place-items: center;
+                    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                    color: var(--text);
+                    background:
+                        radial-gradient(circle at 15% 20%, #1d4ed8 0%, transparent 35%),
+                        radial-gradient(circle at 80% 70%, #0ea5e9 0%, transparent 30%),
+                        linear-gradient(135deg, var(--bg-a), var(--bg-b));
+                }
+
+                .wrap {
+                    width: min(920px, 94vw);
+                    border: 1px solid var(--line);
+                    background: var(--panel);
+                    border-radius: 24px;
+                    padding: 2.2rem;
+                    backdrop-filter: blur(8px);
+                    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4);
+                }
+
+                .chip {
+                    display: inline-block;
+                    font-size: 0.75rem;
+                    letter-spacing: 0.08em;
+                    text-transform: uppercase;
+                    color: #bfdbfe;
+                    padding: 0.35rem 0.7rem;
+                    border-radius: 999px;
+                    border: 1px solid rgba(191, 219, 254, 0.4);
+                    background: rgba(30, 58, 138, 0.25);
+                }
+
+                h1 {
+                    margin: 1rem 0 0.4rem;
+                    font-size: clamp(2rem, 4.5vw, 3.6rem);
+                    line-height: 1.1;
+                }
+
+                .sub {
+                    margin: 0;
+                    color: var(--muted);
+                    font-size: clamp(1rem, 1.8vw, 1.15rem);
+                }
+
+                .grid {
+                    margin-top: 1.4rem;
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 0.9rem;
+                }
+
+                .card {
+                    border: 1px solid var(--line);
+                    border-radius: 16px;
+                    padding: 0.95rem;
+                    background: rgba(15, 23, 42, 0.6);
+                }
+
+                .k {
+                    font-size: 0.75rem;
+                    text-transform: uppercase;
+                    letter-spacing: 0.06em;
+                    color: #9fb3dc;
+                }
+
+                .v {
+                    margin-top: 0.25rem;
+                    font-size: 1rem;
+                    font-weight: 700;
+                }
+
+                .footer {
+                    margin-top: 1.2rem;
+                    padding: 0.9rem 1rem;
+                    border-radius: 12px;
+                    border: 1px dashed rgba(248, 113, 113, 0.45);
+                    background: rgba(127, 29, 29, 0.22);
+                    color: #fecaca;
+                    font-size: 0.92rem;
+                }
+
+                code {
+                    color: var(--accent);
+                    font-weight: 600;
+                }
+            </style>
+        </head>
+        <body>
+            <main class="wrap">
+                <span class="chip">Public Landing View</span>
+                <h1>This is not the game lobby.</h1>
+                <p class="sub">
+                    You reached the GamerzAdda API gateway. Humans get this page; apps should call the API routes.
+                </p>
+
+                <section class="grid">
+                    <article class="card">
+                        <div class="k">Status</div>
+                        <div class="v">Online</div>
+                    </article>
+                    <article class="card">
+                        <div class="k">Version</div>
+                        <div class="v">2.0</div>
+                    </article>
+                    <article class="card">
+                        <div class="k">API Base</div>
+                        <div class="v"><code>/api/v1</code></div>
+                    </article>
+                </section>
+
+                <p class="footer">
+                    Tip: open <code>/api/v1/status</code> for machine-readable health data.
+                </p>
+            </main>
+        </body>
+        </html>
+    """
+    return HTMLResponse(content=html)
 
 @app.get("/api/v1/status")
 async def get_system_status():
@@ -336,7 +508,7 @@ async def get_system_status():
                 "maintenance_mode": config_map.get("maintenance_mode", "false").lower() == "true",
                 "status": "online",
                 "latest_version_code": int(config_map.get("latest_version_code", "1")),
-                "support_email": "support@gamerzadda.in"
+                "support_email": "gamerzaddahelp@gmail.com"
             }
             _system_status_cache["value"] = payload
             _system_status_cache["expires_at"] = now + SYSTEM_STATUS_CACHE_TTL_SECONDS
