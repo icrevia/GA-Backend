@@ -29,6 +29,7 @@ from schemas.tournament import (
 from services.notifications import add_user_notification
 from services.daily_bonus_usage import (
     get_daily_bonus_allowance,
+    reduce_bonus_usage,
     register_bonus_usage,
 )
 from services.wallet_balances import (
@@ -818,9 +819,10 @@ def join_tournament(
 
         success_message = f"Team '{team_name}' created for {tournament.title}! Share code: {join_code}"
         if daily_bonus_blocked_amount > Decimal("0.00"):
-            success_message += (
-                f" Daily bonus limit applied: ₹{daily_bonus_blocked_amount:.2f} extra bonus "
-                "could not be used today."
+            success_message = (
+                f"Daily bonus limit reached for today. Only allowed bonus was used; "
+                f"₹{daily_bonus_blocked_amount:.2f} extra bonus could not be used. "
+                f"{success_message}"
             )
 
         return {
@@ -1068,9 +1070,10 @@ def join_tournament(
 
     success_message = f"Successfully joined {tournament.title}!"
     if daily_bonus_blocked_amount > Decimal("0.00"):
-        success_message += (
-            f" Daily bonus limit applied: ₹{daily_bonus_blocked_amount:.2f} extra bonus "
-            "could not be used today."
+        success_message = (
+            f"Daily bonus limit reached for today. Only allowed bonus was used; "
+            f"₹{daily_bonus_blocked_amount:.2f} extra bonus could not be used. "
+            f"{success_message}"
         )
 
     return {
@@ -1179,7 +1182,13 @@ def cancel_tournament_participation(
         raise HTTPException(status_code=404, detail="User not found")
 
     if refund_amount > Decimal("0.00"):
-        cancel_dedup_key = f"CANCEL:{tournament_id}:{current_user.id}"
+        join_reference_token = "JOIN_UNKNOWN"
+        if join_tx is not None:
+            join_reference_token = (join_tx.reference_id or "").strip() or f"JOINTX:{join_tx.id}"
+        else:
+            join_reference_token = f"PARTICIPANT:{participant.id}"
+
+        cancel_dedup_key = f"CANCEL:{tournament_id}:{current_user.id}:{join_reference_token}"
         existing_refund = db.query(WalletTransaction).filter(
             WalletTransaction.user_id == current_user.id,
             WalletTransaction.transaction_type == "TOURNAMENT_CANCEL_REFUND",
@@ -1208,6 +1217,10 @@ def cancel_tournament_participation(
                     ),
                 )
             )
+
+        bonus_refund_amount = to_money(refund_distribution.get(WALLET_BUCKET_BONUS))
+        if bonus_refund_amount > Decimal("0.00"):
+            reduce_bonus_usage(user_wallet, bonus_refund_amount)
 
     teammate_user_ids: list[int] = []
     if is_captain_cancel:

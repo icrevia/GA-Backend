@@ -504,9 +504,10 @@ def play_spin(
 
     spin_message = "Spin completed successfully"
     if daily_bonus_blocked_amount > Decimal("0.00"):
-        spin_message += (
-            f". Daily bonus limit applied: ₹{daily_bonus_blocked_amount:.2f} extra bonus "
-            "could not be used today"
+        spin_message = (
+            f"Daily bonus limit reached for today. Only allowed bonus was used; "
+            f"₹{daily_bonus_blocked_amount:.2f} extra bonus could not be used. "
+            f"{spin_message}"
         )
 
     return {

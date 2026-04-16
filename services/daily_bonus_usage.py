@@ -101,3 +101,23 @@ def register_bonus_usage(
     current_used = to_money(getattr(user, "daily_bonus_used", Decimal("0.00")) or Decimal("0.00"))
     user.daily_bonus_used = to_money(current_used + used_amount)
     return used_amount
+
+
+def reduce_bonus_usage(
+    user: User,
+    amount: Decimal | int | float | str,
+    cycle_key: Optional[str] = None,
+) -> Decimal:
+    reduced_amount = to_money(amount)
+    if reduced_amount <= Decimal("0.00"):
+        return Decimal("0.00")
+
+    active_cycle_key = cycle_key or get_bonus_usage_cycle_key()
+    stored_cycle = (getattr(user, "daily_bonus_cycle_key", None) or "").strip()
+    if stored_cycle != active_cycle_key:
+        return Decimal("0.00")
+
+    current_used = to_money(getattr(user, "daily_bonus_used", Decimal("0.00")) or Decimal("0.00"))
+    applied_reduction = min(current_used, reduced_amount)
+    user.daily_bonus_used = to_money(current_used - applied_reduction)
+    return applied_reduction
