@@ -14,6 +14,7 @@ from core.database import get_db_sync as get_db
 from models.user import User
 from models.wallet import WalletTransaction
 from models.promo import PromoCode
+from models.config import SystemConfig
 from models.withdraw_upi_account import WithdrawUpiAccount
 from services.pay0 import create_pay0_order, check_pay0_order_status
 from schemas.wallet import (
@@ -68,6 +69,10 @@ SPIN_DAILY_RESET_MINUTE_IST = 1
 WITHDRAWAL_DAILY_RESET_MINUTE_IST = 1
 WITHDRAWAL_SAME_DAY_FEE = Decimal("5.00")
 IST = timezone(timedelta(hours=5, minutes=30))
+MIN_DEPOSIT_CONFIG_KEY = "minimum_deposit_amount"
+MIN_WITHDRAWAL_CONFIG_KEY = "minimum_withdrawal_amount"
+DEFAULT_MIN_DEPOSIT_AMOUNT = Decimal("10.00")
+DEFAULT_MIN_WITHDRAWAL_AMOUNT = Decimal("50.00")
 
 
 def _common_spin_prize_amount() -> Decimal:
@@ -136,6 +141,35 @@ def _format_rupee(value: Decimal | int | float | str | None) -> str:
     if amount == amount.to_integral_value():
         return str(int(amount))
     return f"{amount:.2f}"
+
+
+def _read_decimal_system_config(db: Session, key: str, fallback: Decimal) -> Decimal:
+    config_row = db.query(SystemConfig).filter(SystemConfig.config_key == key).first()
+    if not config_row or config_row.config_value is None:
+        return to_money(fallback)
+
+    raw_value = str(config_row.config_value).strip()
+    if not raw_value:
+        return to_money(fallback)
+
+    try:
+        value = to_money(raw_value)
+    except Exception:
+        return to_money(fallback)
+
+    if value <= Decimal("0.00"):
+        return to_money(fallback)
+    if value < fallback:
+        return to_money(fallback)
+    return value
+
+
+def _get_min_deposit_amount(db: Session) -> Decimal:
+    return _read_decimal_system_config(db, MIN_DEPOSIT_CONFIG_KEY, DEFAULT_MIN_DEPOSIT_AMOUNT)
+
+
+def _get_min_withdrawal_amount(db: Session) -> Decimal:
+    return _read_decimal_system_config(db, MIN_WITHDRAWAL_CONFIG_KEY, DEFAULT_MIN_WITHDRAWAL_AMOUNT)
 
 
 def _serialize_deposit_bonus_rule(rule: dict[str, Any]) -> dict[str, Any]:
@@ -595,8 +629,12 @@ def init_add_money(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_wallet)
 ):
-    if req.amount < 1:
-        raise HTTPException(status_code=400, detail="Minimum recharge amount is ₹1")
+    minimum_deposit_amount = _get_min_deposit_amount(db)
+    if req.amount < minimum_deposit_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Minimum recharge amount is ₹{_format_rupee(minimum_deposit_amount)}",
+        )
     if req.amount > 100_000:
         raise HTTPException(status_code=400, detail="Maximum recharge amount is ₹1,00,000")
 
@@ -954,9 +992,15 @@ def request_withdrawal(
     current_user: User = Depends(get_current_user_wallet)
 ):
     amount_to_withdraw = to_money(req.amount)
+    minimum_withdrawal_amount = _get_min_withdrawal_amount(db)
 
     if amount_to_withdraw <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
+    if amount_to_withdraw < minimum_withdrawal_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Minimum withdrawal amount is ₹{_format_rupee(minimum_withdrawal_amount)}",
+        )
     if amount_to_withdraw > Decimal("50000.00"):
         raise HTTPException(status_code=400, detail="Maximum withdrawal per request is ₹50,000")
 
