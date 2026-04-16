@@ -388,11 +388,16 @@ def play_spin(
     available_deposit = to_money(getattr(user, "deposit_balance", Decimal("0.00")) or Decimal("0.00"))
     available_winning = to_money(getattr(user, "winning_balance", Decimal("0.00")) or Decimal("0.00"))
 
+    potential_bonus_take_without_daily_cap = min(available_bonus, to_money(SPIN_COST))
     bonus_cap_for_spin = to_money(SPIN_COST)
     if daily_bonus_remaining is not None:
         bonus_cap_for_spin = min(bonus_cap_for_spin, to_money(daily_bonus_remaining))
 
     bonus_take = min(available_bonus, bonus_cap_for_spin)
+    daily_bonus_blocked_amount = Decimal("0.00")
+    if daily_bonus_remaining is not None and potential_bonus_take_without_daily_cap > bonus_take:
+        daily_bonus_blocked_amount = to_money(potential_bonus_take_without_daily_cap - bonus_take)
+
     remaining_after_bonus = to_money(SPIN_COST - bonus_take)
 
     deposit_take = min(available_deposit, remaining_after_bonus)
@@ -402,15 +407,26 @@ def play_spin(
     remaining_due = to_money(remaining_after_deposit - winning_take)
 
     if remaining_due > Decimal("0.00"):
-        message = (
-            f"Insufficient balance. Available ₹{(bonus_take + deposit_take + winning_take):.2f}, "
-            f"required ₹{SPIN_COST:.2f}."
-        )
-        if daily_bonus_remaining is not None:
-            message += (
-                f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
-                f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+        if (
+            daily_bonus_remaining is not None
+            and daily_bonus_remaining <= Decimal("0.00")
+            and daily_bonus_blocked_amount > Decimal("0.00")
+        ):
+            message = (
+                f"Daily bonus limit reached for today. Limit ₹{daily_bonus_limit_amount:.2f}, "
+                f"used ₹{daily_bonus_used_today:.2f}. Bonus wallet cannot be used further today. "
+                f"Available now from deposit/winning: ₹{(deposit_take + winning_take):.2f}."
             )
+        else:
+            message = (
+                f"Insufficient balance. Available ₹{(bonus_take + deposit_take + winning_take):.2f}, "
+                f"required ₹{SPIN_COST:.2f}."
+            )
+            if daily_bonus_remaining is not None:
+                message += (
+                    f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
+                    f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+                )
         raise HTTPException(status_code=400, detail=message)
 
     try:
@@ -486,8 +502,15 @@ def play_spin(
     remaining_spins = max(0, daily_spin_limit - spins_used_today)
     wallet_breakdown = get_wallet_breakdown(user)
 
+    spin_message = "Spin completed successfully"
+    if daily_bonus_blocked_amount > Decimal("0.00"):
+        spin_message += (
+            f". Daily bonus limit applied: ₹{daily_bonus_blocked_amount:.2f} extra bonus "
+            "could not be used today"
+        )
+
     return {
-        "message": "Spin completed successfully",
+        "message": spin_message,
         "prize_amount": prize_amount,
         "spin_cost": SPIN_COST,
         "spins_used_today": spins_used_today,

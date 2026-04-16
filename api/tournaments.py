@@ -289,7 +289,7 @@ def _compute_join_wallet_deductions(
     total_fee: Decimal,
     bonus_usage_limit_percentage: Decimal,
     daily_bonus_remaining: Decimal | None,
-) -> tuple[dict[str, Decimal], Decimal, Decimal, Decimal]:
+) -> tuple[dict[str, Decimal], Decimal, Decimal, Decimal, Decimal]:
     fee = to_money(total_fee)
     limit_pct = to_money(bonus_usage_limit_percentage)
     per_match_bonus_cap_amount = to_money((fee * limit_pct) / Decimal("100.00"))
@@ -302,8 +302,13 @@ def _compute_join_wallet_deductions(
     available_deposit = to_money(getattr(user_wallet, "deposit_balance", Decimal("0.00")))
     available_winning = to_money(getattr(user_wallet, "winning_balance", Decimal("0.00")))
 
+    potential_bonus_take_without_daily_cap = min(available_bonus, per_match_bonus_cap_amount, fee)
     bonus_take = min(available_bonus, effective_bonus_cap_amount, fee)
     remaining_after_bonus = to_money(fee - bonus_take)
+
+    daily_bonus_blocked_amount = Decimal("0.00")
+    if daily_bonus_remaining is not None and potential_bonus_take_without_daily_cap > bonus_take:
+        daily_bonus_blocked_amount = to_money(potential_bonus_take_without_daily_cap - bonus_take)
 
     deposit_take = min(available_deposit, remaining_after_bonus)
     remaining_after_deposit = to_money(remaining_after_bonus - deposit_take)
@@ -316,7 +321,13 @@ def _compute_join_wallet_deductions(
         WALLET_BUCKET_DEPOSIT: to_money(deposit_take),
         WALLET_BUCKET_WINNING: to_money(winning_take),
     }
-    return deductions, per_match_bonus_cap_amount, effective_bonus_cap_amount, remaining_due
+    return (
+        deductions,
+        per_match_bonus_cap_amount,
+        effective_bonus_cap_amount,
+        remaining_due,
+        daily_bonus_blocked_amount,
+    )
 
 
 def _apply_join_wallet_deductions(user_wallet: User, deductions: dict[str, Decimal]) -> None:
@@ -339,6 +350,7 @@ def _join_deduction_payload(
     daily_bonus_limit_amount: Decimal | None = None,
     daily_bonus_used_today: Decimal | None = None,
     daily_bonus_remaining_today: Decimal | None = None,
+    daily_bonus_blocked_amount: Decimal | None = None,
 ) -> dict[str, float | None]:
     total_deducted = to_money(
         to_money(deductions.get(WALLET_BUCKET_BONUS))
@@ -367,7 +379,111 @@ def _join_deduction_payload(
             if daily_bonus_remaining_today is not None
             else None
         ),
+        "daily_bonus_blocked_amount": (
+            float(to_money(daily_bonus_blocked_amount))
+            if daily_bonus_blocked_amount is not None
+            else None
+        ),
     }
+
+
+def _build_join_failure_reason(tournament_id: int, deductions: dict[str, Decimal]) -> str:
+    return (
+        f"TOUR:{tournament_id};"
+        f"DEDUCT_BONUS:{to_money(deductions.get(WALLET_BUCKET_BONUS)):.2f};"
+        f"DEDUCT_DEPOSIT:{to_money(deductions.get(WALLET_BUCKET_DEPOSIT)):.2f};"
+        f"DEDUCT_WINNING:{to_money(deductions.get(WALLET_BUCKET_WINNING)):.2f}"
+    )
+
+
+def _normalize_wallet_distribution(
+    distribution: dict[str, Decimal],
+    target_total: Decimal,
+) -> dict[str, Decimal]:
+    target = to_money(target_total)
+    normalized = {
+        WALLET_BUCKET_BONUS: to_money(distribution.get(WALLET_BUCKET_BONUS)),
+        WALLET_BUCKET_DEPOSIT: to_money(distribution.get(WALLET_BUCKET_DEPOSIT)),
+        WALLET_BUCKET_WINNING: to_money(distribution.get(WALLET_BUCKET_WINNING)),
+    }
+
+    if target <= Decimal("0.00"):
+        return {key: Decimal("0.00") for key in normalized}
+
+    current_total = to_money(sum(normalized.values(), Decimal("0.00")))
+    if current_total <= Decimal("0.00"):
+        return {
+            WALLET_BUCKET_BONUS: Decimal("0.00"),
+            WALLET_BUCKET_DEPOSIT: target,
+            WALLET_BUCKET_WINNING: Decimal("0.00"),
+        }
+
+    scaled = {
+        key: to_money((amount / current_total) * target)
+        for key, amount in normalized.items()
+    }
+    scaled_total = to_money(sum(scaled.values(), Decimal("0.00")))
+    diff = to_money(target - scaled_total)
+    if diff != Decimal("0.00"):
+        anchor_bucket = max(normalized, key=lambda key: normalized[key])
+        scaled[anchor_bucket] = to_money(scaled[anchor_bucket] + diff)
+
+    return scaled
+
+
+def _parse_join_deduction_distribution(
+    failure_reason: str | None,
+    tournament_id: int,
+    fallback_total: Decimal,
+) -> dict[str, Decimal]:
+    parsed = {
+        WALLET_BUCKET_BONUS: Decimal("0.00"),
+        WALLET_BUCKET_DEPOSIT: Decimal("0.00"),
+        WALLET_BUCKET_WINNING: Decimal("0.00"),
+    }
+
+    reason_text = str(failure_reason or "")
+    expected_tour_token = f"TOUR:{tournament_id}"
+    if expected_tour_token not in reason_text:
+        return _normalize_wallet_distribution(parsed, fallback_total)
+
+    for token in reason_text.split(";"):
+        token = token.strip()
+        try:
+            if token.startswith("DEDUCT_BONUS:"):
+                parsed[WALLET_BUCKET_BONUS] = to_money(token.split(":", 1)[1] or "0")
+            elif token.startswith("DEDUCT_DEPOSIT:"):
+                parsed[WALLET_BUCKET_DEPOSIT] = to_money(token.split(":", 1)[1] or "0")
+            elif token.startswith("DEDUCT_WINNING:"):
+                parsed[WALLET_BUCKET_WINNING] = to_money(token.split(":", 1)[1] or "0")
+        except Exception:
+            continue
+
+    return _normalize_wallet_distribution(parsed, fallback_total)
+
+
+def _scaled_refund_distribution(
+    original_distribution: dict[str, Decimal],
+    ratio: Decimal,
+) -> dict[str, Decimal]:
+    original_total = to_money(sum(original_distribution.values(), Decimal("0.00")))
+    refund_total = to_money(original_total * to_money(ratio))
+    return _normalize_wallet_distribution(original_distribution, refund_total)
+
+
+def _format_wallet_refund_breakdown(refund_distribution: dict[str, Decimal]) -> str:
+    parts: list[str] = []
+    bonus_amount = to_money(refund_distribution.get(WALLET_BUCKET_BONUS))
+    deposit_amount = to_money(refund_distribution.get(WALLET_BUCKET_DEPOSIT))
+    winning_amount = to_money(refund_distribution.get(WALLET_BUCKET_WINNING))
+
+    if bonus_amount > Decimal("0.00"):
+        parts.append(f"bonus ₹{bonus_amount:.2f}")
+    if deposit_amount > Decimal("0.00"):
+        parts.append(f"deposit ₹{deposit_amount:.2f}")
+    if winning_amount > Decimal("0.00"):
+        parts.append(f"winning ₹{winning_amount:.2f}")
+    return ", ".join(parts) if parts else "no wallet credit"
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -585,7 +701,13 @@ def join_tournament(
             db,
             user_wallet,
         )
-        deductions, per_match_bonus_cap_amount, bonus_cap_amount, remaining_due = _compute_join_wallet_deductions(
+        (
+            deductions,
+            per_match_bonus_cap_amount,
+            bonus_cap_amount,
+            remaining_due,
+            daily_bonus_blocked_amount,
+        ) = _compute_join_wallet_deductions(
             user_wallet,
             total_fee,
             bonus_usage_limit_percentage,
@@ -593,15 +715,26 @@ def join_tournament(
         )
         available_by_rule = to_money(total_fee - remaining_due)
         if remaining_due > Decimal("0.00"):
-            message = (
-                f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
-                f"(₹{per_match_bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
-            )
-            if daily_bonus_remaining is not None:
-                message += (
-                    f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
-                    f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+            if (
+                daily_bonus_remaining is not None
+                and daily_bonus_remaining <= Decimal("0.00")
+                and daily_bonus_blocked_amount > Decimal("0.00")
+            ):
+                message = (
+                    f"Daily bonus limit reached for today. Limit ₹{daily_bonus_limit_amount:.2f}, "
+                    f"used ₹{daily_bonus_used_today:.2f}. Bonus wallet cannot be used further today. "
+                    f"You can pay ₹{available_by_rule:.2f} from deposit/winning wallet right now."
                 )
+            else:
+                message = (
+                    f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
+                    f"(₹{per_match_bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
+                )
+                if daily_bonus_remaining is not None:
+                    message += (
+                        f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
+                        f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+                    )
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -645,7 +778,7 @@ def join_tournament(
             transaction_type="JOIN_TOURNAMENT",
             status="SUCCESS",
             reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
-            failure_reason=f"TOUR:{tournament_id}"
+            failure_reason=_build_join_failure_reason(tournament_id, deductions),
         )
         db.add(transaction)
 
@@ -683,8 +816,15 @@ def join_tournament(
         except Exception:
             pass
 
+        success_message = f"Team '{team_name}' created for {tournament.title}! Share code: {join_code}"
+        if daily_bonus_blocked_amount > Decimal("0.00"):
+            success_message += (
+                f" Daily bonus limit applied: ₹{daily_bonus_blocked_amount:.2f} extra bonus "
+                "could not be used today."
+            )
+
         return {
-            "message": f"Team '{team_name}' created for {tournament.title}! Share code: {join_code}",
+            "message": success_message,
             "tournament_id": tournament_id,
             "new_wallet_balance": float(get_total_balance(user_wallet)),
             "slot_no": slot_no,
@@ -700,6 +840,7 @@ def join_tournament(
                 daily_bonus_limit_amount=daily_bonus_limit_amount,
                 daily_bonus_used_today=daily_bonus_used_today,
                 daily_bonus_remaining_today=daily_bonus_remaining,
+                daily_bonus_blocked_amount=daily_bonus_blocked_amount,
             ),
         }
 
@@ -810,7 +951,13 @@ def join_tournament(
         db,
         user_wallet,
     )
-    deductions, per_match_bonus_cap_amount, bonus_cap_amount, remaining_due = _compute_join_wallet_deductions(
+    (
+        deductions,
+        per_match_bonus_cap_amount,
+        bonus_cap_amount,
+        remaining_due,
+        daily_bonus_blocked_amount,
+    ) = _compute_join_wallet_deductions(
         user_wallet,
         entry_fee,
         bonus_usage_limit_percentage,
@@ -819,15 +966,26 @@ def join_tournament(
     available_by_rule = to_money(entry_fee - remaining_due)
 
     if remaining_due > Decimal("0.00"):
-        message = (
-            f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
-            f"(₹{per_match_bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
-        )
-        if daily_bonus_remaining is not None:
-            message += (
-                f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
-                f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+        if (
+            daily_bonus_remaining is not None
+            and daily_bonus_remaining <= Decimal("0.00")
+            and daily_bonus_blocked_amount > Decimal("0.00")
+        ):
+            message = (
+                f"Daily bonus limit reached for today. Limit ₹{daily_bonus_limit_amount:.2f}, "
+                f"used ₹{daily_bonus_used_today:.2f}. Bonus wallet cannot be used further today. "
+                f"You can pay ₹{available_by_rule:.2f} from deposit/winning wallet right now."
             )
+        else:
+            message = (
+                f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
+                f"(₹{per_match_bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
+            )
+            if daily_bonus_remaining is not None:
+                message += (
+                    f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
+                    f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+                )
         raise HTTPException(
             status_code=400,
             detail={
@@ -876,7 +1034,7 @@ def join_tournament(
         transaction_type="JOIN_TOURNAMENT",
         status="SUCCESS",
         reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
-        failure_reason=f"TOUR:{tournament_id}"
+        failure_reason=_build_join_failure_reason(tournament_id, deductions),
     )
     db.add(transaction)
 
@@ -908,8 +1066,15 @@ def join_tournament(
         )
     except Exception: pass
 
+    success_message = f"Successfully joined {tournament.title}!"
+    if daily_bonus_blocked_amount > Decimal("0.00"):
+        success_message += (
+            f" Daily bonus limit applied: ₹{daily_bonus_blocked_amount:.2f} extra bonus "
+            "could not be used today."
+        )
+
     return {
-        "message": f"Successfully joined {tournament.title}!",
+        "message": success_message,
         "tournament_id": tournament_id,
         "new_wallet_balance": float(get_total_balance(user_wallet)),
         "slot_no": slot_no,
@@ -925,6 +1090,7 @@ def join_tournament(
             daily_bonus_limit_amount=daily_bonus_limit_amount,
             daily_bonus_used_today=daily_bonus_used_today,
             daily_bonus_remaining_today=daily_bonus_remaining,
+            daily_bonus_blocked_amount=daily_bonus_blocked_amount,
         ),
     }
 
@@ -979,6 +1145,13 @@ def cancel_tournament_participation(
             participants_to_remove = [participant]
 
     paid_amount = Decimal("0.00")
+    join_tx: WalletTransaction | None = None
+    original_deduction_distribution = {
+        WALLET_BUCKET_BONUS: Decimal("0.00"),
+        WALLET_BUCKET_DEPOSIT: Decimal("0.00"),
+        WALLET_BUCKET_WINNING: Decimal("0.00"),
+    }
+
     if not is_team_match or is_captain_cancel:
         join_tx = db.query(WalletTransaction).filter(
             WalletTransaction.user_id == current_user.id,
@@ -992,7 +1165,14 @@ def cancel_tournament_participation(
         else:
             paid_amount = to_money(tournament.entry_fee)
 
-    refund_amount = to_money(paid_amount * Decimal("0.70"))
+        original_deduction_distribution = _parse_join_deduction_distribution(
+            join_tx.failure_reason if join_tx else None,
+            tournament_id,
+            paid_amount,
+        )
+
+    refund_distribution = _scaled_refund_distribution(original_deduction_distribution, Decimal("0.70"))
+    refund_amount = to_money(sum(refund_distribution.values(), Decimal("0.00")))
 
     user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
     if not user_wallet:
@@ -1009,17 +1189,25 @@ def cancel_tournament_participation(
         if existing_refund:
             raise HTTPException(status_code=409, detail="Cancellation refund already processed")
 
-        credit_wallet(user_wallet, refund_amount, WALLET_BUCKET_DEPOSIT)
-        db.add(
-            WalletTransaction(
-                user_id=current_user.id,
-                amount=refund_amount,
-                transaction_type="TOURNAMENT_CANCEL_REFUND",
-                status="SUCCESS",
-                reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
-                failure_reason=cancel_dedup_key,
+        for bucket in (WALLET_BUCKET_BONUS, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING):
+            bucket_refund = to_money(refund_distribution.get(bucket))
+            if bucket_refund <= Decimal("0.00"):
+                continue
+
+            credit_wallet(user_wallet, bucket_refund, bucket)
+            db.add(
+                WalletTransaction(
+                    user_id=current_user.id,
+                    amount=bucket_refund,
+                    transaction_type="TOURNAMENT_CANCEL_REFUND",
+                    status="SUCCESS",
+                    reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+                    failure_reason=(
+                        f"{cancel_dedup_key};BUCKET:{bucket};"
+                        f"REFUND_PERCENT:70"
+                    ),
+                )
             )
-        )
 
     teammate_user_ids: list[int] = []
     if is_captain_cancel:
@@ -1034,13 +1222,18 @@ def cancel_tournament_participation(
     db.add(user_wallet)
     db.commit()
 
+    refund_breakdown_text = _format_wallet_refund_breakdown(refund_distribution)
+
     try:
         if refund_amount > Decimal("0.00"):
             add_user_notification(
                 db,
                 current_user.id,
                 "Tournament Cancelled",
-                f"Entry cancelled for '{tournament.title}'. ₹{float(refund_amount):.2f} refunded to your deposit wallet.",
+                (
+                    f"Entry cancelled for '{tournament.title}'. ₹{float(refund_amount):.2f} "
+                    f"refunded (70%) to {refund_breakdown_text}."
+                ),
                 "TOURNAMENT",
             )
         else:
@@ -1071,7 +1264,7 @@ def cancel_tournament_participation(
         "cancelled_slots": cancelled_slots,
         "refund_percentage": 70,
         "refund_amount": refund_value,
-        "refunded_to": "deposit",
+        "refunded_to": "original_wallet_distribution" if refund_value > 0 else "none",
         "new_wallet_balance": float(get_total_balance(user_wallet)),
     }
 
