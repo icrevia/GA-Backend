@@ -319,8 +319,25 @@ def preview_deposit_bonus(
     }
 
 @router.get("/balance", response_model=WalletBalanceResponse)
-def get_balance(current_user: User = Depends(get_current_user_wallet)):
-    return get_wallet_breakdown(current_user)
+def get_balance(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_wallet),
+):
+    wallet_breakdown = get_wallet_breakdown(current_user)
+    _, daily_bonus_limit_amount, daily_bonus_used_today, daily_bonus_remaining = get_daily_bonus_allowance(
+        db,
+        current_user,
+    )
+
+    return {
+        **wallet_breakdown,
+        "daily_bonus_limit_amount": to_money(daily_bonus_limit_amount),
+        "daily_bonus_used_today": to_money(daily_bonus_used_today),
+        "daily_bonus_remaining_today": (
+            to_money(daily_bonus_remaining) if daily_bonus_remaining is not None else None
+        ),
+        "daily_bonus_unlimited": daily_bonus_remaining is None,
+    }
 
 
 @router.get("/transactions", response_model=List[WalletTransactionResponse])
@@ -501,6 +518,10 @@ def play_spin(
 
     remaining_spins = max(0, daily_spin_limit - spins_used_today)
     wallet_breakdown = get_wallet_breakdown(user)
+    _, final_daily_bonus_limit_amount, final_daily_bonus_used_today, final_daily_bonus_remaining = get_daily_bonus_allowance(
+        db,
+        user,
+    )
 
     spin_message = "Spin completed successfully"
     if daily_bonus_blocked_amount > Decimal("0.00"):
@@ -522,6 +543,13 @@ def play_spin(
         "deposit_balance": wallet_breakdown["deposit_balance"],
         "winning_balance": wallet_breakdown["winning_balance"],
         "bonus_balance": wallet_breakdown["bonus_balance"],
+        "daily_bonus_limit_amount": to_money(final_daily_bonus_limit_amount),
+        "daily_bonus_used_today": to_money(final_daily_bonus_used_today),
+        "daily_bonus_remaining_today": (
+            to_money(final_daily_bonus_remaining) if final_daily_bonus_remaining is not None else None
+        ),
+        "daily_bonus_unlimited": final_daily_bonus_remaining is None,
+        "daily_bonus_blocked_amount": to_money(daily_bonus_blocked_amount),
     }
 
 

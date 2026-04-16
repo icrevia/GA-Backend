@@ -84,6 +84,10 @@ class WalletBalanceResponse(BaseModel):
     winning_balance: Decimal
     bonus_balance: Decimal
     withdrawable_balance: Decimal
+    daily_bonus_limit_amount: Decimal
+    daily_bonus_used_today: Decimal
+    daily_bonus_remaining_today: Optional[Decimal] = None
+    daily_bonus_unlimited: bool = False
 
 
 class SpinPlayResponse(BaseModel):
@@ -98,6 +102,11 @@ class SpinPlayResponse(BaseModel):
     deposit_balance: Decimal
     winning_balance: Decimal
     bonus_balance: Decimal
+    daily_bonus_limit_amount: Decimal
+    daily_bonus_used_today: Decimal
+    daily_bonus_remaining_today: Optional[Decimal] = None
+    daily_bonus_unlimited: bool = False
+    daily_bonus_blocked_amount: Decimal = Decimal("0.00")
 
 
 class WithdrawUpiAccountPayload(BaseModel):
