@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     MC_AUTH_TOKEN:  str = ""
 
     # ── Email OTP (login only) ───────────────────────────────────────────────
-    EMAIL_OTP_ENABLED: bool = True
+    EMAIL_OTP_ENABLED: bool = False
     EMAIL_OTP_LENGTH: int = 4
     EMAIL_OTP_TTL_SECONDS: int = 300
     EMAIL_OTP_MAX_VERIFY_ATTEMPTS: int = 5
@@ -220,70 +220,12 @@ class Settings(BaseSettings):
                 file=sys.stderr
             )
 
-        if self.EMAIL_OTP_LENGTH < 4 or self.EMAIL_OTP_LENGTH > 8:
-            print(
-                "[CONFIG WARNING] EMAIL_OTP_LENGTH must be between 4 and 8. Falling back to 4.",
-                file=sys.stderr,
-            )
-            object.__setattr__(self, "EMAIL_OTP_LENGTH", 4)
-
-        if self.EMAIL_OTP_TTL_SECONDS <= 0:
-            print(
-                "[CONFIG WARNING] EMAIL_OTP_TTL_SECONDS must be positive. Falling back to 300.",
-                file=sys.stderr,
-            )
-            object.__setattr__(self, "EMAIL_OTP_TTL_SECONDS", 300)
-
-        if self.EMAIL_OTP_MAX_VERIFY_ATTEMPTS <= 0:
-            print(
-                "[CONFIG WARNING] EMAIL_OTP_MAX_VERIFY_ATTEMPTS must be positive. Falling back to 5.",
-                file=sys.stderr,
-            )
-            object.__setattr__(self, "EMAIL_OTP_MAX_VERIFY_ATTEMPTS", 5)
-
-        if self.EMAIL_SMTP_TIMEOUT_SECONDS <= 0:
-            print(
-                "[CONFIG WARNING] EMAIL_SMTP_TIMEOUT_SECONDS must be positive. Falling back to 15.",
-                file=sys.stderr,
-            )
-            object.__setattr__(self, "EMAIL_SMTP_TIMEOUT_SECONDS", 15.0)
-
-        if self.EMAIL_SMTP_USE_SSL and self.EMAIL_SMTP_STARTTLS:
-            print(
-                "[CONFIG WARNING] Both EMAIL_SMTP_USE_SSL and EMAIL_SMTP_STARTTLS are enabled. "
-                "Disabling STARTTLS and using SSL.",
-                file=sys.stderr,
-            )
-            object.__setattr__(self, "EMAIL_SMTP_STARTTLS", False)
-
         if self.EMAIL_OTP_ENABLED:
-            missing_email_fields = []
-            smtp_host = (self.EMAIL_SMTP_HOST or "").strip()
-            from_address = (self.EMAIL_FROM_ADDRESS or "").strip()
-            derived_host = ""
-            if from_address:
-                _, sep, email_domain = from_address.rpartition("@")
-                if sep and email_domain.strip():
-                    derived_host = email_domain.strip().lower()
-
-            if not from_address:
-                missing_email_fields.append("EMAIL_FROM_ADDRESS")
-            if not smtp_host and not derived_host:
-                missing_email_fields.append("EMAIL_SMTP_HOST or valid EMAIL_FROM_ADDRESS domain")
-
-            if missing_email_fields:
-                print(
-                    "[CONFIG WARNING] EMAIL_OTP_ENABLED is true but required email settings are missing "
-                    f"({', '.join(missing_email_fields)}). Disabling email OTP.",
-                    file=sys.stderr,
-                )
-                object.__setattr__(self, "EMAIL_OTP_ENABLED", False)
-            elif not smtp_host and derived_host:
-                print(
-                    "[CONFIG WARNING] EMAIL_SMTP_HOST is empty. "
-                    f"Falling back to SMTP host derived from EMAIL_FROM_ADDRESS domain ({derived_host}).",
-                    file=sys.stderr,
-                )
+            print(
+                "[CONFIG WARNING] EMAIL_OTP_ENABLED is deprecated and forced off. OTP delivery is phone-only.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "EMAIL_OTP_ENABLED", False)
 
         if self.SECURITY_ALERTS_ENABLED and (not self.TELEGRAM_BOT_TOKEN or not self.TELEGRAM_ALERT_CHAT_ID):
             print(
@@ -293,28 +235,20 @@ class Settings(BaseSettings):
             )
             object.__setattr__(self, "SECURITY_ALERTS_ENABLED", False)
 
-        if self.ADMIN_LOGIN_IDENTIFIER and not self.ADMIN_LOGIN_PHONE:
+        if not self.ADMIN_LOGIN_PHONE:
             print(
-                "[CONFIG WARNING] ADMIN_LOGIN_IDENTIFIER is set but ADMIN_LOGIN_PHONE is empty. "
-                "Admin-web login will be blocked until both are configured.",
+                "[CONFIG WARNING] ADMIN_LOGIN_PHONE is empty. Admin-web phone login will be blocked.",
                 file=sys.stderr,
             )
 
-        if self.ADMIN_LOGIN_PHONE and not self.ADMIN_LOGIN_IDENTIFIER:
-            print(
-                "[CONFIG WARNING] ADMIN_LOGIN_PHONE is set but ADMIN_LOGIN_IDENTIFIER is empty. "
-                "Admin-web login will be blocked until both are configured.",
-                file=sys.stderr,
-            )
-
-        if (self.ADMIN_LOGIN_IDENTIFIER or self.ADMIN_LOGIN_PHONE) and not self.TELEGRAM_BOT_TOKEN:
+        if self.ADMIN_LOGIN_PHONE and not self.TELEGRAM_BOT_TOKEN:
             print(
                 "[CONFIG WARNING] Admin-web OTP via Telegram requires TELEGRAM_BOT_TOKEN.",
                 file=sys.stderr,
             )
 
         if (
-            (self.ADMIN_LOGIN_IDENTIFIER or self.ADMIN_LOGIN_PHONE)
+            self.ADMIN_LOGIN_PHONE
             and not (self.ADMIN_LOGIN_TELEGRAM_CHAT_ID or self.TELEGRAM_ALERT_CHAT_ID)
         ):
             print(

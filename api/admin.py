@@ -27,7 +27,6 @@ from models.tournament import Tournament
 from models.wallet import WalletTransaction
 from models.config import SystemConfig
 from models.notification import Notification
-from models.email_otp_log import EmailOtpLog
 from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
 from models.withdraw_upi_account import WithdrawUpiAccount
@@ -108,8 +107,6 @@ from schemas.admin import (
     PromoUpdateRequest,
     BannerCreateRequest,
     BannerUpdateRequest,
-    EmailOtpLogItem,
-    EmailOtpLogListResponse,
     KillRewardEntry,
 )
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
@@ -2333,69 +2330,6 @@ def update_admin_referral_reward_config(
     db.commit()
     logger.info("Referral reward config updated by admin=%s", current_user.username)
     return updated_payload
-
-
-@router.get("/email-otp/logs", response_model=EmailOtpLogListResponse)
-def list_email_otp_logs(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_admin),
-    event_type: str = "",
-    status: str = "",
-    source: str = "",
-    search: str = "",
-    limit: int = 100,
-):
-    safe_limit = max(1, min(limit, 500))
-    q = db.query(EmailOtpLog).order_by(EmailOtpLog.created_at.desc())
-
-    if event_type:
-        q = q.filter(EmailOtpLog.event_type == event_type.strip().upper())
-    if status:
-        q = q.filter(EmailOtpLog.status == status.strip().upper())
-    if source:
-        q = q.filter(EmailOtpLog.source == source.strip().upper())
-
-    if search:
-        term = f"%{search.strip()}%"
-        q = q.filter(
-            or_(
-                EmailOtpLog.email.ilike(term),
-                EmailOtpLog.phone_number.ilike(term),
-                EmailOtpLog.client_ip.ilike(term),
-                EmailOtpLog.user_agent.ilike(term),
-                EmailOtpLog.message.ilike(term),
-            )
-        )
-
-    total = q.count()
-    rows = q.limit(safe_limit).all()
-
-    user_ids = list({row.user_id for row in rows if row.user_id})
-    users_map = {}
-    if user_ids:
-        users_map = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
-
-    items: list[EmailOtpLogItem] = []
-    for row in rows:
-        user = users_map.get(row.user_id) if row.user_id else None
-        items.append(
-            EmailOtpLogItem(
-                id=row.id,
-                user_id=row.user_id,
-                username=user.username if user else None,
-                email=row.email,
-                phone_number=row.phone_number,
-                source=row.source,
-                event_type=row.event_type,
-                status=row.status,
-                message=row.message,
-                client_ip=row.client_ip,
-                user_agent=row.user_agent,
-                created_at=row.created_at,
-            )
-        )
-
-    return EmailOtpLogListResponse(total=total, items=items)
 
 
 # ─────────────────────────────────────────────────────────────────

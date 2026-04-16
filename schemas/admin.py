@@ -212,21 +212,3 @@ class ReferralRewardConfigResponse(BaseModel):
     rules: list[ReferralRewardRule]
 
 
-class EmailOtpLogItem(BaseModel):
-    id: int
-    user_id: Optional[int] = None
-    username: Optional[str] = None
-    email: Optional[str] = None
-    phone_number: Optional[str] = None
-    source: str
-    event_type: str
-    status: str
-    message: Optional[str] = None
-    client_ip: Optional[str] = None
-    user_agent: Optional[str] = None
-    created_at: datetime
-
-
-class EmailOtpLogListResponse(BaseModel):
-    total: int
-    items: list[EmailOtpLogItem]
