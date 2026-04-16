@@ -4,6 +4,7 @@ import logging
 from sqlalchemy.orm import Session
 from models.user import User
 from models.notification import Notification
+from services.notification_text import append_firebase_suffix
 from services.push_notifications import send_push
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,13 @@ def add_user_notification(
             saved immediately. Useful for spin rewards where the wheel
             animation needs to finish before the user sees the alert.
     """
+    display_title = append_firebase_suffix(title, max_length=100)
+    display_content = append_firebase_suffix(content)
+
     notif = Notification(
         user_id=user_id,
-        title=title,
-        content=content,
+        title=display_title,
+        content=display_content,
         type=type
     )
     db.add(notif)
@@ -47,8 +51,8 @@ def add_user_notification(
                         time.sleep(delay_push_seconds)
                     send_push(
                         fcm_token=fcm_token,
-                        title=title,
-                        body=content,
+                        title=display_title,
+                        body=display_content,
                         data={"type": type, "notification_id": str(notif.id)}
                     )
                 except Exception as e:

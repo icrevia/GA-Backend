@@ -32,6 +32,7 @@ from models.support import ChatSession, ChatMessage
 from models.withdraw_upi_account import WithdrawUpiAccount
 from services.notifications import add_user_notification
 from services.push_notifications import send_push, send_push_to_many
+from services.notification_text import append_firebase_suffix
 from services.restrictions import (
     RESTRICTION_SCOPE_FULL_APP,
     RESTRICTION_SCOPE_PAGE,
@@ -2344,13 +2345,15 @@ def send_push_notification(
     current_user: User = Depends(get_current_active_admin)
 ):
     users = db.query(User).filter(User.role == "USER", User.is_active == True).all()
+    display_title = append_firebase_suffix(data.title, max_length=100)
+    display_body = append_firebase_suffix(data.body)
 
     tokens = []
     for user in users:
         notif = Notification(
             user_id=user.id,
-            title=data.title,
-            content=data.body,
+            title=display_title,
+            content=display_body,
             type="SYSTEM"
         )
         db.add(notif)
@@ -2363,15 +2366,15 @@ def send_push_notification(
         background_tasks.add_task(
             send_push_to_many,
             fcm_tokens=tokens,
-            title=data.title,
-            body=data.body,
+            title=display_title,
+            body=display_body,
             data={"type": "SYSTEM"}
         )
 
     logger.info(
-        f"Broadcast (DB + FCM) sent to {len(users)} users by admin={current_user.username}: '{data.title}'"
+        f"Broadcast (DB + FCM) sent to {len(users)} users by admin={current_user.username}: '{display_title}'"
     )
-    return {"message": f"Broadcast '{data.title}' scheduled for {len(users)} users ({len(tokens)} via Push)"}
+    return {"message": f"Broadcast '{display_title}' scheduled for {len(users)} users ({len(tokens)} via Push)"}
 
 
 @router.post("/developer/notifications/send")

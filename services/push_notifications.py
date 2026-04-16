@@ -9,6 +9,8 @@ import logging
 import os
 from typing import Optional
 
+from services.notification_text import append_firebase_suffix
+
 logger = logging.getLogger(__name__)
 
 _fcm_app = None
@@ -63,6 +65,8 @@ def send_push(
         return False
     try:
         from firebase_admin import messaging
+        title = append_firebase_suffix(title)
+        body = append_firebase_suffix(body)
         msg = messaging.Message(
             notification=messaging.Notification(title=title, body=body),
             data={str(k): str(v) for k, v in (data or {}).items()},
@@ -92,6 +96,8 @@ def send_push_to_many(
         return 0
     try:
         from firebase_admin import messaging
+        title = append_firebase_suffix(title)
+        body = append_firebase_suffix(body)
         # Limit batch size to 500 (Firebase Admin SDK limit for send_each)
         batch_size = 500
         total_success = 0
