@@ -458,8 +458,8 @@ def root(request: Request):
         </head>
         <body>
             <main class="wrap">
-                <span class="chip">Hey, there!</span>
-                <h1>This is not the game lobby.</h1>
+                <span class="chip">Hey, ch*tiye!</span>
+                <h1>This is not your typical API gateway.</h1>
                 <p class="sub">
                     You’ve reached the GamerzAdda API gateway. Don’t even think about compromising our system.
                 </p>
@@ -489,7 +489,10 @@ def root(request: Request):
     return HTMLResponse(content=html)
 
 @app.get("/api/v1/status")
-async def get_system_status():
+async def get_system_status(request: Request):
+    if _is_browser_navigation(request):
+        return root(request)
+
     now = time.monotonic()
     cached_until = float(_system_status_cache.get("expires_at", 0.0) or 0.0)
     cached_payload = _system_status_cache.get("value")
