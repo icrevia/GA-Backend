@@ -63,6 +63,8 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_limit INTEGER DEFAULT 1",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_used INTEGER DEFAULT 0",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_cycle_key VARCHAR(16)",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_bonus_used NUMERIC(12,2) DEFAULT 0.00",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_bonus_cycle_key VARCHAR(16)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(255) UNIQUE",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_id INTEGER",
                 # FCM push notification token
@@ -126,7 +128,8 @@ async def lifespan(app: FastAPI):
                     """
                     UPDATE users
                     SET daily_spin_limit = COALESCE(daily_spin_limit, 1),
-                        daily_spin_used = COALESCE(daily_spin_used, 0)
+                        daily_spin_used = COALESCE(daily_spin_used, 0),
+                        daily_bonus_used = COALESCE(daily_bonus_used, 0.00)
                     """
                 )
             )
@@ -179,8 +182,8 @@ async def lifespan(app: FastAPI):
                     target=send_push_to_many,
                     args=(
                         tokens,
-                        "🚀 GamerzAdda is Live!",
-                        "Server is active — Check out new tournaments, powered by Zxtni Studio! 🎮",
+                        "🚀 GamerzAdda is Live! -- Firebase",
+                        "Server is active — Check out new tournaments 🎮 -- Firebase",
                     ),
                     daemon=True,
                 ).start()
@@ -459,7 +462,7 @@ def root(request: Request):
         <body>
             <main class="wrap">
                 <span class="chip">Hey, ch*tiye!</span>
-                <h1>This is not your typical API gateway.</h1>
+                <h1>This is not your mother's pussy💦.</h1>
                 <p class="sub">
                     You’ve reached the GamerzAdda API gateway. Don’t even think about compromising our system.
                 </p>

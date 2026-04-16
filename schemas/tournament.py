@@ -72,6 +72,9 @@ class TournamentJoinDeductionBreakdown(BaseModel):
     total_deducted: float
     bonus_cap_amount: float
     bonus_usage_limit_percentage: float
+    daily_bonus_limit_amount: Optional[float] = None
+    daily_bonus_used_today: Optional[float] = None
+    daily_bonus_remaining_today: Optional[float] = None
 
 
 class TournamentJoinResponse(BaseModel):

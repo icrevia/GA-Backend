@@ -35,6 +35,10 @@ from schemas.wallet import (
 )
 from core.config import settings
 from services.notifications import add_user_notification
+from services.daily_bonus_usage import (
+    get_daily_bonus_allowance,
+    register_bonus_usage,
+)
 from services.referral_rewards import maybe_credit_referrer_for_first_successful_deposit
 from services.deposit_bonus import (
     apply_deposit_bonus_if_eligible,
@@ -375,17 +379,54 @@ def play_spin(
     if spins_used_today >= daily_spin_limit:
         raise HTTPException(status_code=400, detail="Daily spin limit reached. Resets at 12:01 AM IST.")
 
-    try:
-        debit_wallet(
-            user,
-            SPIN_COST,
-            spend_order=(WALLET_BUCKET_BONUS, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING),
+    bonus_cycle_key, daily_bonus_limit_amount, daily_bonus_used_today, daily_bonus_remaining = get_daily_bonus_allowance(
+        db,
+        user,
+    )
+
+    available_bonus = to_money(getattr(user, "bonus_balance", Decimal("0.00")) or Decimal("0.00"))
+    available_deposit = to_money(getattr(user, "deposit_balance", Decimal("0.00")) or Decimal("0.00"))
+    available_winning = to_money(getattr(user, "winning_balance", Decimal("0.00")) or Decimal("0.00"))
+
+    bonus_cap_for_spin = to_money(SPIN_COST)
+    if daily_bonus_remaining is not None:
+        bonus_cap_for_spin = min(bonus_cap_for_spin, to_money(daily_bonus_remaining))
+
+    bonus_take = min(available_bonus, bonus_cap_for_spin)
+    remaining_after_bonus = to_money(SPIN_COST - bonus_take)
+
+    deposit_take = min(available_deposit, remaining_after_bonus)
+    remaining_after_deposit = to_money(remaining_after_bonus - deposit_take)
+
+    winning_take = min(available_winning, remaining_after_deposit)
+    remaining_due = to_money(remaining_after_deposit - winning_take)
+
+    if remaining_due > Decimal("0.00"):
+        message = (
+            f"Insufficient balance. Available ₹{(bonus_take + deposit_take + winning_take):.2f}, "
+            f"required ₹{SPIN_COST:.2f}."
         )
+        if daily_bonus_remaining is not None:
+            message += (
+                f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
+                f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+            )
+        raise HTTPException(status_code=400, detail=message)
+
+    try:
+        if bonus_take > Decimal("0.00"):
+            debit_wallet(user, bonus_take, spend_order=(WALLET_BUCKET_BONUS,))
+        if deposit_take > Decimal("0.00"):
+            debit_wallet(user, deposit_take, spend_order=(WALLET_BUCKET_DEPOSIT,))
+        if winning_take > Decimal("0.00"):
+            debit_wallet(user, winning_take, spend_order=(WALLET_BUCKET_WINNING,))
     except InsufficientWalletBalanceError as exc:
         raise HTTPException(
             status_code=400,
             detail=f"Insufficient balance. Available ₹{exc.available:.2f}, required ₹{exc.required:.2f}.",
         )
+
+    register_bonus_usage(user, bonus_take, cycle_key=bonus_cycle_key)
 
     total_spins_before = (
         db.query(WalletTransaction.id)

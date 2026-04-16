@@ -44,6 +44,8 @@ class User(Base):
     daily_spin_limit = Column(Integer, nullable=False, default=1, server_default="1")
     daily_spin_used = Column(Integer, nullable=False, default=0, server_default="0")
     daily_spin_cycle_key = Column(String(16), nullable=True)
+    daily_bonus_used = Column(Numeric(precision=12, scale=2), nullable=False, default=0.00, server_default="0")
+    daily_bonus_cycle_key = Column(String(16), nullable=True)
 
     # FCM push notification token (refreshed by Android app automatically)
     fcm_token       = Column(String(512), nullable=True)

@@ -27,6 +27,10 @@ from schemas.tournament import (
     TeamPreviewResponse,
 )
 from services.notifications import add_user_notification
+from services.daily_bonus_usage import (
+    get_daily_bonus_allowance,
+    register_bonus_usage,
+)
 from services.wallet_balances import (
     WALLET_BUCKET_BONUS,
     WALLET_BUCKET_DEPOSIT,
@@ -284,16 +288,21 @@ def _compute_join_wallet_deductions(
     user_wallet: User,
     total_fee: Decimal,
     bonus_usage_limit_percentage: Decimal,
-) -> tuple[dict[str, Decimal], Decimal, Decimal]:
+    daily_bonus_remaining: Decimal | None,
+) -> tuple[dict[str, Decimal], Decimal, Decimal, Decimal]:
     fee = to_money(total_fee)
     limit_pct = to_money(bonus_usage_limit_percentage)
-    bonus_cap_amount = to_money((fee * limit_pct) / Decimal("100.00"))
+    per_match_bonus_cap_amount = to_money((fee * limit_pct) / Decimal("100.00"))
+    effective_bonus_cap_amount = per_match_bonus_cap_amount
+
+    if daily_bonus_remaining is not None:
+        effective_bonus_cap_amount = min(effective_bonus_cap_amount, to_money(daily_bonus_remaining))
 
     available_bonus = to_money(getattr(user_wallet, "bonus_balance", Decimal("0.00")))
     available_deposit = to_money(getattr(user_wallet, "deposit_balance", Decimal("0.00")))
     available_winning = to_money(getattr(user_wallet, "winning_balance", Decimal("0.00")))
 
-    bonus_take = min(available_bonus, bonus_cap_amount, fee)
+    bonus_take = min(available_bonus, effective_bonus_cap_amount, fee)
     remaining_after_bonus = to_money(fee - bonus_take)
 
     deposit_take = min(available_deposit, remaining_after_bonus)
@@ -307,7 +316,7 @@ def _compute_join_wallet_deductions(
         WALLET_BUCKET_DEPOSIT: to_money(deposit_take),
         WALLET_BUCKET_WINNING: to_money(winning_take),
     }
-    return deductions, bonus_cap_amount, remaining_due
+    return deductions, per_match_bonus_cap_amount, effective_bonus_cap_amount, remaining_due
 
 
 def _apply_join_wallet_deductions(user_wallet: User, deductions: dict[str, Decimal]) -> None:
@@ -327,7 +336,10 @@ def _join_deduction_payload(
     deductions: dict[str, Decimal],
     bonus_cap_amount: Decimal,
     bonus_usage_limit_percentage: Decimal,
-) -> dict[str, float]:
+    daily_bonus_limit_amount: Decimal | None = None,
+    daily_bonus_used_today: Decimal | None = None,
+    daily_bonus_remaining_today: Decimal | None = None,
+) -> dict[str, float | None]:
     total_deducted = to_money(
         to_money(deductions.get(WALLET_BUCKET_BONUS))
         + to_money(deductions.get(WALLET_BUCKET_DEPOSIT))
@@ -340,6 +352,21 @@ def _join_deduction_payload(
         "total_deducted": float(total_deducted),
         "bonus_cap_amount": float(to_money(bonus_cap_amount)),
         "bonus_usage_limit_percentage": float(to_money(bonus_usage_limit_percentage)),
+        "daily_bonus_limit_amount": (
+            float(to_money(daily_bonus_limit_amount))
+            if daily_bonus_limit_amount is not None
+            else None
+        ),
+        "daily_bonus_used_today": (
+            float(to_money(daily_bonus_used_today))
+            if daily_bonus_used_today is not None
+            else None
+        ),
+        "daily_bonus_remaining_today": (
+            float(to_money(daily_bonus_remaining_today))
+            if daily_bonus_remaining_today is not None
+            else None
+        ),
     }
 
 
@@ -554,26 +581,42 @@ def join_tournament(
         bonus_usage_limit_percentage = _resolve_bonus_usage_limit_percentage(tournament)
 
         user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
-        deductions, bonus_cap_amount, remaining_due = _compute_join_wallet_deductions(
+        bonus_cycle_key, daily_bonus_limit_amount, daily_bonus_used_today, daily_bonus_remaining = get_daily_bonus_allowance(
+            db,
+            user_wallet,
+        )
+        deductions, per_match_bonus_cap_amount, bonus_cap_amount, remaining_due = _compute_join_wallet_deductions(
             user_wallet,
             total_fee,
             bonus_usage_limit_percentage,
+            daily_bonus_remaining,
         )
         available_by_rule = to_money(total_fee - remaining_due)
         if remaining_due > Decimal("0.00"):
+            message = (
+                f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
+                f"(₹{per_match_bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
+            )
+            if daily_bonus_remaining is not None:
+                message += (
+                    f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
+                    f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+                )
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "message": (
-                        f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
-                        f"(₹{bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
-                    ),
+                    "message": message,
                     "error_code": "INSUFFICIENT_BALANCE",
                     "required": float(total_fee),
                     "available": float(available_by_rule),
                     "wallet_total": float(get_total_balance(user_wallet)),
                     "bonus_cap_amount": float(bonus_cap_amount),
                     "bonus_usage_limit_percentage": float(bonus_usage_limit_percentage),
+                    "daily_bonus_limit_amount": float(daily_bonus_limit_amount),
+                    "daily_bonus_used_today": float(daily_bonus_used_today),
+                    "daily_bonus_remaining_today": (
+                        float(daily_bonus_remaining) if daily_bonus_remaining is not None else None
+                    ),
                 }
             )
 
@@ -589,6 +632,12 @@ def join_tournament(
                     "available": float(exc.available),
                 }
             )
+
+        register_bonus_usage(
+            user_wallet,
+            to_money(deductions.get(WALLET_BUCKET_BONUS)),
+            cycle_key=bonus_cycle_key,
+        )
 
         transaction = WalletTransaction(
             user_id=current_user.id,
@@ -648,6 +697,9 @@ def join_tournament(
                 deductions,
                 bonus_cap_amount,
                 bonus_usage_limit_percentage,
+                daily_bonus_limit_amount=daily_bonus_limit_amount,
+                daily_bonus_used_today=daily_bonus_used_today,
+                daily_bonus_remaining_today=daily_bonus_remaining,
             ),
         }
 
@@ -754,27 +806,43 @@ def join_tournament(
 
     entry_fee = to_money(tournament.entry_fee)
     bonus_usage_limit_percentage = _resolve_bonus_usage_limit_percentage(tournament)
-    deductions, bonus_cap_amount, remaining_due = _compute_join_wallet_deductions(
+    bonus_cycle_key, daily_bonus_limit_amount, daily_bonus_used_today, daily_bonus_remaining = get_daily_bonus_allowance(
+        db,
+        user_wallet,
+    )
+    deductions, per_match_bonus_cap_amount, bonus_cap_amount, remaining_due = _compute_join_wallet_deductions(
         user_wallet,
         entry_fee,
         bonus_usage_limit_percentage,
+        daily_bonus_remaining,
     )
     available_by_rule = to_money(entry_fee - remaining_due)
 
     if remaining_due > Decimal("0.00"):
+        message = (
+            f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
+            f"(₹{per_match_bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
+        )
+        if daily_bonus_remaining is not None:
+            message += (
+                f" Daily bonus remaining today: ₹{daily_bonus_remaining:.2f} "
+                f"(limit ₹{daily_bonus_limit_amount:.2f}, used ₹{daily_bonus_used_today:.2f})."
+            )
         raise HTTPException(
             status_code=400,
             detail={
-                "message": (
-                    f"Insufficient balance! For this match, max bonus usage is {float(bonus_usage_limit_percentage):.2f}% "
-                    f"(₹{bonus_cap_amount:.2f}). You can pay ₹{available_by_rule:.2f} right now."
-                ),
+                "message": message,
                 "error_code": "INSUFFICIENT_BALANCE",
                 "required": float(entry_fee),
                 "available": float(available_by_rule),
                 "wallet_total": float(get_total_balance(user_wallet)),
                 "bonus_cap_amount": float(bonus_cap_amount),
                 "bonus_usage_limit_percentage": float(bonus_usage_limit_percentage),
+                "daily_bonus_limit_amount": float(daily_bonus_limit_amount),
+                "daily_bonus_used_today": float(daily_bonus_used_today),
+                "daily_bonus_remaining_today": (
+                    float(daily_bonus_remaining) if daily_bonus_remaining is not None else None
+                ),
             }
         )
 
@@ -795,6 +863,12 @@ def join_tournament(
                 "available": float(exc.available),
             }
         )
+
+    register_bonus_usage(
+        user_wallet,
+        to_money(deductions.get(WALLET_BUCKET_BONUS)),
+        cycle_key=bonus_cycle_key,
+    )
 
     transaction = WalletTransaction(
         user_id=current_user.id,
@@ -848,6 +922,9 @@ def join_tournament(
             deductions,
             bonus_cap_amount,
             bonus_usage_limit_percentage,
+            daily_bonus_limit_amount=daily_bonus_limit_amount,
+            daily_bonus_used_today=daily_bonus_used_today,
+            daily_bonus_remaining_today=daily_bonus_remaining,
         ),
     }
 
