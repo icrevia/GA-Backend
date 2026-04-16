@@ -351,7 +351,7 @@ def root(request: Request):
         <head>
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>GamerzAdda API Gateway</title>
+            <title>Powered by Zxtni Studio</title>
             <style>
                 :root {
                     --bg-a: #0a0f1f;
@@ -458,10 +458,10 @@ def root(request: Request):
         </head>
         <body>
             <main class="wrap">
-                <span class="chip">Public Landing View</span>
+                <span class="chip">Hey, there!</span>
                 <h1>This is not the game lobby.</h1>
                 <p class="sub">
-                    You reached the GamerzAdda API gateway. Humans get this page; apps should call the API routes.
+                    You’ve reached the GamerzAdda API gateway. Don’t even think about compromising our system.
                 </p>
 
                 <section class="grid">
@@ -471,16 +471,16 @@ def root(request: Request):
                     </article>
                     <article class="card">
                         <div class="k">Version</div>
-                        <div class="v">2.0</div>
+                        <div class="v">1.0</div>
                     </article>
                     <article class="card">
                         <div class="k">API Base</div>
-                        <div class="v"><code>/api/v1</code></div>
+                        <div class="v"><code>www.zxtni.in</code></div>
                     </article>
                 </section>
 
                 <p class="footer">
-                    Tip: open <code>/api/v1/status</code> for machine-readable health data.
+                    Tip: Listen Chote bacche! kuch galat karne se pehle soch lena, ye system Zxtni Studio ka hai.😮‍💨
                 </p>
             </main>
         </body>
