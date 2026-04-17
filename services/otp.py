@@ -151,40 +151,59 @@ async def verify_otp(verification_id: str, otp_code: str) -> bool:
                     logger.error("MC Verify HTTP %s. Body=%s", resp.status_code, _safe_text_preview(resp.text))
                     raise RuntimeError("OTP verification service unavailable")
 
-                verification_status = str((data.get("data") or {}).get("verificationStatus") or "").upper()
-                response_code = str(data.get("responseCode") or "")
+                verification_status = str((data.get("data") or {}).get("verificationStatus") or "").upper().strip()
+                response_code = str(data.get("responseCode") or "").strip()
 
                 if resp.status_code == 200:
-                    if response_code == "200" and verification_status == "VERIFICATION_COMPLETED":
+                    # ── SUCCESS: flexible match on status string ───────────────
+                    # MC response varies: "VERIFICATION_COMPLETED", "VERIFICATION COMPLETED",
+                    # "VERIFIED", "SUCCESS" etc. Use contains-check to be resilient.
+                    is_success = (
+                        ("COMPLET" in verification_status or
+                         "VERIF" in verification_status and "FAIL" not in verification_status or
+                         verification_status in {"SUCCESS", "VERIFIED", "VALID"})
+                        and response_code in {"200", ""}
+                    )
+                    if is_success:
+                        logger.info(
+                            "MC Verify SUCCESS. VerId=%s status=%s code=%s",
+                            verification_id, verification_status, response_code
+                        )
                         return True
 
                     # Known user-facing invalid/expired states.
-                    if verification_status in {
-                        "VERIFICATION_FAILED",
-                        "OTP_INVALID",
-                        "INVALID_OTP",
-                        "OTP_MISMATCH",
-                        "FAILED",
-                        "EXPIRED",
-                    }:
+                    is_failure = (
+                        verification_status in {
+                            "VERIFICATION_FAILED", "OTP_INVALID", "INVALID_OTP",
+                            "OTP_MISMATCH", "FAILED", "EXPIRED",
+                        }
+                        or "FAIL" in verification_status
+                        or "INVALID" in verification_status
+                        or "EXPIR" in verification_status
+                        or response_code in {"702", "703", "704", "705", "1702", "1703", "1704"}
+                    )
+                    if is_failure:
+                        logger.warning(
+                            "MC Verify REJECTED. VerId=%s status=%s code=%s",
+                            verification_id, verification_status, response_code
+                        )
                         return False
 
-                    if response_code in {"702", "703", "704", "705", "1702", "1703", "1704"}:
-                        return False
-
+                    # ── UNRESOLVED: log full body + retry ─────────────────────
                     if attempt < max_attempts:
                         backoff = 0.8 * attempt
                         logger.warning(
-                            "MC Verify unresolved response (attempt %s/%s). Retrying in %.1fs. Body=%s",
-                            attempt,
-                            max_attempts,
-                            backoff,
-                            _safe_text_preview(resp.text),
+                            "MC Verify unresolved (attempt %s/%s) — status=%s code=%s body=%s. Retry in %.1fs",
+                            attempt, max_attempts, verification_status, response_code,
+                            _safe_text_preview(resp.text), backoff,
                         )
                         await asyncio.sleep(backoff)
                         continue
 
-                    logger.error("MC Verify unresolved response. Body=%s", _safe_text_preview(resp.text))
+                    logger.error(
+                        "MC Verify unresolved after %s attempts — status=%s code=%s body=%s",
+                        max_attempts, verification_status, response_code, _safe_text_preview(resp.text)
+                    )
                     raise RuntimeError("OTP verification service unavailable")
 
                 # Non-200 but non-5xx: map clearly invalid OTP states to False.
