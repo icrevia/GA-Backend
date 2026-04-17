@@ -293,6 +293,8 @@ app.add_middleware(RequestLoggingMiddleware)
 
 if not os.path.exists("static"):
     os.makedirs("static")
+# Ensure profile_pics sub-directory exists so the file upload endpoint can save immediately.
+os.makedirs("static/profile_pics", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 support_media_dir = Path(settings.SUPPORT_MEDIA_STORAGE_DIR).expanduser()

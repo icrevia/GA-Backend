@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List
@@ -9,8 +9,91 @@ from schemas.user import UserResponse, UserUpdate, FullProfileResponse
 from services.match_stats import compute_match_stats_for_user
 from services.restrictions import get_active_restrictions_for_user, serialize_user_restriction
 from services.wallet_balances import get_wallet_breakdown
+from core.config import settings
+import uuid, os, logging
+
+logger = logging.getLogger("GamerzAdda.users")
+
+PROFILE_PIC_DIR = "static/profile_pics"
+PROFILE_PIC_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
+ALLOWED_IMG_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 router = APIRouter()
+
+
+@router.post("/me/profile-pic", response_model=UserResponse)
+def upload_profile_pic(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user_profile),
+):
+    """Upload / replace the authenticated user's profile picture (max 1 MB, JPEG/PNG/WebP)."""
+
+    # ── Content-type guard ────────────────────────────────────────────────────
+    content_type = (file.content_type or "").lower().split(";")[0].strip()
+    if content_type not in ALLOWED_IMG_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail="Only JPEG, PNG, or WebP images are accepted."
+        )
+
+    # ── Read & size guard ─────────────────────────────────────────────────────
+    data = file.file.read(PROFILE_PIC_MAX_BYTES + 1)
+    if len(data) > PROFILE_PIC_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="Image is too large. Maximum allowed size is 1 MB."
+        )
+
+    # ── Ensure storage directory ──────────────────────────────────────────────
+    os.makedirs(PROFILE_PIC_DIR, exist_ok=True)
+
+    # ── Delete previous custom pic (keep static avatar ones) ─────────────────
+    old_pic = current_user.profile_pic or ""
+    if f"/{PROFILE_PIC_DIR}/" in old_pic:
+        try:
+            old_filename = old_pic.rsplit("/", 1)[-1]
+            old_path = os.path.join(PROFILE_PIC_DIR, old_filename)
+            if os.path.isfile(old_path):
+                os.remove(old_path)
+        except Exception as cleanup_err:
+            logger.warning("Could not remove old profile pic: %s", cleanup_err)
+
+    # ── Persist new file ──────────────────────────────────────────────────────
+    ext = "jpg" if content_type == "image/jpeg" else content_type.split("/")[-1]
+    filename = f"user_{current_user.id}_{uuid.uuid4().hex[:12]}.{ext}"
+    save_path = os.path.join(PROFILE_PIC_DIR, filename)
+
+    with open(save_path, "wb") as f:
+        f.write(data)
+
+    # ── Build public URL & update DB ──────────────────────────────────────────
+    base_url = (settings.APP_URL or "").rstrip("/")
+    public_url = f"{base_url}/static/profile_pics/{filename}"
+    current_user.profile_pic = public_url
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+
+    active_restrictions = get_active_restrictions_for_user(db, current_user.id)
+    wallet_breakdown = get_wallet_breakdown(current_user)
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "phone_number": current_user.phone_number,
+        "role": current_user.role,
+        "wallet_balance": float(wallet_breakdown["balance"]),
+        "deposit_balance": float(wallet_breakdown["deposit_balance"]),
+        "winning_balance": float(wallet_breakdown["winning_balance"]),
+        "bonus_balance": float(wallet_breakdown["bonus_balance"]),
+        "profile_pic": current_user.profile_pic,
+        "bio": current_user.bio,
+        "freefire_id": current_user.freefire_id,
+        "is_active": bool(current_user.is_active),
+        "face_image_path": getattr(current_user, "face_image_path", None),
+        "active_restrictions": [serialize_user_restriction(r) for r in active_restrictions],
+    }
 
 
 class DeviceTokenRequest(BaseModel):
