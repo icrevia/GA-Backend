@@ -2051,78 +2051,85 @@ def delete_user_account(
         raise HTTPException(status_code=400, detail="Admin accounts cannot be deleted from this action")
 
     try:
-        from sqlalchemy import text as sa_text
-        from models.user_activity_lock import UserActivityLock
-        from models.otp_phone_lock import OtpPhoneLock
-        from models.withdraw_upi_account import WithdrawUpiAccount as WithdrawUpiAccountModel
+        from sqlalchemy import text as _t
 
-        # ── 1. Chat messages ──────────────────────────────────────────────────
-        session_ids = [
-            row[0]
-            for row in db.query(ChatSession.id).filter(ChatSession.user_id == user_id).all()
-        ]
-        deleted_chat_messages = 0
-        if session_ids:
-            deleted_chat_messages += db.query(ChatMessage).filter(
-                ChatMessage.session_id.in_(session_ids)
-            ).delete(synchronize_session=False)
-        deleted_chat_messages += db.query(ChatMessage).filter(
-            ChatMessage.sender_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 2. Chat sessions ──────────────────────────────────────────────────
-        deleted_chat_sessions = db.query(ChatSession).filter(
-            ChatSession.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 3. Notifications ──────────────────────────────────────────────────
-        deleted_notifications = db.query(Notification).filter(
-            Notification.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 4. Tournament participants ─────────────────────────────────────────
-        deleted_participants = db.query(TournamentParticipant).filter(
-            TournamentParticipant.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 5. Wallet transactions ─────────────────────────────────────────────
-        deleted_transactions = db.query(WalletTransaction).filter(
-            WalletTransaction.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 6. User restrictions (user_id NOT NULL) ────────────────────────────
-        deleted_restrictions = db.query(UserRestriction).filter(
-            UserRestriction.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 7. User activity locks (user_id NOT NULL) ──────────────────────────
-        deleted_activity_locks = db.query(UserActivityLock).filter(
-            UserActivityLock.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 8. OTP phone locks (nullable=True but clean up) ────────────────────
-        db.query(OtpPhoneLock).filter(
-            OtpPhoneLock.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 9. Withdraw UPI accounts (user_id NOT NULL) ────────────────────────
-        db.query(WithdrawUpiAccountModel).filter(
-            WithdrawUpiAccountModel.user_id == user_id
-        ).delete(synchronize_session=False)
-
-        # ── 10. Nullify referred_by_id on other users ──────────────────────────
-        referred_updates = db.query(User).filter(
-            User.referred_by_id == user_id
-        ).update({"referred_by_id": None}, synchronize_session=False)
-
-        # ── 11. Delete user via raw SQL — bypasses SQLAlchemy cascade ──────────
-        # ORM db.delete(user) triggers relationship cascade trying SET NULL on
-        # NOT NULL columns. Raw SQL completely bypasses this.
         deleted_username = user.username
-        deleted_email = user.email
-        db.expunge_all()
-        db.execute(sa_text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
+        deleted_email    = user.email
+
+        # ── Flush ORM session so no pending state interferes with raw SQL ──────
+        db.flush()
+
+        uid = user_id  # short alias
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Step 1 – chat_messages (FK → chat_sessions.id AND sender_id → users.id)
+        # ─────────────────────────────────────────────────────────────────────
+        r = db.execute(_t("""
+            DELETE FROM chat_messages
+            WHERE session_id IN (
+                SELECT id FROM chat_sessions WHERE user_id = :uid
+            )
+        """), {"uid": uid})
+        deleted_chat_messages = r.rowcount
+
+        r = db.execute(_t("""
+            DELETE FROM chat_messages WHERE sender_id = :uid
+        """), {"uid": uid})
+        deleted_chat_messages += r.rowcount
+
+        # Step 2 – chat_sessions
+        r = db.execute(_t("DELETE FROM chat_sessions WHERE user_id = :uid"), {"uid": uid})
+        deleted_chat_sessions = r.rowcount
+
+        # Step 3 – notifications
+        r = db.execute(_t("DELETE FROM notifications WHERE user_id = :uid"), {"uid": uid})
+        deleted_notifications = r.rowcount
+
+        # Step 4 – tournament_participants
+        r = db.execute(_t("DELETE FROM tournament_participants WHERE user_id = :uid"), {"uid": uid})
+        deleted_participants = r.rowcount
+
+        # Step 5 – wallet_transactions
+        r = db.execute(_t("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": uid})
+        deleted_transactions = r.rowcount
+
+        # Step 6 – user_restrictions  (user_id NOT NULL)
+        r = db.execute(_t("DELETE FROM user_restrictions WHERE user_id = :uid"), {"uid": uid})
+        deleted_restrictions = r.rowcount
+
+        # Step 7 – user_activity_locks  (user_id NOT NULL)
+        r = db.execute(_t("DELETE FROM user_activity_locks WHERE user_id = :uid"), {"uid": uid})
+        deleted_activity_locks = r.rowcount
+
+        # Step 8 – otp_phone_locks
+        #   • user_id is nullable  → SET NULL so the lock record is kept (audit trail)
+        #   • unlocked_by_admin_id → also nullable, nullify if points to this user
+        db.execute(_t("""
+            UPDATE otp_phone_locks
+               SET user_id = NULL
+             WHERE user_id = :uid
+        """), {"uid": uid})
+        db.execute(_t("""
+            UPDATE otp_phone_locks
+               SET unlocked_by_admin_id = NULL
+             WHERE unlocked_by_admin_id = :uid
+        """), {"uid": uid})
+
+        # Step 9 – withdraw_upi_accounts  (user_id NOT NULL)
+        db.execute(_t("DELETE FROM withdraw_upi_accounts WHERE user_id = :uid"), {"uid": uid})
+
+        # Step 10 – nullify referred_by_id on users who were referred by this user
+        r = db.execute(
+            _t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id = :uid"),
+            {"uid": uid}
+        )
+        referred_updates = r.rowcount
+
+        # Step 11 – DELETE the user (all child FK rows are gone / nulled already)
+        db.execute(_t("DELETE FROM users WHERE id = :uid"), {"uid": uid})
+
         db.commit()
+
 
         logger.warning(
             f"User deleted by admin={current_user.username}: user_id={user_id}, "
