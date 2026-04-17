@@ -2051,8 +2051,16 @@ def delete_user_account(
         raise HTTPException(status_code=400, detail="Admin accounts cannot be deleted from this action")
 
     try:
-        session_ids = [row[0] for row in db.query(ChatSession.id).filter(ChatSession.user_id == user_id).all()]
+        from sqlalchemy import text as sa_text
+        from models.user_activity_lock import UserActivityLock
+        from models.otp_phone_lock import OtpPhoneLock
+        from models.withdraw_upi_account import WithdrawUpiAccount as WithdrawUpiAccountModel
 
+        # ── 1. Chat messages ──────────────────────────────────────────────────
+        session_ids = [
+            row[0]
+            for row in db.query(ChatSession.id).filter(ChatSession.user_id == user_id).all()
+        ]
         deleted_chat_messages = 0
         if session_ids:
             deleted_chat_messages += db.query(ChatMessage).filter(
@@ -2062,42 +2070,64 @@ def delete_user_account(
             ChatMessage.sender_id == user_id
         ).delete(synchronize_session=False)
 
+        # ── 2. Chat sessions ──────────────────────────────────────────────────
         deleted_chat_sessions = db.query(ChatSession).filter(
             ChatSession.user_id == user_id
         ).delete(synchronize_session=False)
 
+        # ── 3. Notifications ──────────────────────────────────────────────────
         deleted_notifications = db.query(Notification).filter(
             Notification.user_id == user_id
         ).delete(synchronize_session=False)
 
+        # ── 4. Tournament participants ─────────────────────────────────────────
         deleted_participants = db.query(TournamentParticipant).filter(
             TournamentParticipant.user_id == user_id
         ).delete(synchronize_session=False)
 
+        # ── 5. Wallet transactions ─────────────────────────────────────────────
         deleted_transactions = db.query(WalletTransaction).filter(
             WalletTransaction.user_id == user_id
         ).delete(synchronize_session=False)
 
-        # ── Delete user restrictions BEFORE deleting the user ──────────────────
-        # user_restrictions.user_id has a NOT NULL constraint; SQLAlchemy's default
-        # cascade tries to SET user_id=NULL which violates it. Explicit delete fixes this.
+        # ── 6. User restrictions (user_id NOT NULL) ────────────────────────────
         deleted_restrictions = db.query(UserRestriction).filter(
             UserRestriction.user_id == user_id
         ).delete(synchronize_session=False)
 
+        # ── 7. User activity locks (user_id NOT NULL) ──────────────────────────
+        deleted_activity_locks = db.query(UserActivityLock).filter(
+            UserActivityLock.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        # ── 8. OTP phone locks (nullable=True but clean up) ────────────────────
+        db.query(OtpPhoneLock).filter(
+            OtpPhoneLock.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        # ── 9. Withdraw UPI accounts (user_id NOT NULL) ────────────────────────
+        db.query(WithdrawUpiAccountModel).filter(
+            WithdrawUpiAccountModel.user_id == user_id
+        ).delete(synchronize_session=False)
+
+        # ── 10. Nullify referred_by_id on other users ──────────────────────────
         referred_updates = db.query(User).filter(
             User.referred_by_id == user_id
         ).update({"referred_by_id": None}, synchronize_session=False)
 
+        # ── 11. Delete user via raw SQL — bypasses SQLAlchemy cascade ──────────
+        # ORM db.delete(user) triggers relationship cascade trying SET NULL on
+        # NOT NULL columns. Raw SQL completely bypasses this.
         deleted_username = user.username
         deleted_email = user.email
-        db.delete(user)
+        db.expunge_all()
+        db.execute(sa_text("DELETE FROM users WHERE id = :uid"), {"uid": user_id})
         db.commit()
 
         logger.warning(
             f"User deleted by admin={current_user.username}: user_id={user_id}, "
             f"username={deleted_username}, email={deleted_email}, "
-            f"deleted_restrictions={deleted_restrictions}, "
+            f"deleted_restrictions={deleted_restrictions}, deleted_activity_locks={deleted_activity_locks}, "
             f"deleted_transactions={deleted_transactions}, deleted_participants={deleted_participants}, "
             f"deleted_notifications={deleted_notifications}, deleted_chat_sessions={deleted_chat_sessions}, "
             f"deleted_chat_messages={deleted_chat_messages}, referred_updates={referred_updates}"
@@ -2106,6 +2136,7 @@ def delete_user_account(
         return {
             "message": f"User #{user_id} deleted successfully",
             "deleted_restrictions": deleted_restrictions,
+            "deleted_activity_locks": deleted_activity_locks,
             "deleted_transactions": deleted_transactions,
             "deleted_participants": deleted_participants,
             "deleted_notifications": deleted_notifications,
@@ -2113,6 +2144,7 @@ def delete_user_account(
             "deleted_chat_messages": deleted_chat_messages,
             "referred_updates": referred_updates,
         }
+
     except HTTPException:
         raise
     except Exception as e:
