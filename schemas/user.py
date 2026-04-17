@@ -18,6 +18,13 @@ class UserCreate(BaseModel):
     def username_no_spaces(cls, v: str) -> str:
         return v.strip()
 
+    @field_validator("email")
+    @classmethod
+    def email_must_be_gmail(cls, v: str) -> str:
+        if not v.lower().endswith("@gmail.com"):
+            raise ValueError("Only Gmail addresses are accepted. Please use a @gmail.com email.")
+        return v.lower()
+
 
 class LoginRequest(BaseModel):
     email: str = Field(..., max_length=320)   # RFC 5321 max email length
