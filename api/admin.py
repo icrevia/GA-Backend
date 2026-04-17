@@ -2126,6 +2126,9 @@ def delete_user_account(
         # withdraw_upi_accounts  (user_id NOT NULL)
         db.execute(_t("DELETE FROM withdraw_upi_accounts WHERE user_id = :uid"), {"uid": uid})
 
+        # email_otp_logs  (user_id FK — table exists in DB, no ORM model)
+        db.execute(_t("DELETE FROM email_otp_logs WHERE user_id = :uid"), {"uid": uid})
+
         # ══════════════════════════════════════════════════════════════════════
         # PHASE 3 — Delete the user itself (all constraints are cleared)
         # ══════════════════════════════════════════════════════════════════════
