@@ -2056,92 +2056,93 @@ def delete_user_account(
         deleted_username = user.username
         deleted_email    = user.email
 
-        # ── Flush ORM session so no pending state interferes with raw SQL ──────
-        db.flush()
+        db.flush()  # push any pending ORM state before raw SQL
+        uid = user_id
 
-        uid = user_id  # short alias
+        # ══════════════════════════════════════════════════════════════════════
+        # PHASE 1 — SET NULL on every nullable FK column referencing this user
+        # Must happen BEFORE any DELETE so FK constraints don't fire.
+        # ══════════════════════════════════════════════════════════════════════
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Step 1 – chat_messages (FK → chat_sessions.id AND sender_id → users.id)
-        # ─────────────────────────────────────────────────────────────────────
+        # chat_sessions: admin/helper columns
+        db.execute(_t("UPDATE chat_sessions SET attended_by_admin_id = NULL WHERE attended_by_admin_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_sessions SET blocked_by_admin_id  = NULL WHERE blocked_by_admin_id  = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_sessions SET ended_by_user_id     = NULL WHERE ended_by_user_id     = :uid"), {"uid": uid})
+
+        # chat_messages: thread owner and sender (nullable, but FK constrained)
+        db.execute(_t("UPDATE chat_messages SET thread_user_id = NULL WHERE thread_user_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_messages SET sender_id      = NULL WHERE sender_id      = :uid"), {"uid": uid})
+
+        # user_restrictions: admin audit columns
+        db.execute(_t("UPDATE user_restrictions SET created_by_admin_id = NULL WHERE created_by_admin_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE user_restrictions SET lifted_by_admin_id  = NULL WHERE lifted_by_admin_id  = :uid"), {"uid": uid})
+
+        # user_activity_locks: admin unlock column
+        db.execute(_t("UPDATE user_activity_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id = :uid"), {"uid": uid})
+
+        # otp_phone_locks: both FK columns are nullable
+        db.execute(_t("UPDATE otp_phone_locks SET user_id              = NULL WHERE user_id              = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE otp_phone_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id = :uid"), {"uid": uid})
+
+        # users: self-referential referral
+        db.execute(_t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id = :uid"), {"uid": uid})
+        referred_updates_r = db.execute(_t("SELECT COUNT(*) FROM users WHERE referred_by_id IS NULL AND id != :uid"), {"uid": uid})
+
+        # ══════════════════════════════════════════════════════════════════════
+        # PHASE 2 — DELETE child rows where user_id is NOT NULL (must own them)
+        # ══════════════════════════════════════════════════════════════════════
+
+        # chat_messages that belong to this user's OWN sessions
         r = db.execute(_t("""
             DELETE FROM chat_messages
-            WHERE session_id IN (
-                SELECT id FROM chat_sessions WHERE user_id = :uid
-            )
+            WHERE session_id IN (SELECT id FROM chat_sessions WHERE user_id = :uid)
         """), {"uid": uid})
         deleted_chat_messages = r.rowcount
 
-        r = db.execute(_t("""
-            DELETE FROM chat_messages WHERE sender_id = :uid
-        """), {"uid": uid})
-        deleted_chat_messages += r.rowcount
-
-        # Step 2 – chat_sessions
+        # chat_sessions owned by this user
         r = db.execute(_t("DELETE FROM chat_sessions WHERE user_id = :uid"), {"uid": uid})
         deleted_chat_sessions = r.rowcount
 
-        # Step 3 – notifications
+        # notifications
         r = db.execute(_t("DELETE FROM notifications WHERE user_id = :uid"), {"uid": uid})
         deleted_notifications = r.rowcount
 
-        # Step 4 – tournament_participants
+        # tournament_participants
         r = db.execute(_t("DELETE FROM tournament_participants WHERE user_id = :uid"), {"uid": uid})
         deleted_participants = r.rowcount
 
-        # Step 5 – wallet_transactions
+        # wallet_transactions
         r = db.execute(_t("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": uid})
         deleted_transactions = r.rowcount
 
-        # Step 6 – user_restrictions  (user_id NOT NULL)
+        # user_restrictions  (user_id NOT NULL)
         r = db.execute(_t("DELETE FROM user_restrictions WHERE user_id = :uid"), {"uid": uid})
         deleted_restrictions = r.rowcount
 
-        # Step 7 – user_activity_locks  (user_id NOT NULL)
+        # user_activity_locks  (user_id NOT NULL)
         r = db.execute(_t("DELETE FROM user_activity_locks WHERE user_id = :uid"), {"uid": uid})
         deleted_activity_locks = r.rowcount
 
-        # Step 8 – otp_phone_locks
-        #   • user_id is nullable  → SET NULL so the lock record is kept (audit trail)
-        #   • unlocked_by_admin_id → also nullable, nullify if points to this user
-        db.execute(_t("""
-            UPDATE otp_phone_locks
-               SET user_id = NULL
-             WHERE user_id = :uid
-        """), {"uid": uid})
-        db.execute(_t("""
-            UPDATE otp_phone_locks
-               SET unlocked_by_admin_id = NULL
-             WHERE unlocked_by_admin_id = :uid
-        """), {"uid": uid})
-
-        # Step 9 – withdraw_upi_accounts  (user_id NOT NULL)
+        # withdraw_upi_accounts  (user_id NOT NULL)
         db.execute(_t("DELETE FROM withdraw_upi_accounts WHERE user_id = :uid"), {"uid": uid})
 
-        # Step 10 – nullify referred_by_id on users who were referred by this user
-        r = db.execute(
-            _t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id = :uid"),
-            {"uid": uid}
-        )
-        referred_updates = r.rowcount
-
-        # Step 11 – DELETE the user (all child FK rows are gone / nulled already)
+        # ══════════════════════════════════════════════════════════════════════
+        # PHASE 3 — Delete the user itself (all constraints are cleared)
+        # ══════════════════════════════════════════════════════════════════════
         db.execute(_t("DELETE FROM users WHERE id = :uid"), {"uid": uid})
-
         db.commit()
-
 
         logger.warning(
             f"User deleted by admin={current_user.username}: user_id={user_id}, "
-            f"username={deleted_username}, email={deleted_email}, "
-            f"deleted_restrictions={deleted_restrictions}, deleted_activity_locks={deleted_activity_locks}, "
-            f"deleted_transactions={deleted_transactions}, deleted_participants={deleted_participants}, "
-            f"deleted_notifications={deleted_notifications}, deleted_chat_sessions={deleted_chat_sessions}, "
-            f"deleted_chat_messages={deleted_chat_messages}, referred_updates={referred_updates}"
+            f"username={deleted_username}, email={deleted_email} | "
+            f"restrictions={deleted_restrictions}, activity_locks={deleted_activity_locks}, "
+            f"transactions={deleted_transactions}, participants={deleted_participants}, "
+            f"notifications={deleted_notifications}, chat_sessions={deleted_chat_sessions}, "
+            f"chat_messages={deleted_chat_messages}"
         )
 
         return {
-            "message": f"User #{user_id} deleted successfully",
+            "message": f"User #{user_id} ({deleted_username}) deleted successfully",
             "deleted_restrictions": deleted_restrictions,
             "deleted_activity_locks": deleted_activity_locks,
             "deleted_transactions": deleted_transactions,
@@ -2149,8 +2150,8 @@ def delete_user_account(
             "deleted_notifications": deleted_notifications,
             "deleted_chat_sessions": deleted_chat_sessions,
             "deleted_chat_messages": deleted_chat_messages,
-            "referred_updates": referred_updates,
         }
+
 
     except HTTPException:
         raise
