@@ -2078,6 +2078,13 @@ def delete_user_account(
             WalletTransaction.user_id == user_id
         ).delete(synchronize_session=False)
 
+        # ── Delete user restrictions BEFORE deleting the user ──────────────────
+        # user_restrictions.user_id has a NOT NULL constraint; SQLAlchemy's default
+        # cascade tries to SET user_id=NULL which violates it. Explicit delete fixes this.
+        deleted_restrictions = db.query(UserRestriction).filter(
+            UserRestriction.user_id == user_id
+        ).delete(synchronize_session=False)
+
         referred_updates = db.query(User).filter(
             User.referred_by_id == user_id
         ).update({"referred_by_id": None}, synchronize_session=False)
@@ -2090,6 +2097,7 @@ def delete_user_account(
         logger.warning(
             f"User deleted by admin={current_user.username}: user_id={user_id}, "
             f"username={deleted_username}, email={deleted_email}, "
+            f"deleted_restrictions={deleted_restrictions}, "
             f"deleted_transactions={deleted_transactions}, deleted_participants={deleted_participants}, "
             f"deleted_notifications={deleted_notifications}, deleted_chat_sessions={deleted_chat_sessions}, "
             f"deleted_chat_messages={deleted_chat_messages}, referred_updates={referred_updates}"
@@ -2097,6 +2105,7 @@ def delete_user_account(
 
         return {
             "message": f"User #{user_id} deleted successfully",
+            "deleted_restrictions": deleted_restrictions,
             "deleted_transactions": deleted_transactions,
             "deleted_participants": deleted_participants,
             "deleted_notifications": deleted_notifications,
