@@ -284,6 +284,23 @@ class Settings(BaseSettings):
                 file=sys.stderr,
             )
 
+        if self.DEVELOPER_OTP_ENABLED and not self.TELEGRAM_BOT_TOKEN:
+            print(
+                "[CONFIG WARNING] Developer OTP is enabled but TELEGRAM_BOT_TOKEN is missing. "
+                "Developer page OTP delivery will fail.",
+                file=sys.stderr,
+            )
+
+        if (
+            self.DEVELOPER_OTP_ENABLED
+            and not (self.DEVELOPER_OTP_TELEGRAM_CHAT_ID or self.TELEGRAM_ALERT_CHAT_ID)
+        ):
+            print(
+                "[CONFIG WARNING] Developer OTP is enabled but no target chat is configured. "
+                "Set DEVELOPER_OTP_TELEGRAM_CHAT_ID (comma-separated allowed) or TELEGRAM_ALERT_CHAT_ID.",
+                file=sys.stderr,
+            )
+
         if self.IP_GEO_LOOKUP_TIMEOUT_SECONDS <= 0:
             print(
                 "[CONFIG WARNING] IP_GEO_LOOKUP_TIMEOUT_SECONDS must be positive. Falling back to 2.0 seconds.",

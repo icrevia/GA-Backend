@@ -131,11 +131,23 @@ _DEVELOPER_OTP_STATE: dict[int, dict[str, object]] = {}
 _DEVELOPER_OTP_SESSIONS: dict[str, tuple[int, datetime]] = {}
 
 
-def _developer_otp_chat_id() -> str:
-    configured = (settings.DEVELOPER_OTP_TELEGRAM_CHAT_ID or "").strip()
+def _parse_telegram_chat_ids(raw_value: str | None) -> list[str]:
+    normalized = (raw_value or "").replace("\n", ",").replace(";", ",")
+    chat_ids: list[str] = []
+    for chunk in normalized.split(","):
+        chat_id = chunk.strip()
+        if not chat_id:
+            continue
+        if chat_id not in chat_ids:
+            chat_ids.append(chat_id)
+    return chat_ids
+
+
+def _developer_otp_chat_ids() -> list[str]:
+    configured = _parse_telegram_chat_ids(settings.DEVELOPER_OTP_TELEGRAM_CHAT_ID)
     if configured:
         return configured
-    return (settings.TELEGRAM_ALERT_CHAT_ID or "").strip()
+    return _parse_telegram_chat_ids(settings.TELEGRAM_ALERT_CHAT_ID)
 
 
 def _otp_digest(admin_id: int, otp: str) -> str:
@@ -185,8 +197,8 @@ def _validate_developer_otp_session(admin_id: int, otp_session_token: str) -> tu
 
 def _send_developer_otp_message(admin: User, request: Request, otp: str) -> None:
     bot_token = (settings.TELEGRAM_BOT_TOKEN or "").strip()
-    chat_id = _developer_otp_chat_id()
-    if not bot_token or not chat_id:
+    chat_ids = _developer_otp_chat_ids()
+    if not bot_token or not chat_ids:
         raise HTTPException(
             status_code=503,
             detail="Developer OTP delivery is not configured. Set TELEGRAM_BOT_TOKEN and DEVELOPER_OTP_TELEGRAM_CHAT_ID (or TELEGRAM_ALERT_CHAT_ID).",
@@ -207,34 +219,48 @@ def _send_developer_otp_message(admin: User, request: Request, otp: str) -> None
         "Never share this code with anyone.",
     ])[:4096]
 
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "disable_web_page_preview": True,
-    }
+    delivered_count = 0
+    for chat_id in chat_ids:
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "disable_web_page_preview": True,
+        }
 
-    req = urllib_request.Request(
-        f"https://api.telegram.org/bot{bot_token}/sendMessage",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+        req = urllib_request.Request(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
 
-    try:
-        with urllib_request.urlopen(req, timeout=settings.SECURITY_ALERT_TIMEOUT_SECONDS) as resp:
-            body = resp.read().decode("utf-8", errors="ignore")
-            parsed = json.loads(body) if body else {}
-            if resp.status >= 400 or (isinstance(parsed, dict) and parsed.get("ok") is False):
-                logger.warning("Developer OTP telegram send failed: status=%s body=%s", resp.status, body)
-                raise HTTPException(status_code=503, detail="Failed to deliver OTP. Please retry.")
-    except HTTPError as exc:
-        logger.warning("Developer OTP telegram HTTPError: status=%s", exc.code)
+        try:
+            with urllib_request.urlopen(req, timeout=settings.SECURITY_ALERT_TIMEOUT_SECONDS) as resp:
+                body = resp.read().decode("utf-8", errors="ignore")
+                parsed = json.loads(body) if body else {}
+                if resp.status >= 400 or (isinstance(parsed, dict) and parsed.get("ok") is False):
+                    logger.warning(
+                        "Developer OTP telegram send failed: chat_id=%s status=%s body=%s",
+                        chat_id,
+                        resp.status,
+                        body,
+                    )
+                    continue
+                delivered_count += 1
+        except HTTPError as exc:
+            logger.warning("Developer OTP telegram HTTPError: chat_id=%s status=%s", chat_id, exc.code)
+        except Exception as exc:
+            logger.warning("Developer OTP telegram error for chat_id=%s: %s", chat_id, exc)
+
+    if delivered_count <= 0:
         raise HTTPException(status_code=503, detail="Failed to deliver OTP. Please retry.")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.warning("Developer OTP telegram error: %s", exc)
-        raise HTTPException(status_code=503, detail="Failed to deliver OTP. Please retry.")
+
+    if delivered_count < len(chat_ids):
+        logger.warning(
+            "Developer OTP delivered partially: delivered=%s total=%s",
+            delivered_count,
+            len(chat_ids),
+        )
 
 
 def require_developer_otp(
