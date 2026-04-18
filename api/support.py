@@ -408,6 +408,26 @@ async def user_select_issue(
     if issue_type is None:
         raise HTTPException(status_code=400, detail="Issue type cannot be empty")
 
+    # If a thread is already active, do not create a fresh issue prompt again.
+    # This prevents duplicate "Issue noted..." messages when user re-enters support.
+    if not _thread_is_ended(meta):
+        recent_msg_query = (
+            select(ChatMessage.id)
+            .where(ChatMessage.thread_user_id == current_user.id)
+            .order_by(ChatMessage.timestamp.desc(), ChatMessage.id.desc())
+            .limit(1)
+        )
+        if meta.user_cleared_at is not None:
+            recent_msg_query = recent_msg_query.where(ChatMessage.timestamp > meta.user_cleared_at)
+
+        recent_msg_id = (await db.execute(recent_msg_query)).scalar_one_or_none()
+        if recent_msg_id is not None:
+            return {
+                "status": "skipped",
+                "reason": "active_chat_exists",
+                "issue_type": meta.issue_type,
+            }
+
     now = _utcnow_naive()
     if _thread_is_ended(meta):
         _reopen_thread(meta)
