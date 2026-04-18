@@ -619,29 +619,7 @@ async def user_end_chat(
     meta.ended_by_role = "USER"
     meta.ended_by_user_id = current_user.id
 
-    delivered = manager.is_user_online(current_user.id)
-    ended_msg = ChatMessage(
-        session_id=meta.id,
-        thread_user_id=current_user.id,
-        sender_id=None,
-        content=_end_chat_message("USER"),
-        timestamp=now,
-        is_admin=True,
-        is_delivered=delivered,
-        delivered_at=now if delivered else None,
-    )
-    db.add(ended_msg)
-
     await db.commit()
-    await db.refresh(ended_msg)
-
-    await notify_support_message(
-        db,
-        thread_user_id=current_user.id,
-        msg_data=_message_event(ended_msg, current_user.id),
-        sender_is_admin=True,
-        notify_via_push=False,
-    )
 
     event = await _emit_thread_state(
         db,
