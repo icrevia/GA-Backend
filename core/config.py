@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     IP_GEO_LOOKUP_TIMEOUT_SECONDS: float = 2.0
     ADMIN_BLOCK_LOGIN_ON_GEO_DENIED: bool = True
 
+    # ── Ledger bot (withdraw approvals via Telegram) ────────────────────────
+    LEDGER_BOT: str = ""
+    LEDGER_ADMINS: str = ""
+    LEDGER_WEBHOOK_SECRET: str = ""
+
     # ── Developer page OTP gate ─────────────────────────────────────────────
     DEVELOPER_OTP_ENABLED: bool = True
     DEVELOPER_OTP_LENGTH: int = 6
@@ -235,6 +240,27 @@ class Settings(BaseSettings):
                 file=sys.stderr
             )
             object.__setattr__(self, "SECURITY_ALERTS_ENABLED", False)
+
+        if self.LEDGER_BOT and not self.LEDGER_ADMINS:
+            print(
+                "[CONFIG WARNING] LEDGER_BOT is set but LEDGER_ADMINS is empty. "
+                "Withdrawal alerts cannot be delivered to Telegram admins.",
+                file=sys.stderr,
+            )
+
+        if self.LEDGER_ADMINS and not self.LEDGER_BOT:
+            print(
+                "[CONFIG WARNING] LEDGER_ADMINS is set but LEDGER_BOT is empty. "
+                "Set LEDGER_BOT with a Telegram bot token.",
+                file=sys.stderr,
+            )
+
+        if self.LEDGER_BOT and not self.LEDGER_WEBHOOK_SECRET:
+            print(
+                "[CONFIG WARNING] LEDGER_WEBHOOK_SECRET is empty. "
+                "Telegram webhook calls will rely only on callback signature checks.",
+                file=sys.stderr,
+            )
 
         if not self.ADMIN_LOGIN_PHONE:
             print(

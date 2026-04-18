@@ -158,6 +158,7 @@ async def lifespan(app: FastAPI):
             logger.warning(f"DB migration partial failure: {e}")
 
     from services.support_media import ensure_support_media_storage_dir, support_media_cleanup_worker
+    from services.ledger_bot import register_ledger_bot_webhook
 
     try:
         ensure_support_media_storage_dir()
@@ -196,6 +197,8 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_send_startup_notification())
     # ─────────────────────────────────────────────────────────────
+
+    asyncio.create_task(asyncio.to_thread(register_ledger_bot_webhook))
 
     # ── Automated Bonus Expiry Worker (runs every 6 hours) ───────
     BONUS_EXPIRY_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours

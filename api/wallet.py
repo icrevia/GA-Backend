@@ -45,6 +45,7 @@ from services.deposit_bonus import (
     evaluate_deposit_bonus,
     get_deposit_bonus_config,
 )
+from services.ledger_bot import send_withdrawal_request_to_admins
 from core.websockets import manager as ws_manager
 from services.wallet_balances import (
     WALLET_BUCKET_BONUS,
@@ -1081,6 +1082,7 @@ def cancel_payment(
 @router.post("/withdraw")
 def request_withdrawal(
     req: WithdrawalRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_wallet)
 ):
@@ -1204,6 +1206,10 @@ def request_withdrawal(
         )
     db.add(user)
     db.commit()
+    try:
+        db.refresh(tx)
+    except Exception:
+        pass
 
     if withdrawal_fee > Decimal("0.00"):
         notification_body = (
@@ -1221,6 +1227,21 @@ def request_withdrawal(
         "Withdrawal Requested",
         notification_body,
         "WALLET"
+    )
+
+    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+    background_tasks.add_task(
+        send_withdrawal_request_to_admins,
+        transaction_id=tx.id,
+        user_id=user.id,
+        username=user.username or f"User{user.id}",
+        amount=amount_to_withdraw,
+        upi_id=normalized_upi_id,
+        reference_id=tx.reference_id,
+        created_at=tx.created_at,
+        phone_number=user.phone_number,
+        freefire_id=user.freefire_id,
+        withdrawal_fee=withdrawal_fee,
     )
 
     if withdrawal_fee > Decimal("0.00"):

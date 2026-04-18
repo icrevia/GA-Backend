@@ -860,6 +860,83 @@ def _refund_withdrawal_if_needed(
     db.add(user)
     return total_refund_amount
 
+
+def process_withdrawal_approval(
+    db: Session,
+    tx: WalletTransaction,
+    *,
+    actor_label: str,
+    source: str = "ADMIN_PANEL",
+) -> None:
+    tx.status = "SUCCESS"
+    db.add(tx)
+    db.commit()
+
+    try:
+        add_user_notification(
+            db,
+            tx.user_id,
+            "Withdrawal Successful ✅",
+            (
+                f"Your withdrawal request of ₹{abs(float(tx.amount))} has been approved "
+                "and sent to your UPI ID. Check your bank account."
+            ),
+            "WALLET",
+        )
+    except Exception:
+        pass
+
+    logger.info(
+        "Withdrawal %s approved via %s by %s",
+        tx.id,
+        source,
+        actor_label,
+    )
+
+
+def process_withdrawal_rejection(
+    db: Session,
+    tx: WalletTransaction,
+    *,
+    actor_label: str,
+    reason_code: str,
+    source: str = "ADMIN_PANEL",
+) -> Decimal:
+    tx.status = "FAILED"
+    refunded = _refund_withdrawal_if_needed(
+        db,
+        tx,
+        actor_label,
+        reason_code,
+    )
+
+    db.add(tx)
+    db.commit()
+
+    try:
+        add_user_notification(
+            db,
+            tx.user_id,
+            "Withdrawal Rejected ❌",
+            (
+                f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. "
+                "The debited amount and any applicable withdrawal fee have been "
+                "refunded to your winning wallet."
+            ),
+            "WALLET",
+        )
+    except Exception:
+        pass
+
+    logger.info(
+        "Withdrawal %s rejected via %s by %s; refund=%0.2f",
+        tx.id,
+        source,
+        actor_label,
+        float(refunded),
+    )
+    return refunded
+
 @router.get("/withdrawals")
 def list_pending_withdrawals(
     db: Session = Depends(get_db),
@@ -900,6 +977,7 @@ def list_pending_withdrawals(
 @router.post("/withdrawals/{transaction_id}/approve")
 def approve_withdrawal(
     transaction_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
@@ -911,27 +989,20 @@ def approve_withdrawal(
     if tx.transaction_type != "WITHDRAWAL" or tx.status != "PENDING":
         raise HTTPException(status_code=400, detail="Invalid transaction or already processed")
 
-    tx.status = "SUCCESS"
-    db.add(tx)
-    db.commit()
-
-    # NOTIFY USER
-    try:
-        add_user_notification(
-            db, tx.user_id,
-            "Withdrawal Successful ✅",
-            f"Your withdrawal request of ₹{abs(float(tx.amount))} has been approved and sent to your UPI ID. Check your bank account.",
-            "WALLET"
-        )
-    except Exception: pass
-
-    logger.info(f"Withdrawal {transaction_id} approved by admin={current_user.username}")
+    process_withdrawal_approval(
+        db,
+        tx,
+        actor_label=current_user.username,
+        source="ADMIN_PANEL",
+    )
+    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
     return {"message": "Withdrawal approved"}
 
 
 @router.post("/withdrawals/{transaction_id}/reject")
 def reject_withdrawal(
     transaction_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
@@ -943,35 +1014,14 @@ def reject_withdrawal(
     if tx.transaction_type != "WITHDRAWAL" or tx.status != "PENDING":
         raise HTTPException(status_code=400, detail="Invalid transaction or already processed")
 
-    tx.status = "FAILED"
-
-    refunded = _refund_withdrawal_if_needed(
+    process_withdrawal_rejection(
         db,
         tx,
-        current_user.username,
-        "REJECTED_BY_ADMIN",
+        actor_label=current_user.username,
+        reason_code="REJECTED_BY_ADMIN",
+        source="ADMIN_PANEL",
     )
-
-    db.add(tx)
-    db.commit()
-
-    # NOTIFY USER
-    try:
-        add_user_notification(
-            db, tx.user_id,
-            "Withdrawal Rejected ❌",
-            (
-                f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. "
-                "The debited amount and any applicable withdrawal fee have been refunded to your winning wallet."
-            ),
-            "WALLET"
-        )
-    except Exception: pass
-
-    logger.info(
-        f"Withdrawal {transaction_id} rejected by admin={current_user.username}; "
-        f"refund={float(refunded):.2f}"
-    )
+    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
     return {"message": "Withdrawal rejected and refunded"}
 
 
