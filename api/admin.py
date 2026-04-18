@@ -2636,6 +2636,69 @@ def unlock_user_restriction(
     return {"message": "Restriction unlocked successfully"}
 
 
+@router.post("/restrictions/unlock-all")
+def unlock_all_user_restrictions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    active_restrictions = (
+        db.query(UserRestriction)
+        .filter(UserRestriction.is_active == True)
+        .with_for_update()
+        .all()
+    )
+    if not active_restrictions:
+        return {"message": "No active restrictions found"}
+
+    now = utcnow_naive()
+    unlocked_count = 0
+    impacted_user_ids = {r.user_id for r in active_restrictions}
+
+    for restriction in active_restrictions:
+        restriction.is_active = False
+        restriction.lifted_by_admin_id = current_user.id
+        restriction.lifted_at = now
+        restriction.lift_note = "Bulk unlock all from command deck"
+        db.add(restriction)
+        unlocked_count += 1
+
+    # Correct reactivity: check if any impacted users can now be activated
+    if impacted_user_ids:
+        target_users = (
+            db.query(User)
+            .filter(User.id.in_(impacted_user_ids), User.is_active == False)
+            .with_for_update()
+            .all()
+        )
+        for user in target_users:
+            # Check for any remaining active full-app restrictions
+            # (Note: we already marked the ones we found as is_active=False in memory,
+            # but they are still True in DB until commit. SQLAlchemy session reflects 
+            # the memory state for queries if autoflush is on, but it's safer to check 
+            # carefully if we are doing many updates.)
+            has_other_full_app = db.query(UserRestriction).filter(
+                UserRestriction.user_id == user.id,
+                UserRestriction.is_active == True,
+                UserRestriction.scope == RESTRICTION_SCOPE_FULL_APP
+            ).first()
+            
+            if not has_other_full_app:
+                user.is_active = True
+                db.add(user)
+
+    db.commit()
+    logger.warning(
+        "Bulk unlock-all executed by admin=%s: revoked=%s restrictions across users=%s",
+        current_user.username,
+        unlocked_count,
+        len(impacted_user_ids),
+    )
+    return {
+        "message": f"Successfully lifted {unlocked_count} restriction(s).",
+        "unlocked_count": unlocked_count,
+    }
+
+
 @router.delete("/users/{user_id}")
 def delete_user_account(
     user_id: int,
