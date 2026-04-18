@@ -1,4 +1,5 @@
 from datetime import datetime
+import time
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from core.database import get_db_sync, get_db as get_db_async
 from core.config import settings
 from core.security import decode_access_token
 from models.user import User
+from models.config import SystemConfig
 from services.restrictions import (
     RESTRICTION_SCOPE_FULL_APP,
     RESTRICTION_SCOPE_PAGE,
@@ -17,6 +19,14 @@ from services.restrictions import (
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
+
+MAINTENANCE_CACHE_TTL_SECONDS = 5.0
+_maintenance_guard_cache: dict[str, object] = {
+    "expires_at": 0.0,
+    "enabled": False,
+    "message": "",
+    "until": "",
+}
 
 # Backward-compat export used by legacy modules (e.g. admin routes).
 get_db = get_db_sync
@@ -40,6 +50,92 @@ def _session_revoked_detail(user: User) -> str:
     if ip:
         return f"{base} New login IP: {ip}. Please log in again."
     return f"{base} Please log in again."
+
+
+def _maintenance_enabled(raw: str | None) -> bool:
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_maintenance_config(config_map: dict[str, str]) -> tuple[bool, str, str]:
+    enabled = _maintenance_enabled(config_map.get("maintenance_mode"))
+    message = (config_map.get("maintenance_message") or "").strip()
+    until = (config_map.get("maintenance_until") or "").strip()
+    return enabled, message, until
+
+
+def _set_maintenance_cache(enabled: bool, message: str, until: str) -> tuple[bool, str, str]:
+    _maintenance_guard_cache["enabled"] = enabled
+    _maintenance_guard_cache["message"] = message
+    _maintenance_guard_cache["until"] = until
+    _maintenance_guard_cache["expires_at"] = time.monotonic() + MAINTENANCE_CACHE_TTL_SECONDS
+    return enabled, message, until
+
+
+def _get_maintenance_state_sync(db: Session) -> tuple[bool, str, str]:
+    now = time.monotonic()
+    if now < float(_maintenance_guard_cache.get("expires_at", 0.0) or 0.0):
+        return (
+            bool(_maintenance_guard_cache.get("enabled", False)),
+            str(_maintenance_guard_cache.get("message", "") or ""),
+            str(_maintenance_guard_cache.get("until", "") or ""),
+        )
+
+    rows = (
+        db.query(SystemConfig.config_key, SystemConfig.config_value)
+        .filter(SystemConfig.config_key.in_(["maintenance_mode", "maintenance_message", "maintenance_until"]))
+        .all()
+    )
+    config_map = {k: v for k, v in rows}
+    enabled, message, until = _parse_maintenance_config(config_map)
+    return _set_maintenance_cache(enabled, message, until)
+
+
+async def _get_maintenance_state_async(db: AsyncSession) -> tuple[bool, str, str]:
+    now = time.monotonic()
+    if now < float(_maintenance_guard_cache.get("expires_at", 0.0) or 0.0):
+        return (
+            bool(_maintenance_guard_cache.get("enabled", False)),
+            str(_maintenance_guard_cache.get("message", "") or ""),
+            str(_maintenance_guard_cache.get("until", "") or ""),
+        )
+
+    result = await db.execute(
+        select(SystemConfig.config_key, SystemConfig.config_value).where(
+            SystemConfig.config_key.in_(["maintenance_mode", "maintenance_message", "maintenance_until"])
+        )
+    )
+    config_map = {k: v for k, v in result.all()}
+    enabled, message, until = _parse_maintenance_config(config_map)
+    return _set_maintenance_cache(enabled, message, until)
+
+
+def _maintenance_client_message(message: str) -> str:
+    cleaned = (message or "").strip()
+    return cleaned or "System is under maintenance. Please try again shortly."
+
+
+def _enforce_maintenance_guard(db: Session, user: User) -> None:
+    if user.role == "ADMIN":
+        return
+
+    enabled, message, _ = _get_maintenance_state_sync(db)
+    if enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_maintenance_client_message(message),
+        )
+
+
+async def _enforce_maintenance_guard_async(db: AsyncSession, user: User) -> None:
+    if user.role == "ADMIN":
+        return
+
+    enabled, message, _ = await _get_maintenance_state_async(db)
+    if enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_maintenance_client_message(message),
+        )
 
 
 def _enforce_full_app_restriction(db: Session, user: User) -> None:
@@ -160,6 +256,8 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    _enforce_maintenance_guard(db, user)
+
     return user
 
 
@@ -202,6 +300,8 @@ async def get_current_user_async(
             detail=_session_revoked_detail(user),
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    await _enforce_maintenance_guard_async(db, user)
 
     return user
 

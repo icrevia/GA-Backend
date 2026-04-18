@@ -32,6 +32,35 @@ _system_status_cache: dict[str, object] = {
     "value": None,
 }
 
+
+def _as_bool(raw: str | None, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_int(raw: str | None, default: int) -> int:
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        return default
+
+
+def _status_payload_from_config(config_map: dict[str, str]) -> dict[str, object]:
+    maintenance_mode = _as_bool(config_map.get("maintenance_mode"), False)
+    return {
+        "maintenance_mode": maintenance_mode,
+        "status": "maintenance" if maintenance_mode else "online",
+        "message": (config_map.get("maintenance_message") or "").strip(),
+        "until": (config_map.get("maintenance_until") or "").strip(),
+        "latest_version_code": _as_int(config_map.get("latest_version_code"), 1),
+        "latest_version_name": (config_map.get("latest_version_name") or "1.0").strip() or "1.0",
+        "update_url": (config_map.get("update_url") or "").strip(),
+        "force_update": _as_bool(config_map.get("force_update"), False),
+        "update_message": (config_map.get("update_message") or "").strip(),
+        "support_email": (config_map.get("support_email") or "gamerzaddahelp@gmail.com").strip(),
+    }
+
 # ─────────────────────────────────────────────
 # Lifespan context manager (Modern approach)
 # ─────────────────────────────────────────────
@@ -518,12 +547,7 @@ async def get_system_status(request: Request):
             result = await db.execute(select(SystemConfig))
             configs = result.scalars().all()
             config_map = {c.config_key: c.config_value for c in configs}
-            payload = {
-                "maintenance_mode": config_map.get("maintenance_mode", "false").lower() == "true",
-                "status": "online",
-                "latest_version_code": int(config_map.get("latest_version_code", "1")),
-                "support_email": "gamerzaddahelp@gmail.com"
-            }
+            payload = _status_payload_from_config(config_map)
             _system_status_cache["value"] = payload
             _system_status_cache["expires_at"] = now + SYSTEM_STATUS_CACHE_TTL_SECONDS
             return payload
