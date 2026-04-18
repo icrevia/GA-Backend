@@ -10,7 +10,13 @@ ALLOWED_WS_EVENTS = {
     "chat_message", "support_escalation"
 }
 
-SUPPORT_EVENT_TYPES = {"chat_message", "support_escalation"}
+SUPPORT_EVENT_TYPES = {
+    "chat_message",
+    "support_escalation",
+    "support_blocked",
+    "support_unblocked",
+    "support_thread_updated",
+}
 MAX_PENDING_ADMIN_SUPPORT_EVENTS = 200
 
 

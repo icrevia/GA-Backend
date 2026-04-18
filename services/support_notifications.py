@@ -1,86 +1,147 @@
+from __future__ import annotations
+
+import asyncio
 import logging
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from core.websockets import manager
-from services.push_notifications import send_push, send_push_to_many
 from models.user import User
+from services.push_notifications import send_push, send_push_to_many
 
 logger = logging.getLogger("GamerzAdda.support_notifications")
 
+
+def _compact_preview(content: str | None, fallback: str = "New support message") -> str:
+    text = (content or "").strip()
+    if not text:
+        return fallback
+    if len(text) > 120:
+        return f"{text[:117]}..."
+    return text
+
+
+async def _get_user_fcm_token(db: AsyncSession, user_id: int) -> str | None:
+    result = await db.execute(select(User.fcm_token).where(User.id == user_id))
+    token = result.scalar_one_or_none()
+    return token or None
+
+
+async def _get_admin_fcm_tokens(db: AsyncSession) -> list[str]:
+    result = await db.execute(
+        select(User.fcm_token)
+        .where(User.role == "ADMIN")
+        .where(User.fcm_token.isnot(None))
+    )
+    return [token for (token,) in result.all() if token]
+
+
 async def notify_support_message(
     db: AsyncSession,
-    user_id: int,
-    msg_data: dict,
-    notify_via_push: bool = True
-):
-    """
-    Sends a chat message to a specific user via WebSocket.
-    If they are offline, fallback to a Push Notification.
-    """
-    # 1. Attempt WebSocket Delivery
-    sent_via_ws = await manager.send_personal_message(msg_data, user_id)
-    
-    if sent_via_ws or not notify_via_push:
-        return True
+    thread_user_id: int,
+    msg_data: dict[str, Any],
+    sender_is_admin: bool,
+    notify_via_push: bool = True,
+) -> None:
+    """Deliver a support chat message in real-time and fallback to push for offline recipients."""
+    delivered_to_user = await manager.send_personal_message(msg_data, thread_user_id)
+    await manager.broadcast_to_admins(msg_data)
 
-    # 2. WebSocket Failed -> Fallback to Push Notification
-    # Only send push if the sender is an ADMIN (avoid pushing own messages back to sender)
-    # OR if it's an auto-reply.
-    if not msg_data.get("is_admin"):
-        return False
+    if not notify_via_push:
+        return
 
-    user_result = await db.execute(select(User.fcm_token).where(User.id == user_id))
-    fcm_token = user_result.scalar_one_or_none()
-    
-    if fcm_token:
+    if sender_is_admin:
+        if delivered_to_user:
+            return
+
+        token = await _get_user_fcm_token(db, thread_user_id)
+        if not token:
+            return
+
         title = "Support Reply"
-        content = msg_data.get("content", "New message from support")
-        # Truncate content for notification body
-        body = (content[:100] + "...") if len(content) > 100 else content
-        
-        success = send_push(
-            fcm_token=fcm_token,
-            title=title,
-            body=body,
-            data={"type": "support_chat", "session_id": msg_data.get("session_id", "")}
-        )
-        if success:
-            logger.info(f"Support push fallback successful for user_id={user_id}")
-        return success
-    
-    return False
+        body = _compact_preview(msg_data.get("content"), fallback="New reply from support")
+        data = {"type": "support_chat", "user_id": str(thread_user_id)}
+        await asyncio.to_thread(send_push, token, title, body, data)
+        return
+
+    # User-sent messages should alert admins when nobody is online.
+    if manager.is_admin_online():
+        return
+
+    admin_tokens = await _get_admin_fcm_tokens(db)
+    if not admin_tokens:
+        return
+
+    title = "New Support Message"
+    body = _compact_preview(msg_data.get("content"), fallback="A user sent a new support message")
+    data = {"type": "admin_support_alert", "user_id": str(thread_user_id)}
+    await asyncio.to_thread(send_push_to_many, admin_tokens, title, body, data)
+
 
 async def notify_admin_escalation(
     db: AsyncSession,
-    escalation_data: dict,
-    msg_data: dict = None
-):
-    """
-    Broadcasts a support escalation/new message to all online admins.
-    Also sends a push notification to ALL known admins with FCM tokens.
-    """
-    # 1. Real-time broadcast to connected admins
-    await manager.broadcast_to_admins(escalation_data)
-    if msg_data:
-        await manager.broadcast_to_admins(msg_data)
+    thread_user_id: int,
+    preview: str,
+    issue_type: str | None = None,
+    user_name: str | None = None,
+) -> None:
+    event = {
+        "type": "support_escalation",
+        "user_id": thread_user_id,
+        "preview": _compact_preview(preview),
+        "issue_type": issue_type,
+        "user_name": user_name,
+    }
+    await manager.broadcast_to_admins(event)
 
-    # 2. Push Notification to all admins
-    # Performance Optimization: Cache admin tokens if user base grows large.
-    admin_tokens_result = await db.execute(
-        select(User.fcm_token).where(User.role == "ADMIN").where(User.fcm_token != None)
-    )
-    fcm_tokens = [t for (t,) in admin_tokens_result.all() if t]
-    
-    if fcm_tokens:
-        user_name = escalation_data.get("user_id", "A user") # Ideally fetch real username
-        title = f"New Support Message"
-        preview = escalation_data.get("preview", "Check admin panel")
-        body = f"User needs help: {preview}"
-        
-        send_push_to_many(
-            fcm_tokens=fcm_tokens,
-            title=title,
-            body=body,
-            data={"type": "admin_support_alert", "session_id": escalation_data.get("session_id", "")}
-        )
-        logger.info(f"Support escalation push sent to {len(fcm_tokens)} admins")
+    if manager.is_admin_online():
+        return
+
+    admin_tokens = await _get_admin_fcm_tokens(db)
+    if not admin_tokens:
+        return
+
+    title = "New Support Request"
+    body = _compact_preview(preview, fallback="A user needs support")
+    data = {
+        "type": "admin_support_alert",
+        "user_id": str(thread_user_id),
+    }
+    await asyncio.to_thread(send_push_to_many, admin_tokens, title, body, data)
+
+
+async def notify_thread_state(
+    db: AsyncSession,
+    thread_user_id: int,
+    event: dict[str, Any],
+    notify_user_push: bool = False,
+) -> None:
+    delivered_to_user = await manager.send_personal_message(event, thread_user_id)
+    await manager.broadcast_to_admins(event)
+
+    if not notify_user_push or delivered_to_user:
+        return
+
+    token = await _get_user_fcm_token(db, thread_user_id)
+    if not token:
+        return
+
+    event_type = str(event.get("type") or "")
+    if event_type == "support_blocked":
+        title = "Support Chat Blocked"
+        body = _compact_preview(event.get("blocked_message"), fallback="Your support chat has been blocked by admin")
+    elif event_type == "support_unblocked":
+        title = "Support Chat Unblocked"
+        body = "You can now message support again."
+    else:
+        title = "Support Chat Update"
+        body = _compact_preview(event.get("end_notice"), fallback="Your support chat status has changed")
+
+    data = {
+        "type": "support_chat_state",
+        "user_id": str(thread_user_id),
+        "event_type": event_type,
+    }
+    await asyncio.to_thread(send_push, token, title, body, data)
