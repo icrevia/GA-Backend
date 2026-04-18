@@ -707,8 +707,10 @@ async def get_admin_thread_history(
     )
     messages = result.scalars().all()
 
-    await _mark_messages_read(db, user_id, reader_is_admin=True)
-    await db.commit()
+    has_unread_user_messages = any((not m.is_admin) and (not m.is_read) for m in messages)
+    if has_unread_user_messages:
+        await _mark_messages_read(db, user_id, reader_is_admin=True)
+        await db.commit()
 
     return [_serialize_msg(m) for m in messages]
 

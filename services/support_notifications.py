@@ -46,7 +46,9 @@ async def notify_support_message(
     notify_via_push: bool = True,
 ) -> None:
     """Deliver a support chat message in real-time and fallback to push for offline recipients."""
-    delivered_to_user = await manager.send_personal_message(msg_data, thread_user_id)
+    delivered_to_user = False
+    if manager.is_user_online(thread_user_id):
+        delivered_to_user = await manager.send_personal_message(msg_data, thread_user_id)
     await manager.broadcast_to_admins(msg_data)
 
     if not notify_via_push:
@@ -118,7 +120,9 @@ async def notify_thread_state(
     event: dict[str, Any],
     notify_user_push: bool = False,
 ) -> None:
-    delivered_to_user = await manager.send_personal_message(event, thread_user_id)
+    delivered_to_user = False
+    if manager.is_user_online(thread_user_id):
+        delivered_to_user = await manager.send_personal_message(event, thread_user_id)
     await manager.broadcast_to_admins(event)
 
     if not notify_user_push or delivered_to_user:
