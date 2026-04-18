@@ -123,7 +123,35 @@ def _resolve_login_device(request: Request) -> str:
 
     user_agent = (request.headers.get("user-agent") or "").strip()
     if user_agent:
-        return user_agent[:160]
+        ua = user_agent.lower()
+
+        browser = "Browser"
+        if "edg/" in ua:
+            browser = "Microsoft Edge"
+        elif "opr/" in ua or "opera/" in ua:
+            browser = "Opera"
+        elif "chrome/" in ua and "edg/" not in ua and "opr/" not in ua:
+            browser = "Google Chrome"
+        elif "firefox/" in ua:
+            browser = "Mozilla Firefox"
+        elif "safari/" in ua and "chrome/" not in ua and "chromium/" not in ua:
+            browser = "Safari"
+        elif "trident/" in ua or "msie" in ua:
+            browser = "Internet Explorer"
+
+        os_name = "Unknown OS"
+        if "windows nt" in ua:
+            os_name = "Windows"
+        elif "android" in ua:
+            os_name = "Android"
+        elif "iphone" in ua or "ipad" in ua or "ipod" in ua:
+            os_name = "iOS"
+        elif "macintosh" in ua or "mac os x" in ua:
+            os_name = "macOS"
+        elif "linux" in ua:
+            os_name = "Linux"
+
+        return f"{browser} on {os_name}"[:160]
 
     return "Unknown Device"
 

@@ -95,6 +95,7 @@ from schemas.admin import (
     NotificationSendRequest,
     UserStatusUpdate,
     RestrictionCreateRequest,
+    BulkRestrictionCreateRequest,
     RestrictionUnlockRequest,
     OtpLockResetRequest,
     ActivityLockResetRequest,
@@ -330,6 +331,108 @@ def require_developer_otp(
         raise HTTPException(status_code=401, detail="Developer OTP verification required")
 
     return current_user
+
+
+def _serialize_admin_access_session(user: User, current_admin_id: int) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "phone_number": user.phone_number,
+        "is_active": bool(user.is_active),
+        "token_version": int(getattr(user, "token_version", 0) or 0),
+        "last_login_ip": user.last_login_ip,
+        "last_login_device": user.last_login_device,
+        "last_login_at": user.last_login_at,
+        "is_current_admin": user.id == current_admin_id,
+        "access_enabled": bool(user.is_active),
+    }
+
+
+@router.get("/developer/admin-access/sessions")
+def list_developer_admin_access_sessions(
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_developer_otp),
+):
+    admins_q = db.query(User).filter(User.role == "ADMIN")
+    if not include_inactive:
+        admins_q = admins_q.filter(User.is_active.is_(True))
+
+    admins = admins_q.order_by(User.last_login_at.desc(), User.id.desc()).all()
+
+    return [
+        _serialize_admin_access_session(admin, current_user.id)
+        for admin in admins
+    ]
+
+
+@router.post("/developer/admin-access/sessions/{admin_user_id}/logout")
+def logout_developer_admin_access_session(
+    admin_user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_developer_otp),
+):
+    target_admin = db.query(User).filter(User.id == admin_user_id, User.role == "ADMIN").first()
+    if not target_admin:
+        raise HTTPException(status_code=404, detail="Admin user not found")
+
+    current_tv = int(getattr(target_admin, "token_version", 0) or 0)
+    target_admin.token_version = current_tv + 1
+    db.add(target_admin)
+    db.commit()
+
+    logger.info(
+        "Developer forced admin logout: actor_admin=%s target_admin=%s token_version=%s",
+        current_user.username,
+        target_admin.username,
+        target_admin.token_version,
+    )
+
+    if target_admin.id == current_user.id:
+        message = "Current admin session revoked. Please login again."
+    else:
+        message = f"Revoked all active sessions for admin {target_admin.username}."
+
+    return {
+        "message": message,
+        "admin_user_id": target_admin.id,
+        "token_version": int(target_admin.token_version or 0),
+    }
+
+
+@router.post("/developer/admin-access/sessions/logout-all")
+def logout_all_developer_admin_access_sessions(
+    include_self: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_developer_otp),
+):
+    admins_q = db.query(User).filter(User.role == "ADMIN", User.is_active.is_(True))
+    if not include_self:
+        admins_q = admins_q.filter(User.id != current_user.id)
+
+    admins = admins_q.all()
+    revoked_count = 0
+    for admin in admins:
+        current_tv = int(getattr(admin, "token_version", 0) or 0)
+        admin.token_version = current_tv + 1
+        db.add(admin)
+        revoked_count += 1
+
+    db.commit()
+
+    logger.info(
+        "Developer forced bulk admin logout: actor_admin=%s include_self=%s revoked=%s",
+        current_user.username,
+        include_self,
+        revoked_count,
+    )
+
+    return {
+        "message": f"Revoked sessions for {revoked_count} admin account(s).",
+        "revoked_count": revoked_count,
+        "include_self": include_self,
+    }
 
 
 @router.post("/developer/otp/request", response_model=DeveloperOtpRequestResponse)
@@ -2355,6 +2458,114 @@ def create_user_restriction(
             users_by_id={user.id: user},
             admins_by_id={current_user.id: current_user},
         ),
+    }
+
+
+@router.post("/restrictions/bulk")
+def create_bulk_user_restrictions(
+    payload: BulkRestrictionCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    try:
+        scope = normalize_restriction_scope(payload.scope)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        page_key = normalize_restriction_page_key(payload.page_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if scope == RESTRICTION_SCOPE_PAGE and not page_key:
+        raise HTTPException(status_code=400, detail="page_key is required when scope=PAGE")
+    if scope == RESTRICTION_SCOPE_FULL_APP:
+        page_key = None
+
+    starts_at = to_naive(payload.starts_at) or utcnow_naive()
+    ends_at = to_naive(payload.ends_at)
+    if ends_at and ends_at <= starts_at:
+        raise HTTPException(status_code=400, detail="ends_at must be after starts_at")
+
+    target_users = (
+        db.query(User.id)
+        .filter(User.role == "USER")
+        .order_by(User.id.asc())
+        .all()
+    )
+    target_user_ids = [row[0] for row in target_users]
+    if not target_user_ids:
+        raise HTTPException(status_code=404, detail="No user accounts found")
+
+    restriction_query = db.query(UserRestriction).filter(
+        UserRestriction.user_id.in_(target_user_ids),
+        UserRestriction.is_active == True,
+        UserRestriction.scope == scope,
+    )
+    if scope == RESTRICTION_SCOPE_PAGE:
+        restriction_query = restriction_query.filter(UserRestriction.page_key == page_key)
+
+    existing_active_restrictions = restriction_query.all()
+    existing_user_ids = {
+        restriction.user_id
+        for restriction in existing_active_restrictions
+        if is_restriction_currently_active(restriction)
+    }
+
+    create_user_ids = [user_id for user_id in target_user_ids if user_id not in existing_user_ids]
+    if not create_user_ids:
+        raise HTTPException(
+            status_code=409,
+            detail="An active restriction already exists for every target user",
+        )
+
+    restrictions = [
+        UserRestriction(
+            user_id=user_id,
+            scope=scope,
+            page_key=page_key,
+            reason=(payload.reason or "").strip() or None,
+            starts_at=starts_at,
+            ends_at=ends_at,
+            is_active=True,
+            created_by_admin_id=current_user.id,
+        )
+        for user_id in create_user_ids
+    ]
+
+    db.add_all(restrictions)
+    db.commit()
+
+    notification_detail = build_restriction_detail(restrictions[0])
+    for user_id in create_user_ids:
+        try:
+            add_user_notification(
+                db,
+                user_id,
+                "Access Restriction Applied",
+                notification_detail,
+                "SYSTEM",
+            )
+        except Exception:
+            pass
+
+    logger.info(
+        "Bulk restriction created by admin=%s target_users=%s created=%s scope=%s page=%s ends_at=%s",
+        current_user.username,
+        len(target_user_ids),
+        len(create_user_ids),
+        scope,
+        page_key,
+        ends_at.isoformat() if ends_at else None,
+    )
+
+    return {
+        "message": "Bulk restriction added successfully",
+        "scope": scope,
+        "page_key": page_key,
+        "target_users": len(target_user_ids),
+        "created_restrictions": len(create_user_ids),
+        "skipped_existing": len(target_user_ids) - len(create_user_ids),
     }
 
 

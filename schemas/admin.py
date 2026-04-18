@@ -69,6 +69,14 @@ class RestrictionCreateRequest(BaseModel):
     ends_at: Optional[datetime] = None
 
 
+class BulkRestrictionCreateRequest(BaseModel):
+    scope: str = Field(..., min_length=4, max_length=20)
+    page_key: Optional[str] = Field(default=None, max_length=64)
+    reason: Optional[str] = Field(default=None, max_length=300)
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+
+
 class RestrictionUnlockRequest(BaseModel):
     note: Optional[str] = Field(default=None, max_length=300)
 
