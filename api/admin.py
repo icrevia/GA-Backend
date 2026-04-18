@@ -933,6 +933,33 @@ def refund_tournament(
 # Admin stats
 # ─────────────────────────────────────────────────────────────────
 
+
+def _get_today_finance_metrics(db: Session):
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    daily_recharged_today = float(db.query(func.sum(WalletTransaction.amount)).filter(
+        WalletTransaction.transaction_type == "ADD_MONEY",
+        WalletTransaction.status == "SUCCESS",
+        WalletTransaction.created_at >= today_start,
+    ).scalar() or 0.0)
+
+    daily_withdrawal_requested_today = float(db.query(func.sum(func.abs(WalletTransaction.amount))).filter(
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+        WalletTransaction.created_at >= today_start,
+    ).scalar() or 0.0)
+
+    daily_withdrawal_success_today = float(db.query(func.sum(func.abs(WalletTransaction.amount))).filter(
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+        WalletTransaction.status == "SUCCESS",
+        func.coalesce(WalletTransaction.updated_at, WalletTransaction.created_at) >= today_start,
+    ).scalar() or 0.0)
+
+    return {
+        "daily_recharged_today": round(daily_recharged_today, 2),
+        "daily_withdrawal_requested_today": round(daily_withdrawal_requested_today, 2),
+        "daily_withdrawal_success_today": round(daily_withdrawal_success_today, 2),
+    }
+
 @router.get("/stats")
 def get_admin_stats(
     db: Session = Depends(get_db),
@@ -961,9 +988,11 @@ def get_admin_stats(
         WalletTransaction.status == "PENDING"
     ).count()
 
+    today_finance = _get_today_finance_metrics(db)
+
     # NEW: Daily Revenue for Chart (Last 7 Days)
     # We group by date of created_at
-    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
     daily_res = db.query(
         func.date(WalletTransaction.created_at).label("day_date"),
         func.sum(func.abs(WalletTransaction.amount)).label("daily_sum")
@@ -975,7 +1004,8 @@ def get_admin_stats(
 
     # Map to frontend format: [{ day: 'Mon', revenue: 4200 }, ...]
     # We'll fill missing days with 0 to keep the chart continuous
-    days_map = { (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d"): 0.0 for i in range(7) }
+    now_utc = datetime.now(timezone.utc)
+    days_map = { (now_utc - timedelta(days=i)).strftime("%Y-%m-%d"): 0.0 for i in range(7) }
     for r in daily_res:
         if r.day_date in days_map:
             days_map[r.day_date] = float(r.daily_sum)
@@ -997,6 +1027,7 @@ def get_admin_stats(
         "total_prizes_distributed": round(float(total_prizes), 2),
         "estimated_platform_revenue": round(estimated_revenue, 2),
         "pending_withdrawals_count": pending_withdrawals,
+        **today_finance,
         "daily_revenue": chart_data
     }
 
@@ -3347,6 +3378,7 @@ def get_finance_stats(
 ):
     from datetime import datetime, timezone
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_finance = _get_today_finance_metrics(db)
 
     total_recharged_today = float(db.query(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "ADD_MONEY",
@@ -3381,6 +3413,9 @@ def get_finance_stats(
         "pending_payments":         pending_payments,
         "pending_withdrawals":      pending_withdrawals,
         "total_recharged_all_time": round(total_recharged_all, 2),
+        "daily_recharged_today": today_finance["daily_recharged_today"],
+        "daily_withdrawal_requested_today": today_finance["daily_withdrawal_requested_today"],
+        "daily_withdrawal_success_today": today_finance["daily_withdrawal_success_today"],
     }
 
 
