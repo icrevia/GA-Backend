@@ -96,6 +96,7 @@ from schemas.admin import (
     RestrictionUnlockRequest,
     OtpLockResetRequest,
     ActivityLockResetRequest,
+    AdminWalletTransactionResponse,
     UserWalletBucketsUpdate,
     TournamentRoomUpdate,
     TournamentConclude,
@@ -1752,6 +1753,47 @@ def get_user_detail(
         payload["upi_id"] = latest_upi.upi_id
         payload["upi_account_holder_name"] = latest_upi.account_holder_name
     return payload
+
+
+@router.get("/users/{user_id}/wallet-transactions", response_model=List[AdminWalletTransactionResponse])
+def get_user_wallet_transactions(
+    user_id: int,
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+):
+    _ = current_user
+
+    user_exists = db.query(User.id).filter(User.id == user_id).first()
+    if not user_exists:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    safe_limit = max(1, min(limit, 500))
+    safe_offset = max(0, offset)
+
+    rows = (
+        db.query(WalletTransaction)
+        .filter(WalletTransaction.user_id == user_id)
+        .order_by(WalletTransaction.created_at.desc(), WalletTransaction.id.desc())
+        .offset(safe_offset)
+        .limit(safe_limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": tx.id,
+            "amount": float(tx.amount or 0),
+            "transaction_type": tx.transaction_type,
+            "status": tx.status,
+            "reference_id": tx.reference_id,
+            "payment_mode": tx.payment_mode,
+            "failure_reason": tx.failure_reason,
+            "created_at": tx.created_at,
+        }
+        for tx in rows
+    ]
 
 
 @router.get("/users/{user_id}/stats")

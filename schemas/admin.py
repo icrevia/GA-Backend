@@ -30,6 +30,20 @@ class UserWalletBucketsUpdate(BaseModel):
     reason: Optional[str] = Field(default="Manual wallet bucket update", max_length=200)
 
 
+class AdminWalletTransactionResponse(BaseModel):
+    id: int
+    amount: float
+    transaction_type: str
+    status: str
+    reference_id: Optional[str] = None
+    payment_mode: Optional[str] = None
+    failure_reason: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class RestrictionCreateRequest(BaseModel):
     user_id: int = Field(..., ge=1)
     scope: str = Field(..., min_length=4, max_length=20)
