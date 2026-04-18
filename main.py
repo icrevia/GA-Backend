@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMP",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS ended_by_user_id INTEGER",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP",
+                "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS user_cleared_at TIMESTAMP",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS ended_by_role VARCHAR(16)",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS issue_type VARCHAR(120)",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS issue_ack_sent BOOLEAN DEFAULT FALSE",

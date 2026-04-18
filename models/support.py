@@ -20,6 +20,7 @@ class ChatSession(Base):
     attended_at = Column(DateTime, nullable=True)
     blocked_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
+    user_cleared_at = Column(DateTime, nullable=True)
     ended_by_role = Column(String(16), nullable=True)
     issue_type = Column(String(120), nullable=True)
     issue_ack_sent = Column(Boolean, default=False, nullable=False)

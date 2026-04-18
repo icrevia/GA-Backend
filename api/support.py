@@ -170,6 +170,14 @@ def _issue_prompt(issue_type: str) -> str:
     )
 
 
+def _end_chat_message(ended_by_role: str, actor_name: Optional[str] = None) -> str:
+    role = (ended_by_role or "").upper()
+    if role == "USER":
+        return "This chat was ended by you. Start a new chat from Support Hub if you need more help."
+    actor = (actor_name or "Support").strip() or "Support"
+    return f"This chat was ended by {actor}. Start a new chat from Support Hub if you still need help."
+
+
 def _assert_admin(current_user: User) -> None:
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=403, detail="Admin access required")
@@ -180,6 +188,23 @@ async def _resolve_username(db: AsyncSession, user_id: Optional[int]) -> Optiona
         return None
     result = await db.execute(select(User.username).where(User.id == user_id))
     return result.scalar_one_or_none()
+
+
+async def _assert_admin_can_send(
+    db: AsyncSession,
+    meta: ChatSession,
+    current_admin: User,
+) -> None:
+    if _thread_is_ended(meta):
+        raise HTTPException(status_code=409, detail="Chat is already ended")
+
+    if not meta.attended_by_admin_id:
+        raise HTTPException(status_code=409, detail="Attend chat before sending messages")
+
+    if meta.attended_by_admin_id != current_admin.id:
+        attended_by_name = await _resolve_username(db, meta.attended_by_admin_id)
+        actor = attended_by_name or "another admin"
+        raise HTTPException(status_code=409, detail=f"Chat is currently attended by {actor}")
 
 
 async def _get_or_create_thread_meta(db: AsyncSession, user_id: int) -> ChatSession:
@@ -336,6 +361,8 @@ async def get_my_chat(
     meta = await _get_or_create_thread_meta(db, current_user.id)
 
     query = select(ChatMessage).where(ChatMessage.thread_user_id == current_user.id)
+    if meta.user_cleared_at is not None:
+        query = query.where(ChatMessage.timestamp > meta.user_cleared_at)
     if since_id is not None:
         query = query.where(ChatMessage.id > since_id)
     query = query.order_by(ChatMessage.timestamp.desc(), ChatMessage.id.desc()).limit(limit)
@@ -592,7 +619,29 @@ async def user_end_chat(
     meta.ended_by_role = "USER"
     meta.ended_by_user_id = current_user.id
 
+    delivered = manager.is_user_online(current_user.id)
+    ended_msg = ChatMessage(
+        session_id=meta.id,
+        thread_user_id=current_user.id,
+        sender_id=None,
+        content=_end_chat_message("USER"),
+        timestamp=now,
+        is_admin=True,
+        is_delivered=delivered,
+        delivered_at=now if delivered else None,
+    )
+    db.add(ended_msg)
+
     await db.commit()
+    await db.refresh(ended_msg)
+
+    await notify_support_message(
+        db,
+        thread_user_id=current_user.id,
+        msg_data=_message_event(ended_msg, current_user.id),
+        sender_is_admin=True,
+        notify_via_push=False,
+    )
 
     event = await _emit_thread_state(
         db,
@@ -606,6 +655,22 @@ async def user_end_chat(
         "ended_at": event.get("ended_at"),
         "end_notice": event.get("end_notice"),
     }
+
+
+@router.post("/clear-ended")
+async def user_clear_ended_chat(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_user_for_support_async),
+):
+    meta = await _get_or_create_thread_meta(db, current_user.id)
+    if not _thread_is_ended(meta):
+        return {"status": "skipped", "reason": "chat_not_ended"}
+
+    now = _utcnow_naive()
+    meta.user_cleared_at = now
+    await db.commit()
+
+    return {"status": "cleared", "cleared_at": _iso(now)}
 
 
 @router.get("/admin/threads")
@@ -794,11 +859,9 @@ async def admin_reply(
         raise HTTPException(status_code=404, detail="User not found")
 
     meta = await _get_or_create_thread_meta(db, req.user_id)
+    await _assert_admin_can_send(db, meta, current_user)
     content = _normalize_message_content(req.message)
     now = _utcnow_naive()
-
-    if _thread_is_ended(meta):
-        _reopen_thread(meta)
 
     delivered = manager.is_user_online(req.user_id)
     new_msg = ChatMessage(
@@ -814,8 +877,6 @@ async def admin_reply(
     db.add(new_msg)
 
     meta.requires_admin = False
-    meta.attended_by_admin_id = current_user.id
-    meta.attended_at = now
     meta.issue_ack_sent = True
 
     await db.commit()
@@ -853,6 +914,7 @@ async def admin_upload(
         raise HTTPException(status_code=404, detail="User not found")
 
     meta = await _get_or_create_thread_meta(db, user_id)
+    await _assert_admin_can_send(db, meta, current_user)
     cleaned_caption = _normalize_caption(caption)
 
     try:
@@ -868,12 +930,8 @@ async def admin_upload(
         raise HTTPException(status_code=500, detail="Media upload failed")
 
     now = _utcnow_naive()
-    if _thread_is_ended(meta):
-        _reopen_thread(meta)
 
     meta.requires_admin = False
-    meta.attended_by_admin_id = current_user.id
-    meta.attended_at = now
     meta.issue_ack_sent = True
 
     delivered = manager.is_user_online(user_id)
@@ -939,6 +997,7 @@ async def admin_attend(
         thread_user_id=req.user_id,
         meta=meta,
         event_type="support_thread_updated",
+        notify_user_push=True,
     )
     return {"status": "attended"}
 
@@ -959,14 +1018,35 @@ async def admin_end(
     meta.ended_by_role = "ADMIN"
     meta.ended_by_user_id = current_user.id
 
+    delivered = manager.is_user_online(req.user_id)
+    ended_msg = ChatMessage(
+        session_id=meta.id,
+        thread_user_id=req.user_id,
+        sender_id=current_user.id,
+        content=_end_chat_message("ADMIN", current_user.username),
+        timestamp=now,
+        is_admin=True,
+        is_delivered=delivered,
+        delivered_at=now if delivered else None,
+    )
+    db.add(ended_msg)
+
     await db.commit()
+    await db.refresh(ended_msg)
+
+    await notify_support_message(
+        db,
+        thread_user_id=req.user_id,
+        msg_data=_message_event(ended_msg, req.user_id),
+        sender_is_admin=True,
+    )
 
     event = await _emit_thread_state(
         db,
         thread_user_id=req.user_id,
         meta=meta,
         event_type="support_thread_updated",
-        notify_user_push=True,
+        notify_user_push=False,
     )
     return {
         "status": "ended",

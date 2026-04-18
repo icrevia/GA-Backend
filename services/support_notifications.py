@@ -139,6 +139,12 @@ async def notify_thread_state(
     elif event_type == "support_unblocked":
         title = "Support Chat Unblocked"
         body = "You can now message support again."
+    elif event_type == "support_thread_updated" and bool(event.get("is_attended")) and not bool(event.get("is_ended")):
+        title = "Support Agent Joined"
+        body = "A support agent has joined your chat. You can continue messaging now."
+    elif event_type == "support_thread_updated" and bool(event.get("is_ended")):
+        title = "Support Chat Ended"
+        body = _compact_preview(event.get("end_notice"), fallback="Your support chat has ended")
     else:
         title = "Support Chat Update"
         body = _compact_preview(event.get("end_notice"), fallback="Your support chat status has changed")
