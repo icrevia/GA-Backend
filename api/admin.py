@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
+from sqlalchemy.exc import DataError
 from typing import List
 from decimal import Decimal, ROUND_HALF_UP
 import uuid
@@ -122,6 +123,7 @@ router = APIRouter()
 
 MAX_APK_SIZE_MB = 150
 MAX_APK_SIZE_BYTES = MAX_APK_SIZE_MB * 1024 * 1024
+MAX_NUMERIC_12_2 = Decimal("9999999999.99")
 
 _DEVELOPER_OTP_LOCK = Lock()
 _DEVELOPER_OTP_STATE: dict[int, dict[str, object]] = {}
@@ -2389,9 +2391,38 @@ def update_user_wallet_buckets(
     old_winning = float(user.winning_balance or 0)
     old_bonus = float(user.bonus_balance or 0)
 
-    user.deposit_balance = to_money(payload.deposit_balance)
-    user.winning_balance = to_money(payload.winning_balance)
-    user.bonus_balance = to_money(payload.bonus_balance)
+    new_deposit_decimal = to_money(payload.deposit_balance)
+    new_winning_decimal = to_money(payload.winning_balance)
+    new_bonus_decimal = to_money(payload.bonus_balance)
+    new_wallet_total_decimal = to_money(new_deposit_decimal + new_winning_decimal + new_bonus_decimal)
+
+    if new_deposit_decimal > MAX_NUMERIC_12_2:
+        raise HTTPException(
+            status_code=422,
+            detail=f"deposit_balance exceeds maximum allowed value ({MAX_NUMERIC_12_2:.2f})",
+        )
+    if new_winning_decimal > MAX_NUMERIC_12_2:
+        raise HTTPException(
+            status_code=422,
+            detail=f"winning_balance exceeds maximum allowed value ({MAX_NUMERIC_12_2:.2f})",
+        )
+    if new_bonus_decimal > MAX_NUMERIC_12_2:
+        raise HTTPException(
+            status_code=422,
+            detail=f"bonus_balance exceeds maximum allowed value ({MAX_NUMERIC_12_2:.2f})",
+        )
+    if new_wallet_total_decimal > MAX_NUMERIC_12_2:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Total wallet balance exceeds maximum allowed value "
+                f"({MAX_NUMERIC_12_2:.2f})"
+            ),
+        )
+
+    user.deposit_balance = new_deposit_decimal
+    user.winning_balance = new_winning_decimal
+    user.bonus_balance = new_bonus_decimal
     sync_wallet_total(user)
 
     new_deposit = float(user.deposit_balance or 0)
@@ -2436,7 +2467,17 @@ def update_user_wallet_buckets(
 
     db.add(user)
     db.add(tx)
-    db.commit()
+    try:
+        db.commit()
+    except DataError:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Wallet bucket amount is out of allowed range. "
+                f"Maximum storable value is {MAX_NUMERIC_12_2:.2f}."
+            ),
+        )
 
     logger.info(
         "Admin bucket update: admin=%s user=%s deposit=%.2f winning=%.2f bonus=%.2f reason=%s",

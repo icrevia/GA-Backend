@@ -1,6 +1,10 @@
+from decimal import Decimal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, Union, Any, Literal
 from datetime import datetime
+
+MAX_NUMERIC_12_2 = Decimal("9999999999.99")
 
 class SystemConfigResponse(BaseModel):
     id: int
@@ -24,10 +28,21 @@ class UserStatusUpdate(BaseModel):
 
 
 class UserWalletBucketsUpdate(BaseModel):
-    deposit_balance: float = Field(..., ge=0)
-    winning_balance: float = Field(..., ge=0)
-    bonus_balance: float = Field(..., ge=0)
+    deposit_balance: float = Field(..., ge=0, le=float(MAX_NUMERIC_12_2))
+    winning_balance: float = Field(..., ge=0, le=float(MAX_NUMERIC_12_2))
+    bonus_balance: float = Field(..., ge=0, le=float(MAX_NUMERIC_12_2))
     reason: Optional[str] = Field(default="Manual wallet bucket update", max_length=200)
+
+    @model_validator(mode="after")
+    def validate_total_wallet_limit(self):
+        total = (
+            Decimal(str(self.deposit_balance))
+            + Decimal(str(self.winning_balance))
+            + Decimal(str(self.bonus_balance))
+        )
+        if total > MAX_NUMERIC_12_2:
+            raise ValueError(f"Total wallet balance cannot exceed {MAX_NUMERIC_12_2:.2f}")
+        return self
 
 
 class AdminWalletTransactionResponse(BaseModel):
