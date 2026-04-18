@@ -37,6 +37,10 @@ class SendMessageRequest(BaseModel):
     is_issue_selection: bool = False
 
 
+class SelectIssueRequest(BaseModel):
+    issue_type: str = Field(min_length=1, max_length=MAX_ISSUE_TYPE_LENGTH)
+
+
 class AdminReplyRequest(BaseModel):
     user_id: int
     message: str = Field(min_length=1, max_length=MAX_SUPPORT_MESSAGE_LENGTH)
@@ -157,6 +161,13 @@ def _preview_for_message(message: ChatMessage) -> str:
             return f"{text[:137]}..."
         return text
     return _media_label(message.media_type)
+
+
+def _issue_prompt(issue_type: str) -> str:
+    return (
+        f"Issue noted: {issue_type}. "
+        "Please describe your issue in detail and our support team will assist you shortly."
+    )
 
 
 def _assert_admin(current_user: User) -> None:
@@ -354,6 +365,57 @@ async def get_my_chat(
     }
 
 
+@router.post("/select-issue")
+async def user_select_issue(
+    req: SelectIssueRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_user_for_support_async),
+):
+    meta = await _get_or_create_thread_meta(db, current_user.id)
+    if meta.is_user_blocked:
+        raise HTTPException(status_code=403, detail=DEFAULT_BLOCKED_MESSAGE)
+
+    issue_type = _normalize_issue_type(req.issue_type)
+    if issue_type is None:
+        raise HTTPException(status_code=400, detail="Issue type cannot be empty")
+
+    now = _utcnow_naive()
+    if _thread_is_ended(meta):
+        _reopen_thread(meta)
+
+    # A fresh issue selection should wait for user details before escalating to admins.
+    meta.issue_type = issue_type
+    meta.requires_admin = False
+    meta.attended_by_admin_id = None
+    meta.attended_at = None
+    meta.issue_ack_sent = True
+
+    delivered = manager.is_user_online(current_user.id)
+    prompt_msg = ChatMessage(
+        session_id=meta.id,
+        thread_user_id=current_user.id,
+        sender_id=None,
+        content=_issue_prompt(issue_type),
+        timestamp=now,
+        is_admin=True,
+        is_delivered=delivered,
+        delivered_at=now if delivered else None,
+    )
+    db.add(prompt_msg)
+
+    await db.commit()
+    await db.refresh(prompt_msg)
+
+    if delivered:
+        await manager.send_personal_message(_message_event(prompt_msg, current_user.id), current_user.id)
+
+    return {
+        "status": "success",
+        "issue_type": meta.issue_type,
+        "message": _serialize_msg(prompt_msg),
+    }
+
+
 @router.post("/send")
 async def user_send(
     req: SendMessageRequest,
@@ -367,6 +429,7 @@ async def user_send(
     content = _normalize_message_content(req.message)
     now = _utcnow_naive()
     issue_type = _normalize_issue_type(req.issue_type)
+    was_requires_admin = bool(meta.requires_admin)
 
     if _thread_is_ended(meta):
         _reopen_thread(meta)
@@ -401,7 +464,8 @@ async def user_send(
         sender_is_admin=False,
     )
 
-    if req.is_issue_selection or not meta.attended_by_admin_id:
+    should_escalate = req.is_issue_selection or (not meta.attended_by_admin_id and not was_requires_admin)
+    if should_escalate:
         await notify_admin_escalation(
             db,
             thread_user_id=current_user.id,
@@ -436,6 +500,7 @@ async def user_upload(
     cleaned_caption = _normalize_caption(caption)
     normalized_issue_type = _normalize_issue_type(issue_type)
     selection_flag = _parse_form_bool(is_issue_selection)
+    was_requires_admin = bool(meta.requires_admin)
 
     try:
         media = await store_support_media(
@@ -489,7 +554,8 @@ async def user_upload(
         sender_is_admin=False,
     )
 
-    if selection_flag or not meta.attended_by_admin_id:
+    should_escalate = selection_flag or (not meta.attended_by_admin_id and not was_requires_admin)
+    if should_escalate:
         await notify_admin_escalation(
             db,
             thread_user_id=current_user.id,
