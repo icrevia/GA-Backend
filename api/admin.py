@@ -1646,14 +1646,14 @@ def search_users(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
+    search_text = (query or "").strip()
     filters = []
-    if query:
-        if query.isdigit():
-            filters.append(User.id == int(query))
-        else:
-            filters.append(User.username.ilike(f"%{query}%"))
-            filters.append(User.email.ilike(f"%{query}%"))
-            filters.append(User.phone_number.ilike(f"%{query}%"))
+    if search_text:
+        filters.append(User.username.ilike(f"%{search_text}%"))
+        filters.append(User.email.ilike(f"%{search_text}%"))
+        filters.append(User.phone_number.ilike(f"%{search_text}%"))
+        if search_text.isdigit():
+            filters.append(User.id == int(search_text))
 
     if filters:
         users = db.query(User).filter(or_(*filters)).limit(50).all()
