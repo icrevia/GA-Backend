@@ -81,6 +81,7 @@ from services.deposit_bonus import (
     set_deposit_bonus_config,
 )
 from services.referral_rewards import (
+    REFERRAL_REWARD_TX_TYPE,
     get_referral_reward_config,
     set_referral_reward_config,
 )
@@ -1690,6 +1691,102 @@ def _compute_last_wallet_activity_for_user_ids(db: Session, user_ids: List[int])
     }
 
 
+def _compute_admin_referral_stats(db: Session, user: User) -> dict:
+    total_referrals = int(
+        db.query(func.count(User.id))
+        .filter(User.referred_by_id == user.id)
+        .scalar()
+        or 0
+    )
+
+    activated_referrals = int(
+        db.query(func.count(func.distinct(User.id)))
+        .join(WalletTransaction, WalletTransaction.user_id == User.id)
+        .filter(
+            User.referred_by_id == user.id,
+            WalletTransaction.transaction_type == "ADD_MONEY",
+            WalletTransaction.status == "SUCCESS",
+        )
+        .scalar()
+        or 0
+    )
+
+    reward_summary = (
+        db.query(
+            func.coalesce(func.sum(WalletTransaction.amount), 0).label("total_earned"),
+            func.max(WalletTransaction.created_at).label("last_reward_at"),
+        )
+        .filter(
+            WalletTransaction.user_id == user.id,
+            WalletTransaction.transaction_type.in_((
+                REFERRAL_REWARD_TX_TYPE,
+                "REFERRAL_MISSION_REWARD",
+            )),
+            WalletTransaction.status == "SUCCESS",
+        )
+        .first()
+    )
+    total_earned = float(Decimal(str(getattr(reward_summary, "total_earned", 0) or 0)))
+    last_reward_at = getattr(reward_summary, "last_reward_at", None)
+
+    referred_by_row = None
+    if user.referred_by_id:
+        referred_by_row = (
+            db.query(User.id, User.username)
+            .filter(User.id == user.referred_by_id)
+            .first()
+        )
+
+    recent_referral_rows = (
+        db.query(User.id, User.username, User.created_at)
+        .filter(User.referred_by_id == user.id)
+        .order_by(User.created_at.desc(), User.id.desc())
+        .limit(10)
+        .all()
+    )
+
+    recent_referral_ids = [int(row.id) for row in recent_referral_rows]
+    recent_activated_ids: set[int] = set()
+    if recent_referral_ids:
+        activated_rows = (
+            db.query(WalletTransaction.user_id)
+            .filter(
+                WalletTransaction.user_id.in_(recent_referral_ids),
+                WalletTransaction.transaction_type == "ADD_MONEY",
+                WalletTransaction.status == "SUCCESS",
+            )
+            .distinct()
+            .all()
+        )
+        recent_activated_ids = {int(uid) for (uid,) in activated_rows}
+
+    pending_referrals = max(total_referrals - activated_referrals, 0)
+    activation_rate_pct = round((activated_referrals / total_referrals) * 100, 2) if total_referrals > 0 else 0.0
+
+    return {
+        "referral_code": user.referral_code,
+        "referred_by": {
+            "id": int(referred_by_row.id),
+            "username": referred_by_row.username,
+        } if referred_by_row else None,
+        "total_referrals": total_referrals,
+        "activated_referrals": activated_referrals,
+        "pending_referrals": pending_referrals,
+        "activation_rate_pct": activation_rate_pct,
+        "total_earned": total_earned,
+        "last_reward_at": last_reward_at,
+        "recent_referrals": [
+            {
+                "user_id": int(row.id),
+                "username": row.username,
+                "joined_at": row.created_at,
+                "has_first_deposit": int(row.id) in recent_activated_ids,
+            }
+            for row in recent_referral_rows
+        ],
+    }
+
+
 def _serialize_admin_user(
     user: User,
     match_stats: dict | None = None,
@@ -1800,6 +1897,7 @@ def get_user_detail(
         compute_match_stats_for_user(db, user_id),
         wallet_activity_map.get(user_id),
     )
+    payload["referral_stats"] = _compute_admin_referral_stats(db, user)
     latest_upi = (
         db.query(WithdrawUpiAccount)
         .filter(WithdrawUpiAccount.user_id == user_id)
