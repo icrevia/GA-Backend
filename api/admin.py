@@ -32,7 +32,7 @@ from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
 from models.withdraw_upi_account import WithdrawUpiAccount
 from services.notifications import add_user_notification
-from services.push_notifications import send_push, send_push_to_many
+from services.push_notifications import send_push, send_push_to_many, send_push_to_many_detailed
 from services.notification_text import append_firebase_suffix
 from services.restrictions import (
     RESTRICTION_SCOPE_FULL_APP,
@@ -2853,26 +2853,64 @@ def send_push_notification(
         if user.fcm_token:
             tokens.append(user.fcm_token)
 
+    # Normalize and dedupe tokens to avoid duplicate FCM sends.
+    tokens = list(dict.fromkeys([token.strip() for token in tokens if token and token.strip()]))
+
     db.commit()
 
+    push_sent = 0
+    push_total = len(tokens)
+    invalid_tokens_cleared = 0
+
     if tokens:
-        background_tasks.add_task(
-            send_push_to_many,
-            fcm_tokens=tokens,
-            title=display_title,
-            body=display_body,
-            data={"type": "SYSTEM"}
-        )
+        if target_user_ids:
+            # Targeted sends run synchronously so we can capture delivery failures immediately
+            # and clear stale tokens in the same request.
+            push_result = send_push_to_many_detailed(
+                fcm_tokens=tokens,
+                title=display_title,
+                body=display_body,
+                data={"type": "SYSTEM"},
+            )
+            push_sent = int(push_result.get("success_count", 0))
+
+            invalid_tokens = [t for t in push_result.get("invalid_tokens", []) if t]
+            if invalid_tokens:
+                invalid_tokens_cleared = (
+                    db.query(User)
+                    .filter(User.fcm_token.in_(invalid_tokens))
+                    .update({User.fcm_token: None}, synchronize_session=False)
+                )
+                db.commit()
+        else:
+            background_tasks.add_task(
+                send_push_to_many,
+                fcm_tokens=tokens,
+                title=display_title,
+                body=display_body,
+                data={"type": "SYSTEM"}
+            )
 
     target_mode = "targeted" if target_user_ids else "broadcast"
     target_label = f"{len(users)} selected users" if target_user_ids else f"{len(users)} users"
+    if target_mode == "targeted":
+        push_label = f"{push_sent}/{push_total} via Push"
+        if invalid_tokens_cleared:
+            push_label = f"{push_label}, {invalid_tokens_cleared} stale token(s) cleared"
+    else:
+        push_label = f"{push_total} via Push queued"
+
     logger.info(
-        f"Notification ({target_mode}) sent to {target_label} by admin={current_user.username}: '{display_title}'"
+        f"Notification ({target_mode}) sent to {target_label} by admin={current_user.username}: '{display_title}' ({push_label})"
     )
+
     return {
-        "message": f"Notification '{display_title}' scheduled for {target_label} ({len(tokens)} via Push)",
+        "message": f"Notification '{display_title}' scheduled for {target_label} ({push_label})",
         "target_mode": target_mode,
         "users_count": len(users),
+        "push_total": push_total,
+        "push_sent": push_sent if target_mode == "targeted" else None,
+        "invalid_tokens_cleared": invalid_tokens_cleared,
     }
 
 
