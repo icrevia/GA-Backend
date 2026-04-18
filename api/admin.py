@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks, Request, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from sqlalchemy.exc import DataError
@@ -129,6 +129,60 @@ MAX_NUMERIC_12_2 = Decimal("9999999999.99")
 _DEVELOPER_OTP_LOCK = Lock()
 _DEVELOPER_OTP_STATE: dict[int, dict[str, object]] = {}
 _DEVELOPER_OTP_SESSIONS: dict[str, tuple[int, datetime]] = {}
+
+
+def _save_apk_upload_file(file: UploadFile, *, admin_username: str) -> tuple[str, str, int]:
+    if not file.filename or not file.filename.lower().endswith(".apk"):
+        raise HTTPException(status_code=400, detail="Only APK files are allowed.")
+
+    safe_filename = f"GamerzAdda_app_{uuid.uuid4().hex}.apk"
+    static_dir = "static"
+    os.makedirs(static_dir, exist_ok=True)
+    file_path = os.path.join(static_dir, safe_filename)
+
+    try:
+        written = 0
+        with open(file_path, "wb") as buffer:
+            while chunk := file.file.read(1024 * 1024):
+                written += len(chunk)
+                if written > MAX_APK_SIZE_BYTES:
+                    os.remove(file_path)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"APK file exceeds {MAX_APK_SIZE_MB} MB size limit.",
+                    )
+                buffer.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("APK upload failed: %s", e)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=500, detail="Failed to save file.")
+
+    logger.info(
+        "APK uploaded by admin=%s: %s (%.1f MB)",
+        admin_username,
+        safe_filename,
+        written / (1024 * 1024),
+    )
+    return f"/static/{safe_filename}", safe_filename, written
+
+
+def _upsert_system_config_value(db: Session, key: str, value: str) -> None:
+    config = db.query(SystemConfig).filter(SystemConfig.config_key == key).first()
+    if not config:
+        config = SystemConfig(config_key=key, config_value=value)
+        db.add(config)
+    else:
+        config.config_value = value
+
+
+def _resolve_public_base_url(request: Request) -> str:
+    configured = (settings.APP_URL or "").strip().rstrip("/")
+    if configured:
+        return configured
+    return str(request.base_url).rstrip("/")
 
 
 def _parse_telegram_chat_ids(raw_value: str | None) -> list[str]:
@@ -406,41 +460,8 @@ def upload_apk(
     admin: User = Depends(get_current_active_admin)
 ):
     """Upload an APK to the static directory for OTA updates."""
-
-    # FIXED: Validate by extension (basic check)
-    if not file.filename or not file.filename.lower().endswith(".apk"):
-        raise HTTPException(status_code=400, detail="Only APK files are allowed.")
-
-    # FIXED: Generate a safe server-side filename — never use user-supplied name
-    safe_filename = f"GamerzAdda_app_{uuid.uuid4().hex}.apk"
-    static_dir = "static"
-    os.makedirs(static_dir, exist_ok=True)
-    file_path = os.path.join(static_dir, safe_filename)
-
-    try:
-        # Read in chunks to enforce size cap without loading into memory
-        written = 0
-        with open(file_path, "wb") as buffer:
-            while chunk := file.file.read(1024 * 1024):  # 1 MB chunks
-                written += len(chunk)
-                if written > MAX_APK_SIZE_BYTES:
-                    os.remove(file_path)
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"APK file exceeds {MAX_APK_SIZE_MB} MB size limit."
-                    )
-                buffer.write(chunk)
-
-        logger.info(f"APK uploaded by admin={admin.username}: {safe_filename} ({written / (1024*1024):.1f} MB)")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"APK upload failed: {e}")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        raise HTTPException(status_code=500, detail="Failed to save file.")
-
-    return {"url": f"/static/{safe_filename}", "filename": safe_filename}
+    static_url, safe_filename, _written = _save_apk_upload_file(file, admin_username=admin.username)
+    return {"url": static_url, "filename": safe_filename}
 
 
 @router.post("/developer/config/upload-apk")
@@ -449,6 +470,87 @@ def upload_apk_developer(
     admin: User = Depends(require_developer_otp),
 ):
     return upload_apk(file=file, admin=admin)
+
+
+@router.post("/developer/release/publish")
+def publish_developer_release(
+    request: Request,
+    latest_version_code: str = Form(...),
+    latest_version_name: str = Form(...),
+    force_update: bool = Form(False),
+    update_message: str = Form(""),
+    update_url: str = Form(""),
+    file: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_developer_otp),
+):
+    code_raw = (latest_version_code or "").strip()
+    if not code_raw.isdigit() or int(code_raw) <= 0:
+        raise HTTPException(status_code=422, detail="Version code must be a positive integer.")
+
+    name = (latest_version_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Version name is required.")
+
+    notes = (update_message or "").strip()
+    manual_update_url = (update_url or "").strip()
+    uploaded_static_url = ""
+    uploaded_filename = ""
+    uploaded_size_bytes = 0
+
+    if file is not None and (file.filename or "").strip():
+        uploaded_static_url, uploaded_filename, uploaded_size_bytes = _save_apk_upload_file(
+            file,
+            admin_username=current_user.username,
+        )
+
+    resolved_update_url = manual_update_url
+    if uploaded_static_url:
+        resolved_update_url = f"{_resolve_public_base_url(request)}{uploaded_static_url}"
+
+    if not resolved_update_url:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide APK download URL or upload an APK file.",
+        )
+
+    try:
+        _upsert_system_config_value(db, "latest_version_code", str(int(code_raw)))
+        _upsert_system_config_value(db, "latest_version_name", name)
+        _upsert_system_config_value(db, "force_update", "true" if force_update else "false")
+        _upsert_system_config_value(db, "update_message", notes)
+        _upsert_system_config_value(db, "update_url", resolved_update_url)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("Release publish failed for admin=%s: %s", current_user.username, exc)
+        raise HTTPException(status_code=500, detail="Failed to publish release")
+
+    logger.info(
+        "Developer release published by admin=%s version_code=%s version_name=%s force=%s update_url=%s",
+        current_user.username,
+        int(code_raw),
+        name,
+        force_update,
+        resolved_update_url,
+    )
+
+    response_payload = {
+        "message": "Release published successfully",
+        "latest_version_code": int(code_raw),
+        "latest_version_name": name,
+        "force_update": force_update,
+        "update_message": notes,
+        "update_url": resolved_update_url,
+    }
+    if uploaded_static_url:
+        response_payload["uploaded_file"] = {
+            "url": uploaded_static_url,
+            "filename": uploaded_filename,
+            "size_bytes": uploaded_size_bytes,
+        }
+
+    return response_payload
 
 
 # ─────────────────────────────────────────────────────────────────
