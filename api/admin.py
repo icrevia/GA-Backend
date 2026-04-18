@@ -11,7 +11,7 @@ import hashlib
 import json
 import secrets
 from threading import Lock
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 from urllib import request as urllib_request
 
@@ -1605,11 +1605,59 @@ def delete_promo(
 # ─────────────────────────────────────────────────────────────────
 
 
-def _serialize_admin_user(user: User, match_stats: dict | None = None) -> dict:
+def _to_naive_utc(dt: datetime | None) -> datetime | None:
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _compute_last_wallet_activity_for_user_ids(db: Session, user_ids: List[int]) -> dict[int, datetime]:
+    if not user_ids:
+        return {}
+
+    rows = (
+        db.query(
+            WalletTransaction.user_id,
+            func.max(WalletTransaction.created_at).label("last_activity_at"),
+        )
+        .filter(
+            WalletTransaction.user_id.in_(user_ids),
+            WalletTransaction.status == "SUCCESS",
+        )
+        .group_by(WalletTransaction.user_id)
+        .all()
+    )
+
+    return {
+        int(row.user_id): row.last_activity_at
+        for row in rows
+        if getattr(row, "last_activity_at", None)
+    }
+
+
+def _serialize_admin_user(
+    user: User,
+    match_stats: dict | None = None,
+    wallet_last_activity_at: datetime | None = None,
+) -> dict:
     bucket_total = (user.deposit_balance or 0) + (user.winning_balance or 0) + (user.bonus_balance or 0)
     total_wallet_balance = float(bucket_total or 0)
     if total_wallet_balance <= 0:
         total_wallet_balance = float(user.wallet_balance or 0)
+
+    last_wallet_activity = (
+        _to_naive_utc(wallet_last_activity_at)
+        or _to_naive_utc(user.created_at)
+    )
+    wallet_is_inactive_7d = True
+    wallet_inactive_since_days = None
+    if last_wallet_activity:
+        inactivity_delta = datetime.utcnow() - last_wallet_activity
+        wallet_inactive_since_days = max(int(inactivity_delta.total_seconds() // 86400), 0)
+        wallet_is_inactive_7d = inactivity_delta >= timedelta(days=7)
+
     return {
         "id": user.id,
         "username": user.username,
@@ -1635,6 +1683,9 @@ def _serialize_admin_user(user: User, match_stats: dict | None = None) -> dict:
         "last_login_ip": user.last_login_ip,
         "last_login_device": user.last_login_device,
         "last_login_at": user.last_login_at,
+        "wallet_last_activity_at": last_wallet_activity,
+        "wallet_is_inactive_7d": wallet_is_inactive_7d,
+        "wallet_inactive_since_days": wallet_inactive_since_days,
         "created_at": user.created_at,
         "updated_at": user.updated_at,
         "match_stats": match_stats or empty_user_match_stats(),
@@ -1656,13 +1707,28 @@ def search_users(
             filters.append(User.id == int(search_text))
 
     if filters:
-        users = db.query(User).filter(or_(*filters)).limit(50).all()
+        users = (
+            db.query(User)
+            .filter(or_(*filters))
+            .order_by(User.created_at.desc(), User.id.desc())
+            .limit(50)
+            .all()
+        )
     else:
-        users = db.query(User).limit(50).all()
+        users = (
+            db.query(User)
+            .order_by(User.created_at.desc(), User.id.desc())
+            .limit(50)
+            .all()
+        )
 
     user_ids = [user.id for user in users]
     stats_map = compute_match_stats_for_user_ids(db, user_ids)
-    return [_serialize_admin_user(user, stats_map.get(user.id)) for user in users]
+    wallet_activity_map = _compute_last_wallet_activity_for_user_ids(db, user_ids)
+    return [
+        _serialize_admin_user(user, stats_map.get(user.id), wallet_activity_map.get(user.id))
+        for user in users
+    ]
 
 
 @router.get("/users/{user_id}")
