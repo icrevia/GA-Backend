@@ -91,6 +91,8 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_mime_type VARCHAR(120)",
                 "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_size_bytes INTEGER",
                 "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS media_expires_at TIMESTAMP",
+                "ALTER TABLE IF EXISTS chat_messages DROP CONSTRAINT IF EXISTS ck_chat_messages_media_type",
+                "ALTER TABLE IF EXISTS chat_messages ADD CONSTRAINT ck_chat_messages_media_type CHECK ((media_type IS NULL) OR (media_type IN ('photo', 'audio', 'video')))",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS slot_no INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS account_level INTEGER",
                 "ALTER TABLE tournament_participants ADD COLUMN IF NOT EXISTS team_members TEXT",

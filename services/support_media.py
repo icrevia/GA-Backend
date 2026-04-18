@@ -21,6 +21,9 @@ logger = logging.getLogger("GamerzAdda.support_media")
 PHOTO_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif", ".bmp"
 }
+AUDIO_EXTENSIONS = {
+    ".mp3", ".m4a", ".aac", ".wav", ".ogg", ".oga", ".opus", ".amr", ".3ga"
+}
 VIDEO_EXTENSIONS = {
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v", ".mpeg", ".mpg"
 }
@@ -55,6 +58,7 @@ def ensure_support_media_storage_dir() -> Path:
     root = _storage_root()
     root.mkdir(parents=True, exist_ok=True)
     (root / "images").mkdir(parents=True, exist_ok=True)
+    (root / "audio").mkdir(parents=True, exist_ok=True)
     (root / "videos").mkdir(parents=True, exist_ok=True)
     return root
 
@@ -85,6 +89,8 @@ def _detect_media_type(content_type: str | None, filename: str | None) -> str | 
 
     if normalized_type.startswith("image/") or suffix in PHOTO_EXTENSIONS:
         return "photo"
+    if normalized_type.startswith("audio/") or suffix in AUDIO_EXTENSIONS:
+        return "audio"
     if normalized_type.startswith("video/") or suffix in VIDEO_EXTENSIONS:
         return "video"
     return None
@@ -99,18 +105,26 @@ def _guess_extension(content_type: str | None, filename: str | None, media_type:
     if suffix:
         return suffix
 
-    return ".jpg" if media_type == "photo" else ".mp4"
+    if media_type == "photo":
+        return ".jpg"
+    if media_type == "audio":
+        return ".m4a"
+    return ".mp4"
 
 
 def _max_size_for(media_type: str) -> int:
     if media_type == "photo":
         return int(settings.SUPPORT_MEDIA_PHOTO_MAX_MB) * 1024 * 1024
+    if media_type == "audio":
+        return int(settings.SUPPORT_MEDIA_AUDIO_MAX_MB) * 1024 * 1024
     return int(settings.SUPPORT_MEDIA_VIDEO_MAX_MB) * 1024 * 1024
 
 
 def _max_size_label_for(media_type: str) -> str:
     if media_type == "photo":
         return f"{settings.SUPPORT_MEDIA_PHOTO_MAX_MB}MB"
+    if media_type == "audio":
+        return f"{settings.SUPPORT_MEDIA_AUDIO_MAX_MB}MB"
     return f"{settings.SUPPORT_MEDIA_VIDEO_MAX_MB}MB"
 
 
@@ -126,12 +140,12 @@ def _safe_absolute_media_path(relative_path: str) -> Path:
 async def store_support_media(upload_file, owner_user_id: int, sender_role: str) -> StoredSupportMedia:
     media_type = _detect_media_type(upload_file.content_type, upload_file.filename)
     if media_type is None:
-        raise SupportMediaValidationError("Only photo and video files are allowed")
+        raise SupportMediaValidationError("Only photo, voice, and video files are allowed")
 
     max_size_bytes = _max_size_for(media_type)
     max_size_label = _max_size_label_for(media_type)
     extension = _guess_extension(upload_file.content_type, upload_file.filename, media_type)
-    media_folder = "images" if media_type == "photo" else "videos"
+    media_folder = "images" if media_type == "photo" else ("audio" if media_type == "audio" else "videos")
 
     now = _now_utc_naive()
     relative_path = (

@@ -37,7 +37,7 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
     __table_args__ = (
         CheckConstraint("length(content) <= 1000", name="ck_chat_messages_content_len"),
-        CheckConstraint("(media_type IS NULL) OR (media_type IN ('photo', 'video'))", name="ck_chat_messages_media_type"),
+        CheckConstraint("(media_type IS NULL) OR (media_type IN ('photo', 'audio', 'video'))", name="ck_chat_messages_media_type"),
         Index("ix_chat_messages_thread_timestamp", "thread_user_id", "timestamp"),
         Index("ix_chat_messages_status", "thread_user_id", "is_admin", "is_read", "is_delivered"),
         Index("ix_chat_messages_media_expires_at", "media_expires_at"),

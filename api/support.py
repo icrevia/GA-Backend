@@ -149,6 +149,8 @@ def _build_end_notice(ended_by_role: Optional[str], ended_by_name: Optional[str]
 def _media_label(media_type: Optional[str]) -> str:
     if media_type == "photo":
         return "Photo"
+    if media_type == "audio":
+        return "Voice message"
     if media_type == "video":
         return "Video"
     return "Attachment"

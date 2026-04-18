@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     SUPPORT_MEDIA_RETENTION_HOURS: int = 24
     SUPPORT_MEDIA_CLEANUP_INTERVAL_MINUTES: int = 15
     SUPPORT_MEDIA_PHOTO_MAX_MB: int = 2
+    SUPPORT_MEDIA_AUDIO_MAX_MB: int = 20
     SUPPORT_MEDIA_VIDEO_MAX_MB: int = 50
 
     # ── CORS ──────────────────────────────────────────────────────────────────
@@ -284,6 +285,13 @@ class Settings(BaseSettings):
                 file=sys.stderr,
             )
             object.__setattr__(self, "SUPPORT_MEDIA_PHOTO_MAX_MB", 2)
+
+        if self.SUPPORT_MEDIA_AUDIO_MAX_MB <= 0:
+            print(
+                "[CONFIG WARNING] SUPPORT_MEDIA_AUDIO_MAX_MB must be positive. Falling back to 20.",
+                file=sys.stderr,
+            )
+            object.__setattr__(self, "SUPPORT_MEDIA_AUDIO_MAX_MB", 20)
 
         if self.SUPPORT_MEDIA_VIDEO_MAX_MB <= 0:
             print(
