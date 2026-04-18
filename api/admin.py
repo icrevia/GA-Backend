@@ -1794,7 +1794,12 @@ def get_user_detail(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    payload = _serialize_admin_user(user, compute_match_stats_for_user(db, user_id))
+    wallet_activity_map = _compute_last_wallet_activity_for_user_ids(db, [user_id])
+    payload = _serialize_admin_user(
+        user,
+        compute_match_stats_for_user(db, user_id),
+        wallet_activity_map.get(user_id),
+    )
     latest_upi = (
         db.query(WithdrawUpiAccount)
         .filter(WithdrawUpiAccount.user_id == user_id)
