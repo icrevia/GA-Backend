@@ -2826,7 +2826,18 @@ def send_push_notification(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    users = db.query(User).filter(User.role == "USER", User.is_active == True).all()
+    target_user_ids: list[int] = []
+    if data.user_ids:
+        target_user_ids = sorted({uid for uid in data.user_ids if isinstance(uid, int) and uid > 0})
+
+    users_query = db.query(User).filter(User.role == "USER", User.is_active == True)
+    if target_user_ids:
+        users_query = users_query.filter(User.id.in_(target_user_ids))
+
+    users = users_query.all()
+    if not users:
+        raise HTTPException(status_code=404, detail="No active users found for notification target.")
+
     display_title = append_firebase_suffix(data.title, max_length=100)
     display_body = append_firebase_suffix(data.body)
 
@@ -2853,10 +2864,16 @@ def send_push_notification(
             data={"type": "SYSTEM"}
         )
 
+    target_mode = "targeted" if target_user_ids else "broadcast"
+    target_label = f"{len(users)} selected users" if target_user_ids else f"{len(users)} users"
     logger.info(
-        f"Broadcast (DB + FCM) sent to {len(users)} users by admin={current_user.username}: '{display_title}'"
+        f"Notification ({target_mode}) sent to {target_label} by admin={current_user.username}: '{display_title}'"
     )
-    return {"message": f"Broadcast '{display_title}' scheduled for {len(users)} users ({len(tokens)} via Push)"}
+    return {
+        "message": f"Notification '{display_title}' scheduled for {target_label} ({len(tokens)} via Push)",
+        "target_mode": target_mode,
+        "users_count": len(users),
+    }
 
 
 @router.post("/developer/notifications/send")

@@ -22,6 +22,7 @@ class NotificationSendRequest(BaseModel):
     title: str
     body: str
     topic: str = "all"
+    user_ids: Optional[list[int]] = None
 
 class UserStatusUpdate(BaseModel):
     is_active: bool
