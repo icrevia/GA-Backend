@@ -200,27 +200,44 @@ async def lifespan(app: FastAPI):
     # ── Startup push notification to all users ───────────────────
     async def _send_startup_notification():
         try:
-            from services.push_notifications import send_push_to_many
+            from services.push_notifications import send_push_to_many_detailed
             from core.database import SessionLocal
             from models.user import User as UserModel
             async with SessionLocal() as db:
-                from sqlalchemy import select
+                from sqlalchemy import select, update
                 result = await db.execute(
                     select(UserModel.fcm_token).where(UserModel.fcm_token.isnot(None))
                 )
                 tokens = [row[0] for row in result.fetchall() if row[0]]
+
             if tokens:
-                import threading
-                threading.Thread(
-                    target=send_push_to_many,
-                    args=(
-                        tokens,
-                        "🚀 GamerzAdda is Live! -- Firebase",
-                        "Server is active — Check out new tournaments 🎮 -- Firebase",
-                    ),
-                    daemon=True,
-                ).start()
-                logger.info("Startup notification sent to %d devices", len(tokens))
+                push_result = await asyncio.to_thread(
+                    send_push_to_many_detailed,
+                    tokens,
+                    "🚀 GamerzAdda is Live! -- Firebase",
+                    "Server is active — Check out new tournaments 🎮 -- Firebase",
+                )
+
+                sent = int(push_result.get("success_count", 0))
+                invalid_tokens = [token for token in push_result.get("invalid_tokens", []) if token]
+                cleared = 0
+
+                if invalid_tokens:
+                    async with SessionLocal() as db:
+                        update_result = await db.execute(
+                            update(UserModel)
+                            .where(UserModel.fcm_token.in_(invalid_tokens))
+                            .values(fcm_token=None)
+                        )
+                        await db.commit()
+                        cleared = int(update_result.rowcount or 0)
+
+                logger.info(
+                    "Startup notification sent: %d/%d via Push (%d stale token(s) cleared)",
+                    sent,
+                    len(tokens),
+                    cleared,
+                )
         except Exception as notif_err:
             logger.warning("Startup notification failed: %s", notif_err)
 
