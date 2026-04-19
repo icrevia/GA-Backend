@@ -121,6 +121,7 @@ def _serialize_msg(msg: ChatMessage) -> dict[str, Any]:
         "media_url": msg.media_url,
         "media_mime_type": msg.media_mime_type,
         "media_size_bytes": msg.media_size_bytes,
+        "media_duration_seconds": msg.media_duration_seconds,
         "media_expires_at": _iso(msg.media_expires_at),
     }
 
@@ -538,6 +539,7 @@ async def user_upload(
     caption: str = Form(default=""),
     issue_type: Optional[str] = Form(default=None),
     is_issue_selection: Optional[str] = Form(default=None),
+    media_duration_seconds: Optional[float] = Form(default=None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_user_for_support_async),
@@ -573,6 +575,8 @@ async def user_upload(
     if selection_flag:
         meta.issue_ack_sent = False
 
+    normalized_media_duration_seconds = media_duration_seconds if (media_duration_seconds is not None and media_duration_seconds > 0) else None
+
     delivered = manager.is_admin_online()
     new_msg = ChatMessage(
         session_id=meta.id,
@@ -588,6 +592,7 @@ async def user_upload(
         media_path=media.relative_path,
         media_mime_type=media.mime_type,
         media_size_bytes=media.size_bytes,
+        media_duration_seconds=normalized_media_duration_seconds if media.media_type == "audio" else None,
         media_expires_at=media.expires_at,
     )
     db.add(new_msg)
@@ -903,6 +908,7 @@ async def admin_reply(
 async def admin_upload(
     user_id: int = Form(...),
     caption: str = Form(default=""),
+    media_duration_seconds: Optional[float] = Form(default=None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user_async),
@@ -934,6 +940,8 @@ async def admin_upload(
     meta.requires_admin = False
     meta.issue_ack_sent = True
 
+    normalized_media_duration_seconds = media_duration_seconds if (media_duration_seconds is not None and media_duration_seconds > 0) else None
+
     delivered = manager.is_user_online(user_id)
     new_msg = ChatMessage(
         session_id=meta.id,
@@ -949,6 +957,7 @@ async def admin_upload(
         media_path=media.relative_path,
         media_mime_type=media.mime_type,
         media_size_bytes=media.size_bytes,
+        media_duration_seconds=normalized_media_duration_seconds if media.media_type == "audio" else None,
         media_expires_at=media.expires_at,
     )
     db.add(new_msg)

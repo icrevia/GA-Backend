@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, CheckConstraint, Index
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean, CheckConstraint, Index, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from core.database import Base
@@ -59,6 +59,7 @@ class ChatMessage(Base):
     media_path = Column(Text, nullable=True)
     media_mime_type = Column(String(120), nullable=True)
     media_size_bytes = Column(Integer, nullable=True)
+    media_duration_seconds = Column(Float, nullable=True)
     media_expires_at = Column(DateTime, nullable=True)
 
     session = relationship("ChatSession", back_populates="messages")
