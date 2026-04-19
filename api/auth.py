@@ -6,7 +6,6 @@ from slowapi.util import get_remote_address
 from core.database import get_db
 from core.config import settings
 from core.security import hash_password, verify_password, create_access_token
-from core.websockets import manager
 from models.user import User
 from schemas.user import UserCreate, UserResponse, LoginRequest
 from schemas.token import Token
@@ -672,13 +671,6 @@ async def verify_otp(
     client_ip = extract_client_ip(request)
     device_name = _resolve_login_device(request)
 
-    if db_user.role != "ADMIN":
-        await manager.force_logout_user(
-            db_user.id,
-            reason=f"Account logged in from {device_name} (IP {client_ip})."
-        )
-
-        db_user.token_version = (getattr(db_user, "token_version", 0) or 0) + 1
     db_user.last_login_ip = (client_ip or "")[:64] or None
     db_user.last_login_device = device_name
     db_user.last_login_at = datetime.utcnow()
