@@ -2896,7 +2896,8 @@ def adjust_user_funds(
         amount=decimal_amount,
         transaction_type="ADMIN_ADJUSTMENT",
         status="SUCCESS",
-        reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}"
+        reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+        failure_reason=f"ADMIN:{current_user.username};REASON:{(reason or 'Manual wallet adjustment').strip()[:200]}"
     )
     db.add(tx)
     db.add(user)
