@@ -11,5 +11,6 @@ from models.otp_phone_lock import OtpPhoneLock
 from models.user_activity_lock import UserActivityLock
 from models.support import ChatSession, ChatMessage
 from models.notification import Notification
+from models.admin_access_session import AdminAccessSession
 
 # This file is used to import all models so Alembic can discover them

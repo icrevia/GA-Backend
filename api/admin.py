@@ -19,6 +19,7 @@ from urllib import request as urllib_request
 from api.deps import get_db, get_current_active_admin
 from core.config import settings
 from models.user import User
+from models.admin_access_session import AdminAccessSession
 from models.banner import HomeBanner
 from models.promo import PromoCode
 from models.otp_phone_lock import OtpPhoneLock
@@ -108,6 +109,7 @@ from schemas.admin import (
     DeveloperOtpVerifyRequest,
     DeveloperOtpVerifyResponse,
     DeveloperOtpStatusResponse,
+    AdminAccessSessionResponse,
     PromoCreateRequest,
     PromoUpdateRequest,
     BannerCreateRequest,
@@ -115,6 +117,7 @@ from schemas.admin import (
     KillRewardEntry,
 )
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
+from services.admin_sessions import get_admin_device_id
 
 logger = logging.getLogger("GamerzAdda.admin")
 router = APIRouter()
@@ -333,96 +336,116 @@ def require_developer_otp(
     return current_user
 
 
-def _serialize_admin_access_session(user: User, current_admin_id: int) -> dict:
+def _serialize_admin_access_session(session: AdminAccessSession, current_device_id: str | None) -> dict:
+    user = session.user
     return {
-        "id": user.id,
+        "id": session.id,
+        "user_id": session.user_id,
         "username": user.username,
         "email": user.email,
         "phone_number": user.phone_number,
-        "is_active": bool(user.is_active),
-        "token_version": int(getattr(user, "token_version", 0) or 0),
-        "last_login_ip": user.last_login_ip,
-        "last_login_device": user.last_login_device,
-        "last_login_at": user.last_login_at,
-        "is_current_admin": user.id == current_admin_id,
-        "access_enabled": bool(user.is_active),
+        "device_id": session.device_id,
+        "device_name": session.device_name,
+        "user_agent": session.user_agent,
+        "ip_address": session.ip_address,
+        "is_active": bool(session.is_active),
+        "created_at": session.created_at,
+        "last_seen_at": session.last_seen_at,
+        "revoked_at": session.revoked_at,
+        "revoked_reason": session.revoked_reason,
+        "is_current_admin": bool(current_device_id and session.device_id == current_device_id),
+        "access_enabled": bool(session.is_active),
     }
 
 
-@router.get("/developer/admin-access/sessions")
+@router.get("/developer/admin-access/sessions", response_model=list[AdminAccessSessionResponse])
 def list_developer_admin_access_sessions(
+    request: Request,
     include_inactive: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_developer_otp),
 ):
-    admins_q = db.query(User).filter(User.role == "ADMIN")
+    current_device_id = get_admin_device_id(request)
+    sessions_q = db.query(AdminAccessSession).join(User).filter(User.role == "ADMIN")
     if not include_inactive:
-        admins_q = admins_q.filter(User.is_active.is_(True))
+        sessions_q = sessions_q.filter(User.is_active.is_(True), AdminAccessSession.is_active.is_(True))
 
-    admins = admins_q.order_by(User.last_login_at.desc(), User.id.desc()).all()
+    sessions = sessions_q.order_by(AdminAccessSession.created_at.desc(), AdminAccessSession.id.desc()).all()
 
     return [
-        _serialize_admin_access_session(admin, current_user.id)
-        for admin in admins
+        _serialize_admin_access_session(session, current_device_id)
+        for session in sessions
     ]
 
 
-@router.post("/developer/admin-access/sessions/{admin_user_id}/logout")
+@router.post("/developer/admin-access/sessions/{session_id}/logout")
 def logout_developer_admin_access_session(
-    admin_user_id: int,
+    session_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_developer_otp),
 ):
-    target_admin = db.query(User).filter(User.id == admin_user_id, User.role == "ADMIN").first()
-    if not target_admin:
-        raise HTTPException(status_code=404, detail="Admin user not found")
+    current_device_id = get_admin_device_id(request)
+    target_session = (
+        db.query(AdminAccessSession)
+        .join(User)
+        .filter(AdminAccessSession.id == session_id, User.role == "ADMIN")
+        .first()
+    )
+    if not target_session:
+        raise HTTPException(status_code=404, detail="Admin session not found")
 
-    current_tv = int(getattr(target_admin, "token_version", 0) or 0)
-    target_admin.token_version = current_tv + 1
-    db.add(target_admin)
+    target_session.is_active = False
+    target_session.revoked_at = datetime.utcnow()
+    target_session.revoked_reason = "manual_logout"
+    db.add(target_session)
     db.commit()
 
     logger.info(
-        "Developer forced admin logout: actor_admin=%s target_admin=%s token_version=%s",
+        "Developer forced admin session logout: actor_admin=%s target_session=%s target_device_id=%s",
         current_user.username,
-        target_admin.username,
-        target_admin.token_version,
+        target_session.id,
+        target_session.device_id,
     )
 
-    if target_admin.id == current_user.id:
+    if current_device_id and target_session.device_id == current_device_id:
         message = "Current admin session revoked. Please login again."
     else:
-        message = f"Revoked all active sessions for admin {target_admin.username}."
+        message = f"Revoked admin session on {target_session.device_name or 'Unknown device'}."
 
     return {
         "message": message,
-        "admin_user_id": target_admin.id,
-        "token_version": int(target_admin.token_version or 0),
+        "session_id": target_session.id,
+        "device_id": target_session.device_id,
+        "is_current_admin": bool(current_device_id and target_session.device_id == current_device_id),
     }
 
 
 @router.post("/developer/admin-access/sessions/logout-all")
 def logout_all_developer_admin_access_sessions(
+    request: Request,
     include_self: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_developer_otp),
 ):
-    admins_q = db.query(User).filter(User.role == "ADMIN", User.is_active.is_(True))
-    if not include_self:
-        admins_q = admins_q.filter(User.id != current_user.id)
+    current_device_id = get_admin_device_id(request)
+    sessions_q = db.query(AdminAccessSession).join(User).filter(User.role == "ADMIN", AdminAccessSession.is_active.is_(True))
+    if not include_self and current_device_id:
+        sessions_q = sessions_q.filter(AdminAccessSession.device_id != current_device_id)
 
-    admins = admins_q.all()
+    sessions = sessions_q.all()
     revoked_count = 0
-    for admin in admins:
-        current_tv = int(getattr(admin, "token_version", 0) or 0)
-        admin.token_version = current_tv + 1
-        db.add(admin)
+    for session in sessions:
+        session.is_active = False
+        session.revoked_at = datetime.utcnow()
+        session.revoked_reason = "bulk_logout"
+        db.add(session)
         revoked_count += 1
 
     db.commit()
 
     logger.info(
-        "Developer forced bulk admin logout: actor_admin=%s include_self=%s revoked=%s",
+        "Developer forced bulk admin session logout: actor_admin=%s include_self=%s revoked=%s",
         current_user.username,
         include_self,
         revoked_count,

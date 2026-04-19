@@ -1,6 +1,6 @@
 from datetime import datetime
 import time
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +8,7 @@ from sqlalchemy import select
 from core.database import get_db_sync, get_db as get_db_async
 from core.config import settings
 from core.security import decode_access_token
+from services.admin_sessions import ensure_admin_access_session_async, ensure_admin_access_session_sync
 from models.user import User
 from models.config import SystemConfig
 from services.restrictions import (
@@ -217,6 +218,7 @@ async def _enforce_page_restriction_async(db: AsyncSession, user: User, page_key
 from sqlalchemy.orm import Session, joinedload
 
 def get_current_user(
+    request: Request,
     db: Session = Depends(get_db_sync),
     token: str | None = Depends(oauth2_scheme),
 ) -> User:
@@ -256,12 +258,16 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if user.role == "ADMIN":
+        ensure_admin_access_session_sync(db, user, request)
+
     _enforce_maintenance_guard(db, user)
 
     return user
 
 
 async def get_current_user_async(
+    request: Request,
     db: AsyncSession = Depends(get_db_async),
     token: str | None = Depends(oauth2_scheme),
 ) -> User:
@@ -300,6 +306,9 @@ async def get_current_user_async(
             detail=_session_revoked_detail(user),
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if user.role == "ADMIN":
+        await ensure_admin_access_session_async(db, user, request)
 
     await _enforce_maintenance_guard_async(db, user)
 

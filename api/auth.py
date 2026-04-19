@@ -19,6 +19,7 @@ import string
 import random
 import httpx
 from services.login_security import extract_client_ip
+from services.admin_sessions import upsert_admin_access_session_async
 from services.referral_codes import generate_unique_referral_code_async
 from services.restrictions import RESTRICTION_SCOPE_FULL_APP, get_active_restrictions_for_user_async
 from services.otp_limits import (
@@ -670,6 +671,9 @@ async def verify_otp(
 
     client_ip = extract_client_ip(request)
     device_name = _resolve_login_device(request)
+
+    if db_user.role == "ADMIN":
+        await upsert_admin_access_session_async(db, db_user, request)
 
     db_user.last_login_ip = (client_ip or "")[:64] or None
     db_user.last_login_device = device_name

@@ -137,6 +137,28 @@ class DeveloperOtpStatusResponse(BaseModel):
     expires_in_seconds: int = 0
 
 
+class AdminAccessSessionResponse(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+    device_id: str
+    device_name: Optional[str] = None
+    user_agent: Optional[str] = None
+    ip_address: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    last_seen_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    revoked_reason: Optional[str] = None
+    is_current_admin: bool
+    access_enabled: bool
+
+    class Config:
+        from_attributes = True
+
+
 class PromoCreateRequest(BaseModel):
     code: str = Field(..., min_length=3, max_length=40)
     reward_amount: float = Field(..., gt=0)
