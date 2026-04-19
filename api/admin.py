@@ -520,9 +520,6 @@ def verify_developer_otp(
             raise HTTPException(status_code=401, detail=f"Invalid OTP. Attempts left: {attempts_left}")
 
         _DEVELOPER_OTP_STATE.pop(current_user.id, None)
-        for token, (admin_id, _) in list(_DEVELOPER_OTP_SESSIONS.items()):
-            if admin_id == current_user.id:
-                _DEVELOPER_OTP_SESSIONS.pop(token, None)
 
         session_token = secrets.token_urlsafe(32)
         session_expires_at = now + timedelta(seconds=settings.DEVELOPER_OTP_SESSION_TTL_SECONDS)
