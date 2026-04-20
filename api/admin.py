@@ -1668,24 +1668,17 @@ def list_promo_usages(
     if not promo:
         raise HTTPException(status_code=404, detail="Promo not found")
 
-    reference_prefix = f"PROMO_{promo_id}_"
+    promo_marker = f"PROMO:{promo.code}"
     reward_transactions = (
         db.query(WalletTransaction)
         .filter(
             WalletTransaction.transaction_type == "PROMO_REWARD",
             WalletTransaction.status == "SUCCESS",
-            WalletTransaction.reference_id.startswith(reference_prefix),
+            WalletTransaction.failure_reason.contains(promo_marker),
         )
         .order_by(WalletTransaction.created_at.desc())
         .all()
     )
-
-    # Keep only exact promo reference pattern to avoid accidental prefix matches.
-    reward_transactions = [
-        tx
-        for tx in reward_transactions
-        if (tx.reference_id or "") == _promo_reward_reference(promo_id, tx.user_id)
-    ]
 
     user_ids = list({tx.user_id for tx in reward_transactions})
     users_by_id = {
@@ -1749,11 +1742,11 @@ def revoke_promo_usage(
     if not tx:
         raise HTTPException(status_code=404, detail="Promo usage transaction not found")
 
-    expected_reference = _promo_reward_reference(promo_id, tx.user_id)
+    promo_marker = f"PROMO:{promo.code}"
     if (
         tx.transaction_type != "PROMO_REWARD"
         or tx.status != "SUCCESS"
-        or (tx.reference_id or "") != expected_reference
+        or promo_marker not in (tx.failure_reason or "")
     ):
         raise HTTPException(status_code=400, detail="Selected transaction does not belong to this promo usage")
 
