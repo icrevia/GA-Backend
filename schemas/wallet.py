@@ -32,6 +32,7 @@ class DepositBonusOffersResponse(BaseModel):
     enabled: bool
     rules: List[DepositBonusOfferRule]
     display_text: Optional[str] = None
+    minimum_deposit_amount: Decimal
 
 
 class DepositBonusPreviewResponse(BaseModel):
@@ -85,6 +86,7 @@ class WalletBalanceResponse(BaseModel):
     winning_balance: Decimal
     bonus_balance: Decimal
     withdrawable_balance: Decimal
+    minimum_withdrawal_amount: Decimal
     daily_bonus_limit_amount: Decimal
     daily_bonus_used_today: Decimal
     daily_bonus_remaining_today: Optional[Decimal] = None

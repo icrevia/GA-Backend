@@ -259,6 +259,7 @@ def get_deposit_bonus_offers(
     config_payload = get_deposit_bonus_config(db)
     enabled = bool(config_payload.get("enabled", False))
     rules = _active_deposit_bonus_rules(config_payload)
+    minimum_deposit_amount = _get_min_deposit_amount(db)
 
     if enabled and rules:
         preview_lines = [_format_deposit_bonus_offer_line(rule) for rule in rules[:2]]
@@ -274,6 +275,7 @@ def get_deposit_bonus_offers(
         "enabled": enabled,
         "rules": [DepositBonusOfferRule.model_validate(rule) for rule in rules],
         "display_text": display_text,
+        "minimum_deposit_amount": to_money(minimum_deposit_amount),
     }
 
 
@@ -325,6 +327,7 @@ def get_balance(
     current_user: User = Depends(get_current_user_wallet),
 ):
     wallet_breakdown = get_wallet_breakdown(current_user)
+    minimum_withdrawal_amount = _get_min_withdrawal_amount(db)
     _, daily_bonus_limit_amount, daily_bonus_used_today, daily_bonus_remaining = get_daily_bonus_allowance(
         db,
         current_user,
@@ -332,6 +335,7 @@ def get_balance(
 
     return {
         **wallet_breakdown,
+        "minimum_withdrawal_amount": to_money(minimum_withdrawal_amount),
         "daily_bonus_limit_amount": to_money(daily_bonus_limit_amount),
         "daily_bonus_used_today": to_money(daily_bonus_used_today),
         "daily_bonus_remaining_today": (
