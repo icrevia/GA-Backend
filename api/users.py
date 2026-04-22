@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from api.deps import get_current_user, get_current_user_profile, get_current_active_admin
 from core.database import get_db_sync as get_db
 from models.user import User
+from models.banner import HomeBanner
 from schemas.user import UserResponse, UserUpdate, FullProfileResponse
 from services.match_stats import compute_match_stats_for_user
 from services.restrictions import get_active_restrictions_for_user, serialize_user_restriction
@@ -505,3 +506,52 @@ def get_leaderboard(
     result.sort(key=lambda x: (-x["total_earnings"], -x["total_wins"], -x["total_matches"], x["username"]))
     return result[:limit]
 
+
+# ─────────────────────────────────────────────────────────────────
+# Public Home Banners — active banners for the Android carousel
+# ─────────────────────────────────────────────────────────────────
+
+@router.get("/banners")
+def get_home_banners(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return currently active, in-schedule home banners ordered by sort_order.
+    Used by the Android app to populate the home screen banner carousel.
+    """
+    now = datetime.utcnow()
+
+    rows = (
+        db.query(HomeBanner)
+        .filter(HomeBanner.is_active == True)
+        .order_by(HomeBanner.sort_order.asc(), HomeBanner.created_at.desc())
+        .all()
+    )
+
+    result = []
+    for banner in rows:
+        # Skip banners that haven't started yet
+        if banner.starts_at:
+            starts_at = banner.starts_at
+            if getattr(starts_at, "tzinfo", None) is not None:
+                starts_at = starts_at.replace(tzinfo=None)
+            if starts_at > now:
+                continue
+
+        # Skip banners that have expired
+        if banner.ends_at:
+            ends_at = banner.ends_at
+            if getattr(ends_at, "tzinfo", None) is not None:
+                ends_at = ends_at.replace(tzinfo=None)
+            if ends_at <= now:
+                continue
+
+        result.append({
+            "id": banner.id,
+            "title": banner.title,
+            "image_url": banner.image_url,
+            "redirect_url": banner.redirect_url,
+            "sort_order": int(banner.sort_order or 0),
+        })
+
+    return result
