@@ -7,7 +7,7 @@ from collections import deque
 logger = logging.getLogger("GamerzAdda.ws")
 
 ALLOWED_WS_EVENTS = {
-    "chat_message", "support_escalation"
+    "chat_message", "support_escalation", "support_activity"
 }
 
 SUPPORT_EVENT_TYPES = {

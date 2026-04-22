@@ -171,6 +171,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 target_user_id = int(target_user_id)
                 msg["from_user_id"] = user_id
                 msg["from"] = "admin"
+                msg["from_user_name"] = username or "Admin"
 
                 delivered = await manager.send_personal_message(msg, target_user_id)
                 if not delivered:

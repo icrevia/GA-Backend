@@ -2338,6 +2338,9 @@ def list_user_restrictions(
         restrictions_query = restrictions_query.filter(UserRestriction.is_active == True)
 
     restrictions = restrictions_query.order_by(UserRestriction.created_at.desc()).all()
+    if not include_inactive:
+        now = utcnow_naive()
+        restrictions = [r for r in restrictions if is_restriction_currently_active(r, now)]
 
     user_ids = {r.user_id for r in restrictions}
     admin_ids = {
@@ -2392,6 +2395,9 @@ def list_user_restrictions_for_user(
     if not include_inactive:
         q = q.filter(UserRestriction.is_active == True)
     restrictions = q.order_by(UserRestriction.created_at.desc()).all()
+    if not include_inactive:
+        now = utcnow_naive()
+        restrictions = [r for r in restrictions if is_restriction_currently_active(r, now)]
 
     admins_by_id = {
         admin.id: admin
@@ -2685,12 +2691,14 @@ def unlock_all_user_restrictions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin),
 ):
-    active_restrictions = (
-        db.query(UserRestriction)
+    active_restrictions = [
+        restriction
+        for restriction in db.query(UserRestriction)
         .filter(UserRestriction.is_active == True)
         .with_for_update()
         .all()
-    )
+        if is_restriction_currently_active(restriction)
+    ]
     if not active_restrictions:
         return {"message": "No active restrictions found"}
 
