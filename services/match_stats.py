@@ -9,6 +9,8 @@ from models.tournament import Tournament
 
 
 MODE_KEYS = ("free_fire", "fan_battle", "free_fire_max", "clash_squad")
+LEADERBOARD_CATEGORIES = ("free_fire", "free_fire_max", "clash_squad")
+LEADERBOARD_PRIZE_PAYMENT_PREFIX = "LEADERBOARD_PRIZE:"
 
 
 def _empty_mode_bucket() -> dict[str, int]:
@@ -49,6 +51,35 @@ def classify_game_mode(game_name: str | None) -> str | None:
     if "free fire" in raw or "freefire" in raw:
         return "free_fire"
     return None
+
+
+def normalize_leaderboard_category(raw: str | None) -> str | None:
+    if not raw:
+        return None
+
+    clean = "_".join(raw.strip().lower().replace("-", "_").split())
+    aliases = {
+        "ff": "free_fire",
+        "freefire": "free_fire",
+        "free_fire": "free_fire",
+        "ffmax": "free_fire_max",
+        "freefiremax": "free_fire_max",
+        "free_fire_max": "free_fire_max",
+        "cs": "clash_squad",
+        "clashsquad": "clash_squad",
+        "clash_squad": "clash_squad",
+    }
+    normalized = aliases.get(clean, clean)
+    if normalized in LEADERBOARD_CATEGORIES:
+        return normalized
+    return None
+
+
+def leaderboard_prize_payment_mode(category: str | None) -> str | None:
+    normalized = normalize_leaderboard_category(category)
+    if not normalized:
+        return None
+    return f"{LEADERBOARD_PRIZE_PAYMENT_PREFIX}{normalized}"
 
 
 def _finalize_user_stats(stats: dict[str, Any]) -> dict[str, Any]:

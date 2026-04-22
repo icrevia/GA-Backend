@@ -49,9 +49,11 @@ from services.restrictions import (
     utcnow_naive,
 )
 from services.match_stats import (
+    classify_game_mode,
     compute_match_stats_for_user,
     compute_match_stats_for_user_ids,
     empty_user_match_stats,
+    leaderboard_prize_payment_mode,
 )
 from services.otp_limits import (
     clear_otp_lock_for_user_sync,
@@ -813,6 +815,8 @@ def conclude_tournament(
         raise HTTPException(status_code=400, detail="Tournament already completed")
 
     per_kill_prize = to_money(getattr(tournament, 'per_kill_prize', 0.0))
+    leaderboard_category = classify_game_mode(getattr(tournament, "game_name", None))
+    payout_payment_mode = leaderboard_prize_payment_mode(leaderboard_category)
 
     total_paid = Decimal("0.00")
     top_kills = -1
@@ -847,7 +851,8 @@ def conclude_tournament(
                 amount=member_prize,
                 transaction_type="PRIZE_WIN",
                 status="SUCCESS",
-                reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}"
+                reference_id=f"PRZ-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
+                payment_mode=payout_payment_mode,
             )
             db.add(tx)
             db.add(member_user)
