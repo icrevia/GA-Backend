@@ -323,7 +323,13 @@ def update_user_me(
     current_user: User = Depends(get_current_user_profile)
 ):
     if user_update.username is not None:
-        current_user.username = user_update.username
+        new_username = user_update.username.strip()
+        if new_username and new_username != current_user.username:
+            # Check if username is already taken by someone else
+            existing = db.query(User).filter(User.username == new_username).first()
+            if existing:
+                raise HTTPException(status_code=400, detail="Username already taken")
+            current_user.username = new_username
 
     if user_update.bio is not None:
         cleaned_bio = user_update.bio.strip()
@@ -419,12 +425,11 @@ def get_leaderboard(
     limit: int = Query(default=50, ge=1, le=100),
 ):
     from decimal import Decimal
-    from sqlalchemy import func as sqlfunc, case as sqcase
+    from sqlalchemy import func as sqlfunc, case as sqcase, or_
     from models.participant import TournamentParticipant
     from models.tournament import Tournament
     from models.wallet import WalletTransaction
     from services.match_stats import (
-        classify_game_mode,
         normalize_leaderboard_category,
         leaderboard_prize_payment_mode,
     )
@@ -446,97 +451,88 @@ def get_leaderboard(
     now_utc = datetime.now(timezone.utc)
     range_start = _leaderboard_range_start(now_utc, normalized_time_range)
 
-    # Resolve tournaments for the selected game category + time window.
-    completed_rows = (
-        db.query(Tournament.id, Tournament.game_name, Tournament.match_time, Tournament.updated_at)
-        .filter(Tournament.status == "COMPLETED")
-        .all()
-    )
+    # Convert classification to SQL-friendly patterns
+    game_patterns = {
+        "free_fire_max": ["%free fire max%", "%free fire%max%", "%max%free fire%"],
+        "clash_squad": ["%clash squad%", "%clash%"],
+        "fan_battle": ["%fan battle%", "%fanbattle%", "%fan%battle%"],
+        "free_fire": ["%free fire%", "%freefire%"],
+    }
+    
+    selected_patterns = game_patterns.get(normalized_category, ["%"])
+    game_filter = or_(*[Tournament.game_name.ilike(p) for p in selected_patterns])
 
-    eligible_tournament_ids: list[int] = []
-    for row in completed_rows:
-        mode = classify_game_mode(row.game_name)
-        if mode != normalized_category:
-            continue
-
-        event_at = _to_utc(row.updated_at) or _to_utc(row.match_time)
-        if range_start and (event_at is None or event_at < range_start):
-            continue
-
-        eligible_tournament_ids.append(int(row.id))
-
-    stats_by_user: dict[int, dict[str, int]] = {}
-    if eligible_tournament_ids:
-        stat_rows = (
-            db.query(
-                TournamentParticipant.user_id,
-                sqlfunc.count(TournamentParticipant.id).label("total_matches"),
-                sqlfunc.sum(
-                    sqcase(
-                        (Tournament.winner_id == TournamentParticipant.user_id, 1),
-                        else_=0,
-                    )
-                ).label("total_wins"),
-            )
-            .join(Tournament, Tournament.id == TournamentParticipant.tournament_id)
-            .filter(TournamentParticipant.tournament_id.in_(eligible_tournament_ids))
-            .group_by(TournamentParticipant.user_id)
-            .all()
-        )
-
-        stats_by_user = {
-            int(row.user_id): {
-                "total_matches": int(row.total_matches or 0),
-                "total_wins": int(row.total_wins or 0),
-            }
-            for row in stat_rows
-        }
-
-    prize_payment_mode = leaderboard_prize_payment_mode(normalized_category)
-    earnings_query = (
-        db.query(
-            WalletTransaction.user_id,
-            sqlfunc.coalesce(sqlfunc.sum(WalletTransaction.amount), Decimal("0.00")).label("total_earnings"),
-        )
-        .filter(
-            WalletTransaction.transaction_type == "PRIZE_WIN",
-            WalletTransaction.status == "SUCCESS",
-            WalletTransaction.payment_mode == prize_payment_mode,
-        )
+    # We need to filter tournaments by status and category
+    tournament_subq = (
+        db.query(Tournament.id)
+        .filter(Tournament.status == "COMPLETED", game_filter)
     )
     if range_start:
-        earnings_query = earnings_query.filter(WalletTransaction.created_at >= range_start)
+        tournament_subq = tournament_subq.filter(
+            or_(
+                Tournament.updated_at >= range_start,
+                Tournament.match_time >= range_start
+            )
+        )
+    tournament_ids_subq = tournament_subq.subquery()
 
-    earning_rows = earnings_query.group_by(WalletTransaction.user_id).all()
-    earnings_by_user = {
-        int(row.user_id): float(row.total_earnings or 0)
-        for row in earning_rows
-        if row.user_id is not None
-    }
+    # Query stats
+    stats_query = (
+        db.query(
+            TournamentParticipant.user_id,
+            sqlfunc.count(TournamentParticipant.id).label("matches"),
+            sqlfunc.sum(
+                sqcase(
+                    (Tournament.winner_id == TournamentParticipant.user_id, 1),
+                    else_=0,
+                )
+            ).label("wins"),
+        )
+        .join(Tournament, Tournament.id == TournamentParticipant.tournament_id)
+        .filter(TournamentParticipant.tournament_id.in_(tournament_ids_subq))
+        .group_by(TournamentParticipant.user_id)
+        .subquery()
+    )
 
-    user_ids = sorted(set(stats_by_user.keys()) | set(earnings_by_user.keys()))
-    if not user_ids:
-        return []
+    # Query earnings
+    prize_payment_mode = leaderboard_prize_payment_mode(normalized_category)
+    earnings_subq = earnings_query.group_by(WalletTransaction.user_id).subquery()
 
-    users = db.query(User).filter(User.id.in_(user_ids), User.is_active == True).all()
+    # Final combined query with sorting and limit
+    final_query = (
+        db.query(
+            User,
+            sqlfunc.coalesce(stats_query.c.matches, 0).label("total_matches"),
+            sqlfunc.coalesce(stats_query.c.wins, 0).label("total_wins"),
+            sqlfunc.coalesce(earnings_subq.c.earnings, 0.0).label("total_earnings")
+        )
+        .outerjoin(stats_query, User.id == stats_query.c.user_id)
+        .outerjoin(earnings_subq, User.id == earnings_subq.c.user_id)
+        .filter(User.is_active == True)
+        .filter(or_(stats_query.c.user_id.isnot(None), earnings_subq.c.user_id.isnot(None)))
+        .order_by(
+            sqlfunc.coalesce(earnings_subq.c.earnings, 0.0).desc(),
+            sqlfunc.coalesce(stats_query.c.wins, 0).desc(),
+            sqlfunc.coalesce(stats_query.c.matches, 0).desc(),
+            User.username.asc()
+        )
+        .limit(limit)
+    )
 
-    result = []
-    for user in users:
-        stats = stats_by_user.get(user.id, {"total_matches": 0, "total_wins": 0})
-        total_earnings = float(earnings_by_user.get(user.id, 0) or 0)
-        result.append({
-            "id": user.id,
-            "username": user.username,
-            "bio": user.bio,
-            "profile_pic": user.profile_pic,
-            "total_matches": stats.get("total_matches", 0),
-            "total_wins": stats.get("total_wins", 0),
-            "total_earnings": total_earnings,
-        })
-
-    # Sort by total earnings desc, then wins desc
-    result.sort(key=lambda x: (-x["total_earnings"], -x["total_wins"], -x["total_matches"], x["username"]))
-    return result[:limit]
+    leaderboard_users = final_query.all()
+    
+    return [
+        {
+            "id": row.User.id,
+            "username": row.User.username,
+            "bio": row.User.bio,
+            "profile_pic": row.User.profile_pic,
+            "total_matches": row.total_matches,
+            "total_wins": row.total_wins,
+            "total_earnings": float(row.total_earnings),
+        }
+        for row in leaderboard_users
+    ]
 
 
 # ─────────────────────────────────────────────────────────────────

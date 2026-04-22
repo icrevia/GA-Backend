@@ -217,10 +217,8 @@ def _otp_digest(admin_id: int, otp: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _generate_numeric_otp(length: int) -> str:
-    min_value = 10 ** (length - 1)
-    max_value = (10 ** length) - 1
-    return str(secrets.randbelow(max_value - min_value + 1) + min_value)
+def _generate_admin_login_otp(length: int = 6) -> str:
+    return "".join(random.choices(string.digits, k=length))
 
 
 def _cleanup_developer_otp_state(now: datetime) -> None:
@@ -875,6 +873,16 @@ def conclude_tournament(
             except Exception:
                 pass
 
+    # SAFETY CHECK: Ensure total kill rewards don't exceed the intended prize pool.
+    # If this is a 'Per Kill' tournament, the prize_pool acts as a hard limit on payouts.
+    prize_pool = to_money(getattr(tournament, 'prize_pool', 0.0))
+    if total_paid > prize_pool:
+        # Roll back everything if the payout exceeds the pool (data entry error)
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Payout Error: Total rewards (₹{total_paid:.2f}) exceed the Prize Pool (₹{prize_pool:.2f}). Please verify kill counts."
+        )
+
     if best_player_id:
         tournament.winner_id = best_player_id
         
@@ -934,19 +942,56 @@ def refund_tournament(
     ref_count = 0
     for p in participants:
         user = db.query(User).filter(User.id == p.user_id).with_for_update().first()
-        if user:
-            entry_fee = to_money(tournament.entry_fee)
-            credit_wallet(user, entry_fee, WALLET_BUCKET_DEPOSIT)
-            ref_tx = WalletTransaction(
-                user_id=user.id,
-                amount=entry_fee,
-                transaction_type="REFUND",
-                status="SUCCESS",
-                reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}"
-            )
-            db.add(ref_tx)
-            db.add(user)
-            ref_count += 1
+        if not user:
+            continue
+
+        # SECURITY: Close the refund loophole.
+        # Instead of refunding everything to DEPOSIT, we check how the user originally paid.
+        # This information is stored in the JOIN_TOURNAMENT transaction's failure_reason field.
+        join_tx = db.query(WalletTransaction).filter(
+            WalletTransaction.user_id == user.id,
+            WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
+            WalletTransaction.status == "SUCCESS",
+            WalletTransaction.failure_reason.contains(f"TOUR:{tournament_id};")
+        ).order_by(WalletTransaction.id.desc()).first()
+
+        entry_fee = to_money(tournament.entry_fee)
+        
+        # Default fallback if no transaction record is found (should not happen normally)
+        buckets_to_refund = {WALLET_BUCKET_DEPOSIT: entry_fee}
+        
+        if join_tx and join_tx.failure_reason:
+            try:
+                # Parse: TOUR:123;DEDUCT_BONUS:2.00;DEDUCT_DEPOSIT:8.00;DEDUCT_WINNING:0.00
+                parts = join_tx.failure_reason.split(";")
+                for part in parts:
+                    if ":" in part:
+                        key, val = part.split(":", 1)
+                        if key == "DEDUCT_BONUS":
+                            buckets_to_refund[WALLET_BUCKET_BONUS] = Decimal(val)
+                        elif key == "DEDUCT_DEPOSIT":
+                            buckets_to_refund[WALLET_BUCKET_DEPOSIT] = Decimal(val)
+                        elif key == "DEDUCT_WINNING":
+                            buckets_to_refund[WALLET_BUCKET_WINNING] = Decimal(val)
+            except Exception as parse_err:
+                logger.warning(f"Failed to parse refund distribution for user {user.id}: {parse_err}")
+
+        # Execute bucket-specific credits
+        for bucket, amount in buckets_to_refund.items():
+            if amount > 0:
+                credit_wallet(user, amount, bucket)
+
+        ref_tx = WalletTransaction(
+            user_id=user.id,
+            amount=entry_fee,
+            transaction_type="REFUND",
+            status="SUCCESS",
+            reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+            failure_reason=f"REFUND_TOUR:{tournament_id};ORIG_TX:{join_tx.id if join_tx else 'NONE'}"
+        )
+        db.add(ref_tx)
+        db.add(user)
+        ref_count += 1
 
     tournament.status = "CANCELLED"
     db.add(tournament)
@@ -1007,7 +1052,13 @@ def get_admin_stats(
         Tournament.status == "COMPLETED"
     ).scalar() or 0.0
 
-    estimated_revenue = total_revenue_pool - float(total_prizes)
+    # Subtract refunds from revenue pool to get real estimated revenue
+    total_refunds = db.query(func.sum(WalletTransaction.amount)).filter(
+        WalletTransaction.transaction_type == "REFUND",
+        WalletTransaction.status == "SUCCESS"
+    ).scalar() or 0.0
+
+    estimated_revenue = total_revenue_pool - float(total_prizes) - float(total_refunds)
 
     # NEW: Pending Withdrawals count
     pending_withdrawals = db.query(WalletTransaction).filter(

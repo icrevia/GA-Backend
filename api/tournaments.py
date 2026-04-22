@@ -868,10 +868,88 @@ def join_tournament(
             )
 
         existing_team_name = team_members_in_db[0].team_name or ""
+        
+        # SECURITY: Lock the team captain's record to prevent team overfill race conditions
+        captain_record = next((m for m in team_members_in_db if m.is_team_captain), team_members_in_db[0])
+        db.query(TournamentParticipant).filter(TournamentParticipant.id == captain_record.id).with_for_update().first()
 
-        # Joiner does NOT pay — captain already paid for the entire team
-        # Inherit the slot number from the existing team members
-        slot_no = team_members_in_db[0].slot_no
+        # RE-CHECK team size after lock
+        current_team_count = db.query(TournamentParticipant).filter(
+            TournamentParticipant.tournament_id == tournament_id,
+            TournamentParticipant.team_join_code == join_code,
+        ).count()
+        if current_team_count >= team_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"This team is already full ({team_size}/{team_size} members)."
+            )
+
+        # MANDATORY: Every team member must pay the entry fee
+        entry_fee = to_money(tournament.entry_fee)
+        bonus_usage_limit_percentage = _resolve_bonus_usage_limit_percentage(tournament)
+        
+        user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
+        bonus_cycle_key, daily_bonus_limit_amount, daily_bonus_used_today, daily_bonus_remaining = get_daily_bonus_allowance(
+            db,
+            user_wallet,
+        )
+        (
+            deductions,
+            per_match_bonus_cap_amount,
+            bonus_cap_amount,
+            remaining_due,
+            daily_bonus_blocked_amount,
+        ) = _compute_join_wallet_deductions(
+            user_wallet,
+            entry_fee,
+            bonus_usage_limit_percentage,
+            daily_bonus_remaining,
+        )
+        
+        available_by_rule = to_money(entry_fee - remaining_due)
+        if remaining_due > Decimal("0.00"):
+            # Reuse the same error message logic as SOLO/CREATE
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f"Insufficient balance! You need ₹{float(entry_fee):.2f} to join this team.",
+                    "error_code": "INSUFFICIENT_BALANCE",
+                    "required": float(entry_fee),
+                    "available": float(available_by_rule),
+                }
+            )
+
+        try:
+            _apply_join_wallet_deductions(user_wallet, deductions)
+        except InsufficientWalletBalanceError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f"Insufficient balance! You need ₹{exc.required:.2f} to join. Your current balance is ₹{exc.available:.2f}.",
+                    "error_code": "INSUFFICIENT_BALANCE",
+                    "required": float(exc.required),
+                    "available": float(exc.available),
+                }
+            )
+
+        register_bonus_usage(
+            user_wallet,
+            to_money(deductions.get(WALLET_BUCKET_BONUS)),
+            cycle_key=bonus_cycle_key,
+        )
+
+        transaction = WalletTransaction(
+            user_id=current_user.id,
+            amount=-entry_fee,
+            transaction_type="JOIN_TOURNAMENT",
+            status="SUCCESS",
+            reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
+            failure_reason=_build_join_failure_reason(tournament_id, deductions),
+        )
+        db.add(transaction)
+
+        # Inherit the slot number from the captain
+        slot_no = captain_record.slot_no
         if slot_no is None:
             # Fallback if somehow missing
             slot_no = _next_available_slot(db, tournament_id, max_slots)
@@ -917,9 +995,6 @@ def join_tournament(
             db.rollback()
             raise HTTPException(status_code=400, detail="Already joined this arena")
 
-        # Get current wallet balance (no deduction for joiners)
-        user_wallet = db.query(User).filter(User.id == current_user.id).first()
-
         try:
             add_user_notification(
                 db, current_user.id,
@@ -933,13 +1008,22 @@ def join_tournament(
         return {
             "message": f"You've joined team '{existing_team_name}' in {tournament.title}!",
             "tournament_id": tournament_id,
-            "new_wallet_balance": float(get_total_balance(user_wallet)) if user_wallet else 0.0,
+            "new_wallet_balance": float(get_total_balance(user_wallet)),
             "slot_no": slot_no,
             "slot_label": _slot_label(slot_no),
             "team_members": [member_payload],
             "team_join_code": join_code,
             "team_name": existing_team_name,
             "is_team_captain": False,
+            "deduction_breakdown": _join_deduction_payload(
+                deductions,
+                bonus_cap_amount,
+                bonus_usage_limit_percentage,
+                daily_bonus_limit_amount=daily_bonus_limit_amount,
+                daily_bonus_used_today=daily_bonus_used_today,
+                daily_bonus_remaining_today=daily_bonus_remaining,
+                daily_bonus_blocked_amount=daily_bonus_blocked_amount,
+            ),
         }
 
     # ── SOLO (or legacy DUO/SQUAD with all members) ──────────────

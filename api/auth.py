@@ -204,7 +204,7 @@ def _resolve_admin_login_chat_id() -> str:
     return _clean_env_value(settings.ADMIN_LOGIN_TELEGRAM_CHAT_ID or settings.TELEGRAM_ALERT_CHAT_ID)
 
 
-def _generate_admin_login_otp(length: int = 4) -> str:
+def _generate_admin_login_otp(length: int = 6) -> str:
     return "".join(random.choices(string.digits, k=length))
 
 
@@ -501,6 +501,18 @@ async def signup_availability(
 @router.post("/signup")
 @limiter.limit("5/minute")
 async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depends(get_db)) -> Any:
+    # ── Memory Hygiene ────────────────────────────────────────────────────────
+    # Basic cleanup: if store gets too large, purge entries older than 30 mins
+    if len(_pending_signups) > 1000:
+        now = datetime.utcnow()
+        to_delete = [
+            k for k, v in _pending_signups.items() 
+            if (now - v.get("_created_at", now)).total_seconds() > 1800
+        ]
+        for k in to_delete:
+            _pending_signups.pop(k, None)
+            _otp_store.pop(k, None)
+
     email = user_in.email.strip().lower().split('\n')[0]
     phone = _normalize_signup_phone(user_in.phone_number)
 
@@ -526,6 +538,7 @@ async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depen
         "email": email,
         "phone_number": phone,
         "referral_code": user_in.referral_code,
+        "_created_at": datetime.utcnow(),
     }
 
     try:
