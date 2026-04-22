@@ -17,6 +17,8 @@ from threading import Lock
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 from urllib import request as urllib_request
+import random
+import string
 
 from api.deps import get_db, get_current_active_admin
 from core.config import settings
@@ -217,8 +219,8 @@ def _otp_digest(admin_id: int, otp: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _generate_admin_login_otp(length: int = 6) -> str:
-    return "".join(random.choices(string.digits, k=length))
+def _generate_numeric_otp(length: int = 6) -> str:
+    return "".join(secrets.choice(string.digits) for _ in range(length))
 
 
 def _cleanup_developer_otp_state(now: datetime) -> None:
