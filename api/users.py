@@ -12,13 +12,42 @@ from services.match_stats import compute_match_stats_for_user
 from services.restrictions import get_active_restrictions_for_user, serialize_user_restriction
 from services.wallet_balances import get_wallet_breakdown
 from core.config import settings
-import uuid, os, logging
+import uuid, os, logging, io
+from PIL import Image
 
 logger = logging.getLogger("GamerzAdda.users")
 
 PROFILE_PIC_DIR = "static/profile_pics"
-PROFILE_PIC_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
+PROFILE_PIC_MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB (input limit)
+PROFILE_PIC_TARGET_KB = 100
 ALLOWED_IMG_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+def compress_image(data: bytes, target_kb: int = 100, max_dim: int = 1024) -> bytes:
+    """Resizes and compresses an image to stay around target_kb."""
+    try:
+        img = Image.open(io.BytesIO(data))
+        # Resize if too large
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        
+        quality = 90
+        output = io.BytesIO()
+        img.save(output, format="JPEG", quality=quality, optimize=True)
+        
+        # Iteratively reduce quality if still too large
+        while output.tell() > target_kb * 1024 and quality > 15:
+            quality -= 5
+            output = io.BytesIO()
+            img.save(output, format="JPEG", quality=quality, optimize=True)
+        
+        return output.getvalue()
+    except Exception as e:
+        logger.error(f"Image compression failed: {e}")
+        return data # Fallback to original if compression fails
+
 
 router = APIRouter()
 
@@ -40,11 +69,11 @@ def upload_profile_pic(
         )
 
     # ── Read & size guard ─────────────────────────────────────────────────────
-    data = file.file.read(PROFILE_PIC_MAX_BYTES + 1)
-    if len(data) > PROFILE_PIC_MAX_BYTES:
+    data = file.file.read(PROFILE_PIC_MAX_UPLOAD_BYTES + 1)
+    if len(data) > PROFILE_PIC_MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413,
-            detail="Image is too large. Maximum allowed size is 1 MB."
+            detail="Image is too large. Maximum allowed upload size is 5 MB."
         )
 
     # ── Ensure storage directory ──────────────────────────────────────────────
@@ -61,13 +90,16 @@ def upload_profile_pic(
         except Exception as cleanup_err:
             logger.warning("Could not remove old profile pic: %s", cleanup_err)
 
+    # ── Compress Image ────────────────────────────────────────────────────────
+    compressed_data = compress_image(data, target_kb=PROFILE_PIC_TARGET_KB)
+
     # ── Persist new file ──────────────────────────────────────────────────────
-    ext = "jpg" if content_type == "image/jpeg" else content_type.split("/")[-1]
-    filename = f"user_{current_user.id}_{uuid.uuid4().hex[:12]}.{ext}"
+    # We always save as .jpg since compression converts to RGB/JPEG
+    filename = f"user_{current_user.id}_{uuid.uuid4().hex[:12]}.jpg"
     save_path = os.path.join(PROFILE_PIC_DIR, filename)
 
     with open(save_path, "wb") as f:
-        f.write(data)
+        f.write(compressed_data)
 
     # ── Build public URL & update DB ──────────────────────────────────────────
     base_url = (settings.APP_URL or "").rstrip("/")

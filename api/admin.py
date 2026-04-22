@@ -11,6 +11,8 @@ import logging
 import hashlib
 import json
 import secrets
+import io
+from PIL import Image
 from threading import Lock
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
@@ -1427,6 +1429,65 @@ def _validate_banner_schedule(starts_at: datetime | None, ends_at: datetime | No
         raise HTTPException(status_code=400, detail="ends_at must be after starts_at")
 
 
+BANNER_STORAGE_DIR = "static/banners"
+BANNER_TARGET_WIDTH = 1200
+BANNER_TARGET_HEIGHT = 400
+
+def _cleanup_banner_file(image_url: str):
+    """If the image is stored locally in static/banners, delete it."""
+    if not image_url:
+        return
+    
+    # Check if URL belongs to our local static banners
+    if "/static/banners/" in image_url:
+        try:
+            filename = image_url.rsplit("/", 1)[-1]
+            file_path = os.path.join(BANNER_STORAGE_DIR, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                logger.info(f"Deleted orphan banner file: {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup banner file {image_url}: {e}")
+
+@router.post("/banners/upload")
+async def upload_banner_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Upload a banner image, resize to 1200x400, compress, and return the URL."""
+    content_type = (file.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only images are allowed.")
+
+    data = await file.read()
+    
+    try:
+        img = Image.open(io.BytesIO(data))
+        
+        # Enforce 3:1 aspect ratio by cropping or just resizing (Fit)
+        # We'll use a high-quality resize to 1200x400
+        img = img.convert("RGB")
+        img = img.resize((BANNER_TARGET_WIDTH, BANNER_TARGET_HEIGHT), Image.Resampling.LANCZOS)
+        
+        output = io.BytesIO()
+        img.save(output, format="JPEG", quality=85, optimize=True)
+        compressed_data = output.getvalue()
+        
+        os.makedirs(BANNER_STORAGE_DIR, exist_ok=True)
+        filename = f"banner_{uuid.uuid4().hex[:12]}.jpg"
+        save_path = os.path.join(BANNER_STORAGE_DIR, filename)
+        
+        with open(save_path, "wb") as f:
+            f.write(compressed_data)
+            
+        base_url = (settings.APP_URL or "").rstrip("/")
+        public_url = f"{base_url}/static/banners/{filename}"
+        return {"image_url": public_url}
+        
+    except Exception as e:
+        logger.error(f"Banner upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process image")
+
 def _banner_status(banner: HomeBanner) -> str:
     if not banner.is_active:
         return "INACTIVE"
@@ -1525,7 +1586,11 @@ def update_banner(
         banner.title = _normalize_banner_title(payload.title)
 
     if payload.image_url is not None:
-        banner.image_url = _normalize_banner_url(payload.image_url, "image_url")
+        old_url = banner.image_url
+        new_url = _normalize_banner_url(payload.image_url, "image_url")
+        if old_url != new_url:
+            _cleanup_banner_file(old_url)
+        banner.image_url = new_url
 
     if payload.redirect_url is not None:
         banner.redirect_url = _normalize_optional_banner_url(payload.redirect_url)
@@ -1571,8 +1636,14 @@ def delete_banner(
         raise HTTPException(status_code=404, detail="Banner not found")
 
     banner_title = banner.title
+    image_url = banner.image_url
+    
     db.delete(banner)
     db.commit()
+    
+    # Clean up file after successful DB deletion
+    _cleanup_banner_file(image_url)
+    
     logger.warning("Banner deleted by admin=%s banner_id=%s", current_user.username, banner_id)
     return {"message": f"Banner '{banner_title}' deleted"}
 
@@ -2854,8 +2925,20 @@ def delete_user_account(
         # ══════════════════════════════════════════════════════════════════════
         # PHASE 3 — Delete the user itself (all constraints are cleared)
         # ══════════════════════════════════════════════════════════════════════
+        profile_pic_url = user.profile_pic
         db.execute(_t("DELETE FROM users WHERE id = :uid"), {"uid": uid})
         db.commit()
+
+        # PHASE 4 — Cleanup profile picture from disk
+        if profile_pic_url and "/static/profile_pics/" in profile_pic_url:
+            try:
+                filename = profile_pic_url.rsplit("/", 1)[-1]
+                path = os.path.join("static/profile_pics", filename)
+                if os.path.isfile(path):
+                    os.remove(path)
+                    logger.info(f"Deleted profile pic for deleted user {user_id}: {path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete profile pic file for user {user_id}: {e}")
 
         logger.warning(
             f"User deleted by admin={current_user.username}: user_id={user_id}, "
