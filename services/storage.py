@@ -23,49 +23,62 @@ def upload_file(data: bytes, filename: str, sub_dir: str = "general") -> str:
 
 def _upload_to_vps(data: bytes, filename: str, sub_dir: str) -> str:
     """Uploads file to VPS via SFTP."""
-    transport = paramiko.Transport((settings.VPS_HOST, settings.VPS_PORT))
+    logger.info(f"Attempting VPS upload: {filename} to {settings.VPS_HOST}:{settings.VPS_PORT}")
     
-    if settings.VPS_PRIVATE_KEY:
-        # Load private key from string
-        key_file = io.StringIO(settings.VPS_PRIVATE_KEY)
-        # Try different key types
-        try:
-            pkey = paramiko.RSAKey.from_private_key(key_file)
-        except:
-            key_file.seek(0)
-            pkey = paramiko.Ed25519Key.from_private_key(key_file)
-        transport.connect(username=settings.VPS_USERNAME, pkey=pkey)
-    else:
-        transport.connect(username=settings.VPS_USERNAME, password=settings.VPS_PASSWORD)
-
-    sftp = paramiko.SFTPClient.from_transport(transport)
-    
-    # Ensure remote sub_dir exists
-    remote_base = settings.VPS_REMOTE_PATH.rstrip("/")
-    remote_target_dir = f"{remote_base}/{sub_dir}"
-    
+    transport = None
+    sftp = None
     try:
-        sftp.mkdir(remote_target_dir)
-    except IOError:
-        pass # Already exists or parent missing (assume base exists)
+        transport = paramiko.Transport((settings.VPS_HOST, settings.VPS_PORT))
+        transport.banner_timeout = 10
+        transport.connect_timeout = 10
+        
+        if settings.VPS_PRIVATE_KEY:
+            logger.info("Using Private Key for VPS auth")
+            key_file = io.StringIO(settings.VPS_PRIVATE_KEY)
+            try:
+                pkey = paramiko.RSAKey.from_private_key(key_file)
+            except:
+                key_file.seek(0)
+                pkey = paramiko.Ed25519Key.from_private_key(key_file)
+            transport.connect(username=settings.VPS_USERNAME, pkey=pkey)
+        else:
+            logger.info(f"Using Password for VPS auth (User: {settings.VPS_USERNAME})")
+            transport.connect(username=settings.VPS_USERNAME, password=settings.VPS_PASSWORD)
 
-    remote_file_path = f"{remote_target_dir}/{filename}"
-    
-    with sftp.open(remote_file_path, "wb") as remote_file:
-        remote_file.write(data)
-    
-    sftp.close()
-    transport.close()
+        sftp = paramiko.SFTPClient.from_transport(transport)
+        logger.info(f"SFTP Connection established to {settings.VPS_HOST}")
+        
+        # Ensure remote sub_dir exists
+        remote_base = settings.VPS_REMOTE_PATH.rstrip("/")
+        remote_target_dir = f"{remote_base}/{sub_dir}"
+        
+        try:
+            sftp.mkdir(remote_target_dir)
+        except IOError:
+            pass # Already exists or parent missing (assume base exists)
 
-    public_base = settings.VPS_PUBLIC_BASE_URL.rstrip("/")
-    if not public_base:
-        # Fallback to VPS IP if no domain
-        public_base = f"http://{settings.VPS_HOST}"
+        remote_file_path = f"{remote_target_dir}/{filename}"
+        
+        with sftp.open(remote_file_path, "wb") as remote_file:
+            remote_file.write(data)
+        
+        logger.info(f"File {filename} successfully uploaded to VPS")
+        
+        public_base = settings.VPS_PUBLIC_BASE_URL.rstrip("/")
+        if not public_base:
+            public_base = f"http://{settings.VPS_HOST}"
 
-    return f"{public_base}/{sub_dir}/{filename}"
+        return f"{public_base}/{sub_dir}/{filename}"
+
+    finally:
+        if sftp:
+            sftp.close()
+        if transport:
+            transport.close()
 
 def _upload_to_local(data: bytes, filename: str, sub_dir: str) -> str:
     """Fallback: saves to local static directory (ephemeral on Railway)."""
+    logger.info(f"Saving to local fallback storage: {filename}")
     local_dir = os.path.join("static", sub_dir)
     os.makedirs(local_dir, exist_ok=True)
     
