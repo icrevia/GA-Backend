@@ -103,16 +103,20 @@ def upload_profile_pic(
     compressed_data = compress_image(data, target_kb=PROFILE_PIC_TARGET_KB)
 
     # ── Persist new file ──────────────────────────────────────────────────────
-    # We always save as .jpg since compression converts to RGB/JPEG
     filename = f"user_{current_user.id}_{uuid.uuid4().hex[:12]}.jpg"
-    save_path = os.path.join(PROFILE_PIC_DIR, filename)
+    
+    from services.storage import upload_file
+    try:
+        public_url = upload_file(compressed_data, filename, sub_dir="profile_pics")
+    except Exception as e:
+        logger.error(f"Failed to upload profile pic to storage: {e}")
+        # Final emergency fallback if even service fails
+        save_path = os.path.join(PROFILE_PIC_DIR, filename)
+        with open(save_path, "wb") as f:
+            f.write(compressed_data)
+        base_url = (settings.APP_URL or "").rstrip("/")
+        public_url = f"{base_url}/static/profile_pics/{filename}"
 
-    with open(save_path, "wb") as f:
-        f.write(compressed_data)
-
-    # ── Build public URL & update DB ──────────────────────────────────────────
-    base_url = (settings.APP_URL or "").rstrip("/")
-    public_url = f"{base_url}/static/profile_pics/{filename}"
     current_user.profile_pic = public_url
     db.add(current_user)
     db.commit()

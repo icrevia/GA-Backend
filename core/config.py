@@ -105,6 +105,16 @@ class Settings(BaseSettings):
     EMAIL_FROM_ADDRESS: str = ""
     EMAIL_FROM_NAME: str = "GamerzAdda Security"
 
+    # ── VPS Remote Storage (SFTP) ───────────────────────────────────────────
+    VPS_STORAGE_ENABLED: bool = False
+    VPS_HOST: str = ""
+    VPS_PORT: int = 22
+    VPS_USERNAME: str = ""
+    VPS_PASSWORD: str = ""
+    VPS_PRIVATE_KEY: str = ""
+    VPS_REMOTE_PATH: str = "/var/www/html/static"
+    VPS_PUBLIC_BASE_URL: str = "" # e.g. https://assets.gamerzadda.in
+
     class Config:
         env_file = ".env"
         case_sensitive = True

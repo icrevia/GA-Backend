@@ -1526,15 +1526,21 @@ async def upload_banner_image(
         img.save(output, format="JPEG", quality=85, optimize=True)
         compressed_data = output.getvalue()
         
-        os.makedirs(BANNER_STORAGE_DIR, exist_ok=True)
         filename = f"banner_{uuid.uuid4().hex[:12]}.jpg"
-        save_path = os.path.join(BANNER_STORAGE_DIR, filename)
         
-        with open(save_path, "wb") as f:
-            f.write(compressed_data)
-            
-        base_url = (settings.APP_URL or "").rstrip("/")
-        public_url = f"{base_url}/static/banners/{filename}"
+        from services.storage import upload_file
+        try:
+            public_url = upload_file(compressed_data, filename, sub_dir="banners")
+        except Exception as e:
+            logger.error(f"Failed to upload banner to storage: {e}")
+            # Fallback
+            os.makedirs(BANNER_STORAGE_DIR, exist_ok=True)
+            save_path = os.path.join(BANNER_STORAGE_DIR, filename)
+            with open(save_path, "wb") as f:
+                f.write(compressed_data)
+            base_url = (settings.APP_URL or "").rstrip("/")
+            public_url = f"{base_url}/static/banners/{filename}"
+
         return {"image_url": public_url}
         
     except Exception as e:
