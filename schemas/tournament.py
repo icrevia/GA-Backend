@@ -19,6 +19,7 @@ class TournamentBase(BaseModel):
     match_type: str = "SOLO"
     game_image_url: Optional[str] = None
     max_slots: Optional[int] = 100
+    prize_distribution: Optional[str] = None
 
 class TournamentCreate(TournamentBase):
     pass
@@ -35,6 +36,7 @@ class TournamentUpdate(BaseModel):
     room_password: Optional[str] = None
     winner_id: Optional[int] = None
     max_slots: Optional[int] = None
+    prize_distribution: Optional[str] = None
 
 class ParticipantResponse(BaseModel):
     id: int
