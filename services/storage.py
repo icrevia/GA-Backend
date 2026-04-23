@@ -13,7 +13,7 @@ def upload_file(data: bytes, filename: str, sub_dir: str = "general") -> str:
     Priority: VPS (if enabled) > Local Static (fallback).
     Returns the public URL of the uploaded file.
     """
-    if settings.VPS_STORAGE_ENABLED:
+    if settings.VPS_STORAGE_ENABLED and settings.VPS_HOST:
         try:
             return _upload_to_vps(data, filename, sub_dir)
         except Exception as e:
@@ -22,16 +22,15 @@ def upload_file(data: bytes, filename: str, sub_dir: str = "general") -> str:
     return _upload_to_local(data, filename, sub_dir)
 
 def _upload_to_vps(data: bytes, filename: str, sub_dir: str) -> str:
-    """Uploads file to VPS via SFTP."""
+    """Uploads file to VPS via SFTP using SSHClient for better stability."""
     logger.info(f"Attempting VPS upload: {filename} to {settings.VPS_HOST}:{settings.VPS_PORT}")
     
-    transport = None
-    sftp = None
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
     try:
-        transport = paramiko.Transport((settings.VPS_HOST, settings.VPS_PORT))
-        transport.banner_timeout = 10
-        transport.connect_timeout = 10
-        
+        # Load credentials
+        pkey = None
         if settings.VPS_PRIVATE_KEY:
             logger.info("Using Private Key for VPS auth")
             key_file = io.StringIO(settings.VPS_PRIVATE_KEY)
@@ -40,13 +39,22 @@ def _upload_to_vps(data: bytes, filename: str, sub_dir: str) -> str:
             except:
                 key_file.seek(0)
                 pkey = paramiko.Ed25519Key.from_private_key(key_file)
-            transport.connect(username=settings.VPS_USERNAME, pkey=pkey)
-        else:
-            logger.info(f"Using Password for VPS auth (User: {settings.VPS_USERNAME})")
-            transport.connect(username=settings.VPS_USERNAME, password=settings.VPS_PASSWORD)
 
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        logger.info(f"SFTP Connection established to {settings.VPS_HOST}")
+        # Connect with explicit timeout
+        ssh.connect(
+            hostname=settings.VPS_HOST,
+            port=settings.VPS_PORT,
+            username=settings.VPS_USERNAME,
+            password=settings.VPS_PASSWORD or None,
+            pkey=pkey,
+            timeout=10,        # Connection timeout
+            banner_timeout=10, # SSH banner timeout
+            auth_timeout=10    # Auth timeout
+        )
+        
+        logger.info(f"SSH Connection established to {settings.VPS_HOST}")
+        
+        sftp = ssh.open_sftp()
         
         # Ensure remote sub_dir exists
         remote_base = settings.VPS_REMOTE_PATH.rstrip("/")
@@ -59,10 +67,13 @@ def _upload_to_vps(data: bytes, filename: str, sub_dir: str) -> str:
 
         remote_file_path = f"{remote_target_dir}/{filename}"
         
+        # Upload data
         with sftp.open(remote_file_path, "wb") as remote_file:
             remote_file.write(data)
         
         logger.info(f"File {filename} successfully uploaded to VPS")
+        
+        sftp.close()
         
         public_base = settings.VPS_PUBLIC_BASE_URL.rstrip("/")
         if not public_base:
@@ -71,10 +82,7 @@ def _upload_to_vps(data: bytes, filename: str, sub_dir: str) -> str:
         return f"{public_base}/{sub_dir}/{filename}"
 
     finally:
-        if sftp:
-            sftp.close()
-        if transport:
-            transport.close()
+        ssh.close()
 
 def _upload_to_local(data: bytes, filename: str, sub_dir: str) -> str:
     """Fallback: saves to local static directory (ephemeral on Railway)."""
