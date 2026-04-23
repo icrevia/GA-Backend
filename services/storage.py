@@ -14,6 +14,10 @@ def upload_file(data: bytes, filename: str, sub_dir: str = "general") -> str:
     Returns the public URL of the uploaded file.
     """
     if settings.VPS_STORAGE_ENABLED and settings.VPS_HOST:
+        if not settings.VPS_USERNAME:
+            logger.error("VPS storage enabled but VPS_USERNAME is missing.")
+            return _upload_to_local(data, filename, sub_dir)
+        
         try:
             return _upload_to_vps(data, filename, sub_dir)
         except Exception as e:
