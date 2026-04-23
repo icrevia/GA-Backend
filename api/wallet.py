@@ -620,7 +620,7 @@ def redeem_promo_code(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    credit_wallet(user, reward_amount, WALLET_BUCKET_BONUS)
+    credit_wallet(user, reward_amount, WALLET_BUCKET_DEPOSIT)
     promo.uses_count = int(promo.uses_count or 0) + 1
 
     tx = WalletTransaction(
