@@ -12,7 +12,7 @@ from services.match_stats import compute_match_stats_for_user
 from services.restrictions import get_active_restrictions_for_user, serialize_user_restriction
 from services.wallet_balances import get_wallet_breakdown
 from core.config import settings
-from sqlalchemy import func as sqlfunc, case as sqcase, or_, select
+from sqlalchemy import func as sqlfunc, case as sqcase, or_, and_, select
 from models.wallet import WalletTransaction
 from models.tournament import Tournament
 from models.participant import TournamentParticipant
