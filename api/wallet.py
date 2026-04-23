@@ -645,6 +645,7 @@ def redeem_promo_code(
         "Promo Applied",
         f"Promo {normalized_code} applied. ₹{reward_amount:.2f} added to your wallet.",
         "WALLET",
+        skip_push=True,
     )
 
     wallet_breakdown = get_wallet_breakdown(user)
