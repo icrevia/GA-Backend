@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Any
 
 
 class TournamentTeamMember(BaseModel):
@@ -19,6 +19,8 @@ class TournamentBase(BaseModel):
     match_type: str = "SOLO"
     game_image_url: Optional[str] = None
     max_slots: Optional[int] = 100
+    # List of {rank, prize} dicts — e.g. [{"rank":1,"prize":50},{"rank":2,"prize":30}]
+    prize_distribution: Optional[List[Any]] = None
 
 class TournamentCreate(TournamentBase):
     pass
@@ -35,6 +37,7 @@ class TournamentUpdate(BaseModel):
     room_password: Optional[str] = None
     winner_id: Optional[int] = None
     max_slots: Optional[int] = None
+    prize_distribution: Optional[List[Any]] = None
 
 class ParticipantResponse(BaseModel):
     id: int

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Numeric, DateTime, Boolean, Index
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, Boolean, Index, JSON
 from sqlalchemy.sql import func
 from core.database import Base
 
@@ -30,6 +30,8 @@ class Tournament(Base):
     game_image_url = Column(String, nullable=True)
     max_slots  = Column(Integer, default=100)
     winner_id  = Column(Integer, nullable=True)
+    # JSON list of {rank: int, prize: float} — e.g. [{"rank":1,"prize":50},{"rank":2,"prize":30}]
+    prize_distribution = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

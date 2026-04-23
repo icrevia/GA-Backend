@@ -138,6 +138,8 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS ix_chat_sessions_user_created_at ON chat_sessions (user_id, created_at DESC)",
                 "CREATE INDEX IF NOT EXISTS ix_chat_messages_session_is_read ON chat_messages (session_id, is_read)",
                 "CREATE INDEX IF NOT EXISTS ix_chat_messages_media_expires_at ON chat_messages (media_expires_at)",
+                # Prize distribution per rank
+                "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS prize_distribution JSONB",
             ]
             for query in queries:
                 await conn.execute(text(query))
