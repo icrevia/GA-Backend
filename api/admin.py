@@ -1908,7 +1908,7 @@ def revoke_promo_usage(
         debit_wallet(
             user,
             reversal_amount,
-            spend_order=(WALLET_BUCKET_BONUS, WALLET_BUCKET_WINNING, WALLET_BUCKET_DEPOSIT),
+            spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING, WALLET_BUCKET_BONUS),
         )
     except InsufficientWalletBalanceError:
         raise HTTPException(
