@@ -12,6 +12,15 @@ from services.match_stats import compute_match_stats_for_user
 from services.restrictions import get_active_restrictions_for_user, serialize_user_restriction
 from services.wallet_balances import get_wallet_breakdown
 from core.config import settings
+from sqlalchemy import func as sqlfunc, case as sqcase, or_, select
+from models.wallet import WalletTransaction
+from models.tournament import Tournament
+from models.participant import TournamentParticipant
+from services.match_stats import (
+    compute_match_stats_for_user,
+    normalize_leaderboard_category,
+    leaderboard_prize_payment_mode,
+)
 import uuid, os, logging, io
 from PIL import Image
 
@@ -424,15 +433,6 @@ def get_leaderboard(
     time_range: str = Query(default="lifetime"),
     limit: int = Query(default=50, ge=1, le=100),
 ):
-    from decimal import Decimal
-    from sqlalchemy import func as sqlfunc, case as sqcase, or_
-    from models.participant import TournamentParticipant
-    from models.tournament import Tournament
-    from models.wallet import WalletTransaction
-    from services.match_stats import (
-        normalize_leaderboard_category,
-        leaderboard_prize_payment_mode,
-    )
 
     normalized_category = normalize_leaderboard_category(category)
     if not normalized_category:
@@ -496,6 +496,22 @@ def get_leaderboard(
 
     # Query earnings
     prize_payment_mode = leaderboard_prize_payment_mode(normalized_category)
+    earnings_query = (
+        db.query(
+            WalletTransaction.user_id,
+            sqlfunc.sum(WalletTransaction.amount).label("earnings")
+        )
+        .filter(WalletTransaction.status == "SUCCESS")
+    )
+    if prize_payment_mode:
+        earnings_query = earnings_query.filter(WalletTransaction.transaction_type == prize_payment_mode)
+    else:
+        # Fallback to all REWARD types if no specific mode found
+        earnings_query = earnings_query.filter(WalletTransaction.transaction_type.ilike("%REWARD%"))
+
+    if range_start:
+        earnings_query = earnings_query.filter(WalletTransaction.created_at >= range_start)
+
     earnings_subq = earnings_query.group_by(WalletTransaction.user_id).subquery()
 
     # Final combined query with sorting and limit
