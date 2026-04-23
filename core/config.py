@@ -114,6 +114,10 @@ class Settings(BaseSettings):
     VPS_PRIVATE_KEY: str = ""
     VPS_REMOTE_PATH: str = "/var/www/html/static"
     VPS_PUBLIC_BASE_URL: str = "" # e.g. https://assets.gamerzadda.in
+    
+    # ── VPS API Storage (HTTP Bypass) ──────────────────────────────────────
+    VPS_API_UPLOAD_URL: str = "" # e.g. https://gamerzadda.in/upload_handler.php
+    VPS_API_SECRET: str = "GamerzAdda_Secret_2026"
 
     class Config:
         env_file = ".env"
