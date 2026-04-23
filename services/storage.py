@@ -17,7 +17,11 @@ def upload_file(data: bytes, filename: str, sub_dir: str = "general") -> str:
         try:
             return _upload_to_vps(data, filename, sub_dir)
         except Exception as e:
-            logger.error(f"VPS Upload failed, falling back to local: {e}")
+            logger.error(f"!!! VPS UPLOAD ERROR: {type(e).__name__}: {str(e)}")
+            logger.warning("Falling back to local storage due to VPS error.")
+    else:
+        if settings.VPS_STORAGE_ENABLED:
+            logger.warning("VPS storage enabled but VPS_HOST is missing.")
     
     return _upload_to_local(data, filename, sub_dir)
 
