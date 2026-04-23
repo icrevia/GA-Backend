@@ -504,10 +504,24 @@ def get_leaderboard(
         .filter(WalletTransaction.status == "SUCCESS")
     )
     if prize_payment_mode:
-        earnings_query = earnings_query.filter(WalletTransaction.transaction_type == prize_payment_mode)
+        earnings_query = earnings_query.filter(
+            or_(
+                WalletTransaction.transaction_type == prize_payment_mode,
+                and_(
+                    WalletTransaction.transaction_type == "PRIZE_WIN",
+                    WalletTransaction.payment_mode == prize_payment_mode
+                )
+            )
+        )
     else:
-        # Fallback to all REWARD types if no specific mode found
-        earnings_query = earnings_query.filter(WalletTransaction.transaction_type.ilike("%REWARD%"))
+        # Fallback to all REWARD or PRIZE types if no specific mode found
+        earnings_query = earnings_query.filter(
+            or_(
+                WalletTransaction.transaction_type.ilike("%REWARD%"),
+                WalletTransaction.transaction_type.ilike("%PRIZE%"),
+                WalletTransaction.payment_mode.ilike("%PRIZE%")
+            )
+        )
 
     if range_start:
         earnings_query = earnings_query.filter(WalletTransaction.created_at >= range_start)
