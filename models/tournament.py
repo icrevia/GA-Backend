@@ -30,7 +30,6 @@ class Tournament(Base):
     game_image_url = Column(String, nullable=True)
     max_slots  = Column(Integer, default=100)
     winner_id  = Column(Integer, nullable=True)
-    prize_distribution = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
