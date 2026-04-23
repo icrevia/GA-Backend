@@ -551,6 +551,11 @@ def update_tournament(
     for field, value in update_data.items():
         setattr(db_obj, field, value)
 
+    # AUTO-TRANSITION: If room details are provided, move to LIVE
+    if update_data.get("room_id") or update_data.get("room_password"):
+        if db_obj.status == "UPCOMING":
+            db_obj.status = "LIVE"
+
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
