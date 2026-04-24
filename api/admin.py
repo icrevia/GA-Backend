@@ -1476,8 +1476,8 @@ def get_tournament_roster(
             "user": {
                 "id":            p.user_id,
                 "game_username": primary["name"] if primary else p.game_username,
-                "full_name":     user_map[p.user_id].full_name if p.user_id in user_map else "Unknown",
-                "phone":         user_map[p.user_id].phone if p.user_id in user_map else "",
+                "full_name":     user_map[p.user_id].username if p.user_id in user_map else "Unknown",
+                "phone":         user_map[p.user_id].phone_number if p.user_id in user_map else "",
                 "username":      user_map[p.user_id].username if p.user_id in user_map else "Unknown"
             }
         }
