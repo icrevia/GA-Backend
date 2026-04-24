@@ -1648,13 +1648,20 @@ async def upload_banner_image(
         try:
             public_url = upload_file(compressed_data, filename, sub_dir="banners")
         except Exception as e:
-            logger.error(f"Storage service upload failed: {e}")
-            raise HTTPException(status_code=500, detail="Cloud storage upload failed.")
+            logger.error(f"Failed to upload banner to storage: {e}")
+            # Fallback
+            os.makedirs(BANNER_STORAGE_DIR, exist_ok=True)
+            save_path = os.path.join(BANNER_STORAGE_DIR, filename)
+            with open(save_path, "wb") as f:
+                f.write(compressed_data)
+            base_url = (settings.APP_URL or "").rstrip("/")
+            public_url = f"{base_url}/static/banners/{filename}"
 
         return {"image_url": public_url}
+        
     except Exception as e:
-        logger.error(f"Image processing failed: {e}")
-        raise HTTPException(status_code=400, detail="Invalid image file or processing error.")
+        logger.error(f"Banner upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process image")
 
 @router.post("/tournaments/upload")
 async def upload_tournament_image(
@@ -1692,20 +1699,6 @@ async def upload_tournament_image(
     except Exception as e:
         logger.error(f"Image processing failed: {e}")
         raise HTTPException(status_code=400, detail="Invalid image file or processing error.")
-            logger.error(f"Failed to upload banner to storage: {e}")
-            # Fallback
-            os.makedirs(BANNER_STORAGE_DIR, exist_ok=True)
-            save_path = os.path.join(BANNER_STORAGE_DIR, filename)
-            with open(save_path, "wb") as f:
-                f.write(compressed_data)
-            base_url = (settings.APP_URL or "").rstrip("/")
-            public_url = f"{base_url}/static/banners/{filename}"
-
-        return {"image_url": public_url}
-        
-    except Exception as e:
-        logger.error(f"Banner upload failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to process image")
 
 def _banner_status(banner: HomeBanner) -> str:
     if not banner.is_active:
