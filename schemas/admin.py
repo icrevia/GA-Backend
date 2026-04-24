@@ -111,6 +111,7 @@ class TournamentCreateAdmin(BaseModel):
     match_time: str
     game_image_url: Optional[str] = None
     max_slots: Optional[int] = 100
+    prize_distribution: Optional[list[Any]] = None
 
 
 class DeveloperOtpRequestResponse(BaseModel):

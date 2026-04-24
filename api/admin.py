@@ -738,6 +738,7 @@ def create_tournament(
         match_time=dt,
         game_image_url=data.game_image_url,
         max_slots=data.max_slots or 100,
+        prize_distribution=data.prize_distribution,
         status="UPCOMING"
     )
     db.add(db_obj)
