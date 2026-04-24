@@ -1648,6 +1648,50 @@ async def upload_banner_image(
         try:
             public_url = upload_file(compressed_data, filename, sub_dir="banners")
         except Exception as e:
+            logger.error(f"Storage service upload failed: {e}")
+            raise HTTPException(status_code=500, detail="Cloud storage upload failed.")
+
+        return {"image_url": public_url}
+    except Exception as e:
+        logger.error(f"Image processing failed: {e}")
+        raise HTTPException(status_code=400, detail="Invalid image file or processing error.")
+
+@router.post("/tournaments/upload")
+async def upload_tournament_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Upload a match/tournament icon, resize to 512x512, compress, and return the URL."""
+    content_type = (file.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only images are allowed.")
+
+    data = await file.read()
+    
+    try:
+        img = Image.open(io.BytesIO(data))
+        
+        # Enforce 1:1 aspect ratio for icons
+        img = img.convert("RGB")
+        img = img.resize((512, 512), Image.Resampling.LANCZOS)
+        
+        output = io.BytesIO()
+        img.save(output, format="JPEG", quality=85, optimize=True)
+        compressed_data = output.getvalue()
+        
+        filename = f"match_{uuid.uuid4().hex[:12]}.jpg"
+        
+        from services.storage import upload_file
+        try:
+            public_url = upload_file(compressed_data, filename, sub_dir="tournaments")
+        except Exception as e:
+            logger.error(f"Storage service upload failed: {e}")
+            raise HTTPException(status_code=500, detail="Cloud storage upload failed.")
+
+        return {"image_url": public_url}
+    except Exception as e:
+        logger.error(f"Image processing failed: {e}")
+        raise HTTPException(status_code=400, detail="Invalid image file or processing error.")
             logger.error(f"Failed to upload banner to storage: {e}")
             # Fallback
             os.makedirs(BANNER_STORAGE_DIR, exist_ok=True)
