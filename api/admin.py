@@ -4279,11 +4279,69 @@ def delete_sub_admin(
     if user.phone_number == settings.ADMIN_LOGIN_PHONE:
         raise HTTPException(status_code=403, detail="Cannot revoke the Super Admin")
         
-    # Revoke admin privileges
-    user.role = "USER"
-    user.admin_permissions = None
-    # Invalidate tokens
-    user.token_version = (user.token_version or 0) + 1
-    
-    db.commit()
-    return {"message": "Admin privileges revoked successfully"}
+    try:
+        from sqlalchemy import text as _t
+
+        deleted_username = user.username
+        deleted_email    = user.email
+
+        db.flush()  # push any pending ORM state before raw SQL
+        uid = user_id
+
+        # PHASE 1 — SET NULL on every nullable FK column referencing this admin
+        db.execute(_t("UPDATE chat_sessions SET attended_by_admin_id = NULL WHERE attended_by_admin_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_sessions SET blocked_by_admin_id  = NULL WHERE blocked_by_admin_id  = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_sessions SET ended_by_user_id     = NULL WHERE ended_by_user_id     = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE chat_messages SET thread_user_id = NULL WHERE thread_user_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_messages SET sender_id      = NULL WHERE sender_id      = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE user_restrictions SET created_by_admin_id = NULL WHERE created_by_admin_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE user_restrictions SET lifted_by_admin_id  = NULL WHERE lifted_by_admin_id  = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE user_activity_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE otp_phone_locks SET user_id              = NULL WHERE user_id              = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE otp_phone_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id = :uid"), {"uid": uid})
+
+        # PHASE 2 — DELETE child rows where user_id is NOT NULL
+        db.execute(_t("""
+            DELETE FROM chat_messages
+            WHERE session_id IN (SELECT id FROM chat_sessions WHERE user_id = :uid)
+        """), {"uid": uid})
+
+        db.execute(_t("DELETE FROM chat_sessions WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM notifications WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM tournament_participants WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM user_restrictions WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM user_activity_locks WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM withdraw_upi_accounts WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM email_otp_logs WHERE user_id = :uid"), {"uid": uid})
+
+        # PHASE 3 — Delete the user itself
+        profile_pic_url = user.profile_pic
+        db.execute(_t("DELETE FROM users WHERE id = :uid"), {"uid": uid})
+        db.commit()
+
+        # PHASE 4 — Cleanup profile picture from disk
+        if profile_pic_url and "/static/profile_pics/" in profile_pic_url:
+            try:
+                import os
+                filename = profile_pic_url.rsplit("/", 1)[-1]
+                path = os.path.join("static/profile_pics", filename)
+                if os.path.isfile(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.warning(f"Failed to delete profile pic file for user {user_id}: {e}")
+
+        logger.warning(f"Sub-Admin fully deleted by Super Admin {current_user.username}: id={user_id}, username={deleted_username}")
+
+        return {"message": "Sub-admin account fully deleted successfully"}
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error fully deleting sub-admin: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete sub-admin from database")
