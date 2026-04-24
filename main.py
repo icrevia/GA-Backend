@@ -414,15 +414,20 @@ def root(request: Request):
         <head>
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>GamerzAdda API Gateway</title>
+            <title>GamerzAdda | Secure API Gateway</title>
             <style>
-                @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+                @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&family=Syncopate:wght@400;700&display=swap');
                 
                 :root {
-                    --bg: #030712;
-                    --accent: #3B82F6;
-                    --card-bg: rgba(17, 24, 39, 0.7);
+                    --bg: #050505;
+                    --panel: rgba(10, 10, 10, 0.85);
+                    --accent: #EF4444;
+                    --accent-glow: rgba(239, 68, 68, 0.4);
+                    --border: rgba(255, 255, 255, 0.08);
+                    --text: #F3F4F6;
                 }
+
+                * { box-sizing: border-box; }
 
                 body {
                     margin: 0;
@@ -431,136 +436,260 @@ def root(request: Request):
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-family: 'Plus Jakarta Sans', sans-serif;
-                    background: radial-gradient(circle at center, #1E293B 0%, #030712 100%);
-                    color: #F3F4F6;
-                    overflow: hidden;
+                    font-family: 'Space Grotesk', sans-serif;
+                    background: var(--bg);
+                    color: var(--text);
+                    overflow-x: hidden;
                 }
 
-                .container {
-                    width: 100%;
-                    max-width: 680px;
-                    padding: 40px;
-                    background: var(--card-bg);
-                    backdrop-filter: blur(20px);
-                    border-radius: 32px;
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-                    text-align: left;
+                /* Animated Grid Background */
+                body::before {
+                    content: "";
+                    position: fixed;
+                    inset: 0;
+                    background-image: 
+                        linear-gradient(rgba(239, 68, 68, 0.03) 1px, transparent 1px),
+                        linear-gradient(90deg, rgba(239, 68, 68, 0.03) 1px, transparent 1px);
+                    background-size: 50px 50px;
+                    z-index: -1;
+                    animation: gridMove 20s linear infinite;
                 }
 
-                .header-tag {
-                    display: inline-block;
-                    padding: 6px 12px;
-                    background: rgba(59, 130, 246, 0.1);
-                    border: 1px solid rgba(59, 130, 246, 0.2);
-                    border-radius: 10px;
-                    font-size: 10px;
-                    font-weight: 800;
-                    letter-spacing: 1px;
-                    color: var(--accent);
+                @keyframes gridMove {
+                    from { transform: translateY(0); }
+                    to { transform: translateY(50px); }
+                }
+
+                body::after {
+                    content: "";
+                    position: fixed;
+                    inset: 0;
+                    background: radial-gradient(circle at center, transparent 0%, var(--bg) 90%);
+                    z-index: -1;
+                }
+
+                .gateway-card {
+                    width: min(800px, 95vw);
+                    background: var(--panel);
+                    backdrop-filter: blur(40px);
+                    border: 1px solid var(--border);
+                    border-radius: 40px;
+                    padding: 4rem 3rem;
+                    position: relative;
+                    box-shadow: 0 40px 100px rgba(0,0,0,0.8);
+                    animation: cardIn 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+                }
+
+                @keyframes cardIn {
+                    from { opacity: 0; transform: translateY(40px) scale(0.95); }
+                    to { opacity: 1; transform: translateY(0) scale(1); }
+                }
+
+                .glow-orb {
+                    position: absolute;
+                    top: -50px;
+                    right: -50px;
+                    width: 200px;
+                    height: 200px;
+                    background: var(--accent);
+                    filter: blur(120px);
+                    opacity: 0.15;
+                    z-index: -1;
+                }
+
+                .status-badge {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 10px;
+                    padding: 8px 16px;
+                    background: rgba(0,0,0,0.4);
+                    border: 1px solid var(--border);
+                    border-radius: 999px;
+                    font-size: 11px;
+                    font-weight: 700;
+                    letter-spacing: 2px;
                     text-transform: uppercase;
-                    margin-bottom: 20px;
+                    margin-bottom: 2rem;
+                }
+
+                .pulse {
+                    width: 8px;
+                    height: 8px;
+                    background: #10B981;
+                    border-radius: 50%;
+                    box-shadow: 0 0 15px #10B981;
+                    animation: pulseGlow 2s infinite;
+                }
+
+                @keyframes pulseGlow {
+                    0% { transform: scale(1); opacity: 1; }
+                    50% { transform: scale(1.5); opacity: 0.5; }
+                    100% { transform: scale(1); opacity: 1; }
                 }
 
                 h1 {
-                    font-size: 42px;
-                    font-weight: 800;
-                    margin: 0 0 12px 0;
-                    letter-spacing: -1px;
-                    color: #FFF;
+                    font-family: 'Syncopate', sans-serif;
+                    font-size: clamp(2rem, 5vw, 3.5rem);
+                    font-weight: 700;
+                    margin: 0;
+                    line-height: 1;
+                    letter-spacing: -2px;
+                    background: linear-gradient(to bottom, #FFF 0%, #AAA 100%);
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
                 }
 
-                p.subtitle {
-                    font-size: 14px;
+                .subtitle {
+                    margin-top: 1.5rem;
+                    font-size: 1.1rem;
                     color: #9CA3AF;
-                    margin: 0 0 40px 0;
+                    max-width: 500px;
                     line-height: 1.6;
-                    font-weight: 500;
+                    font-weight: 300;
                 }
 
-                .stats-grid {
+                .stats-container {
                     display: grid;
-                    grid-template-columns: 1fr 1fr 1.5fr;
-                    gap: 16px;
-                    margin-bottom: 32px;
+                    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                    gap: 1.5rem;
+                    margin-top: 4rem;
                 }
 
-                .stat-box {
-                    padding: 16px 20px;
-                    background: rgba(255, 255, 255, 0.03);
-                    border: 1px solid rgba(255, 255, 255, 0.08);
-                    border-radius: 16px;
+                .stat-card {
+                    padding: 1.5rem;
+                    background: rgba(255,255,255,0.02);
+                    border: 1px solid var(--border);
+                    border-radius: 24px;
+                    transition: all 0.3s ease;
+                }
+
+                .stat-card:hover {
+                    background: rgba(239, 68, 68, 0.05);
+                    border-color: rgba(239, 68, 68, 0.2);
+                    transform: translateY(-5px);
                 }
 
                 .stat-label {
-                    font-size: 9px;
-                    font-weight: 800;
+                    font-size: 10px;
+                    font-weight: 500;
                     color: #6B7280;
                     text-transform: uppercase;
-                    letter-spacing: 0.5px;
-                    margin-bottom: 4px;
+                    letter-spacing: 1.5px;
+                    margin-bottom: 0.5rem;
                 }
 
                 .stat-value {
-                    font-size: 15px;
+                    font-size: 1.2rem;
                     font-weight: 700;
-                    color: #F3F4F6;
+                    color: #FFF;
                 }
 
-                .warning-banner {
-                    padding: 14px 20px;
-                    background: rgba(239, 68, 68, 0.05);
-                    border-left: 3px solid #EF4444;
-                    border-radius: 12px;
+                .monitor-line {
+                    margin-top: 4rem;
+                    padding: 2rem;
+                    background: rgba(239, 68, 68, 0.03);
+                    border: 1px solid rgba(239, 68, 68, 0.1);
+                    border-radius: 24px;
                     display: flex;
                     align-items: center;
-                    gap: 12px;
+                    gap: 1.5rem;
+                }
+
+                .heart-rate {
+                    flex: 1;
+                    height: 40px;
+                    background: repeating-linear-gradient(90deg, transparent, transparent 40px, rgba(239, 68, 68, 0.05) 41px);
+                    position: relative;
+                    overflow: hidden;
+                }
+
+                .heart-rate::after {
+                    content: "";
+                    position: absolute;
+                    top: 50%;
+                    left: 0;
+                    width: 100%;
+                    height: 2px;
+                    background: var(--accent);
+                    box-shadow: 0 0 15px var(--accent);
+                    animation: scan 3s infinite linear;
+                }
+
+                @keyframes scan {
+                    0% { transform: translateX(-100%); }
+                    100% { transform: translateX(100%); }
                 }
 
                 .warning-text {
-                    font-size: 12px;
-                    color: #F87171;
-                    font-weight: 600;
-                    line-height: 1.4;
+                    font-size: 0.85rem;
+                    color: var(--accent);
+                    font-weight: 500;
+                    letter-spacing: 0.5px;
                 }
 
-                .dot {
-                    width: 6px;
-                    height: 6px;
-                    background: #10B981;
-                    border-radius: 50%;
-                    display: inline-block;
-                    margin-right: 8px;
-                    box-shadow: 0 0 10px #10B981;
+                .footer {
+                    margin-top: 3rem;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    font-size: 0.75rem;
+                    color: #4B5563;
+                    border-top: 1px solid var(--border);
+                    padding-top: 2rem;
+                }
+
+                @media (max-width: 640px) {
+                    .gateway-card { padding: 3rem 1.5rem; border-radius: 24px; border: 1px solid var(--border); height: auto; display: block; }
+                    .stats-container { grid-template-columns: 1fr 1fr; }
+                    .monitor-line { flex-direction: column; text-align: center; }
                 }
             </style>
         </head>
         <body>
-            <div class="container">
-                <div class="header-tag">API NODES</div>
-                <h1>This is not the game lobby.</h1>
-                <p class="subtitle">You've reached the GamerzAdda API gateway. Don't even think about compromising our system.</p>
+            <div class="gateway-card">
+                <div class="glow-orb"></div>
                 
-                <div class="stats-grid">
-                    <div class="stat-box">
-                        <div class="stat-label">Status</div>
-                        <div class="stat-value"><span class="dot"></span>Online</div>
+                <div class="status-badge">
+                    <div class="pulse"></div>
+                    System Operational
+                </div>
+
+                <h1>NOT A GAME<br/>LOBBY.</h1>
+                
+                <p class="subtitle">
+                    Advanced API Gateway for GamerzAdda Infrastructure. 
+                    Monitoring 10,000+ daily competitive requests with zero-latency protocols.
+                </p>
+
+                <div class="stats-container">
+                    <div class="stat-card">
+                        <div class="stat-label">Security</div>
+                        <div class="stat-value">Lvl 4</div>
                     </div>
-                    <div class="stat-box">
-                        <div class="stat-label">Version</div>
-                        <div class="stat-value">1.0</div>
+                    <div class="stat-card">
+                        <div class="stat-label">Response</div>
+                        <div class="stat-value">24ms</div>
                     </div>
-                    <div class="stat-box">
-                        <div class="stat-label">API Base</div>
-                        <div class="stat-value">www.zxtni.in</div>
+                    <div class="stat-card">
+                        <div class="stat-label">Active Nodes</div>
+                        <div class="stat-value">8/8</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Base URI</div>
+                        <div class="stat-value" style="font-size: 0.9rem;">zxtni.in</div>
                     </div>
                 </div>
 
-                <div class="warning-banner">
+                <div class="monitor-line">
+                    <div class="heart-rate"></div>
                     <div class="warning-text">
-                        Tip: Untni Chinte baachat kuch galat karne se pehle soch lena, ye system Zxtni Studio ka hai 😊
+                        Zxtni Studio System • Attempting breach will result in immediate IP blacklisting.
                     </div>
+                </div>
+
+                <div class="footer">
+                    <span>© 2026 GAMERZADDA INFRA</span>
+                    <span>ENCRYPTED END-TO-END</span>
                 </div>
             </div>
         </body>
