@@ -861,54 +861,79 @@ def conclude_tournament(
 
     winners_set = set()
 
-    for entry in data.kill_rewards:
-        user_id = entry.user_id
-        kills = entry.kills
+    # ─── PROCESS MANUAL PRIZES (NEW) ──────────────────────────────────
+    if data.manual_prizes:
+        for entry in data.manual_prizes:
+            user_id = entry.user_id
+            amount = to_money(entry.amount)
+            if amount <= 0: continue
 
-        if kills <= 0:
-            continue
-            
-        participant = db.query(TournamentParticipant).filter(
-            TournamentParticipant.tournament_id == tournament_id,
-            TournamentParticipant.user_id == user_id
-        ).first()
-        if not participant:
-            continue
+            member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
+            if not member_user: continue
 
-        member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
-        if not member_user:
-            continue
-
-        member_prize = per_kill_prize * kills
-        if member_prize > 0:
-            credit_wallet(member_user, member_prize, WALLET_BUCKET_WINNING)
-
+            credit_wallet(member_user, amount, WALLET_BUCKET_WINNING)
             tx = WalletTransaction(
                 user_id=member_user.id,
-                amount=member_prize,
+                amount=amount,
                 transaction_type="PRIZE_WIN",
                 status="SUCCESS",
-                reference_id=f"PRZ-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
+                reference_id=f"MNL-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
                 payment_mode=payout_payment_mode,
             )
             db.add(tx)
-            db.add(member_user)
-            total_paid += member_prize
+            total_paid += amount
             winners_set.add(user_id)
-
-            if kills > top_kills:
-                top_kills = kills
-                best_player_id = user_id
-
+            
             try:
                 add_user_notification(
                     db, member_user.id,
-                    "KILLS REWARD! 🔫",
-                    f"You got {kills} kills in '{tournament.title}'! ₹{member_prize:.2f} credited to your wallet.",
+                    "TOURNAMENT WINNINGS! 🏆",
+                    f"Congratulations! You've been awarded ₹{amount:.2f} for '{tournament.title}'. Check your wallet!",
                     "APP"
                 )
-            except Exception:
-                pass
+            except Exception: pass
+    else:
+        # FALLBACK: ORIGINAL KILL-BASED LOGIC
+        for entry in data.kill_rewards:
+            user_id = entry.user_id
+            kills = entry.kills
+            if kills <= 0: continue
+                
+            participant = db.query(TournamentParticipant).filter(
+                TournamentParticipant.tournament_id == tournament_id,
+                TournamentParticipant.user_id == user_id
+            ).first()
+            if not participant: continue
+
+            member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
+            if not member_user: continue
+
+            member_prize = per_kill_prize * kills
+            if member_prize > 0:
+                credit_wallet(member_user, member_prize, WALLET_BUCKET_WINNING)
+                tx = WalletTransaction(
+                    user_id=member_user.id,
+                    amount=member_prize,
+                    transaction_type="PRIZE_WIN",
+                    status="SUCCESS",
+                    reference_id=f"PRZ-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
+                    payment_mode=payout_payment_mode,
+                )
+                db.add(tx)
+                total_paid += member_prize
+                winners_set.add(user_id)
+                if kills > top_kills:
+                    top_kills = kills
+                    best_player_id = user_id
+
+                try:
+                    add_user_notification(
+                        db, member_user.id,
+                        "KILLS REWARD! 🔫",
+                        f"You got {kills} kills in '{tournament.title}'! ₹{member_prize:.2f} credited to your wallet.",
+                        "APP"
+                    )
+                except Exception: pass
 
     # SAFETY CHECK: Ensure total kill rewards don't exceed the intended prize pool.
     # If this is a 'Per Kill' tournament, the prize_pool acts as a hard limit on payouts.
@@ -920,7 +945,9 @@ def conclude_tournament(
             detail=f"Payout Error: Total rewards (₹{total_paid:.2f}) exceed the Prize Pool (₹{prize_pool:.2f}). Please verify kill counts."
         )
 
-    if best_player_id:
+    if data.winner_id:
+        tournament.winner_id = int(data.winner_id)
+    elif best_player_id:
         tournament.winner_id = best_player_id
         
     tournament.status = "COMPLETED"

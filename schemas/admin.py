@@ -93,12 +93,17 @@ class TournamentRoomUpdate(BaseModel):
     room_password: Optional[str] = None
 
 class KillRewardEntry(BaseModel):
-    """Per-member kill data for prize distribution."""
     user_id: int
-    kills: int = Field(0, ge=0)
+    kills: int
+
+class ManualRewardEntry(BaseModel):
+    user_id: int
+    amount: float
 
 class TournamentConclude(BaseModel):
+    winner_id: Optional[str] = None
     kill_rewards: list[KillRewardEntry] = []
+    manual_prizes: list[ManualRewardEntry] = []
 
 class TournamentCreateAdmin(BaseModel):
     title: str
