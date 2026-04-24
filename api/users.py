@@ -493,7 +493,7 @@ def get_leaderboard(
             ).label("wins"),
         )
         .join(Tournament, Tournament.id == TournamentParticipant.tournament_id)
-        .filter(TournamentParticipant.tournament_id.in_(tournament_ids_subq))
+        .filter(TournamentParticipant.tournament_id.in_(select(tournament_ids_subq.c.id)))
         .group_by(TournamentParticipant.user_id)
         .subquery()
     )
