@@ -103,6 +103,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_payment_id VARCHAR(255)",
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_signature VARCHAR(512)",
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS remark TEXT",
+                "ALTER TABLE home_banners ADD COLUMN IF NOT EXISTS page_key VARCHAR(50) DEFAULT 'HOME'",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS requires_admin BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_by_admin_id INTEGER",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_at TIMESTAMP",

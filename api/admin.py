@@ -1693,6 +1693,7 @@ def _serialize_banner(banner: HomeBanner) -> dict:
         "image_url": banner.image_url,
         "redirect_url": banner.redirect_url,
         "notes": banner.notes,
+        "page_key": banner.page_key,
         "sort_order": int(banner.sort_order or 0),
         "status": _banner_status(banner),
         "is_active": bool(banner.is_active),
@@ -1732,6 +1733,7 @@ def create_banner(
         title=title,
         image_url=image_url,
         redirect_url=redirect_url,
+        page_key=payload.page_key or "HOME",
         notes=notes,
         sort_order=int(payload.sort_order or 0),
         is_active=_coerce_banner_active(payload.status),
@@ -1778,6 +1780,9 @@ def update_banner(
 
     if payload.status is not None:
         banner.is_active = _coerce_banner_active(payload.status)
+
+    if payload.page_key is not None:
+        banner.page_key = payload.page_key
 
     next_starts_at = banner.starts_at
     next_ends_at = banner.ends_at

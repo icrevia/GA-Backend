@@ -575,17 +575,18 @@ def get_leaderboard(
 
 @router.get("/banners")
 def get_home_banners(
+    page_key: str = Query("HOME"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return currently active, in-schedule home banners ordered by sort_order.
-    Used by the Android app to populate the home screen banner carousel.
+    """Return currently active, in-schedule banners for a specific page ordered by sort_order.
+    Used by the Android app to populate banner carousels on different screens.
     """
     now = datetime.utcnow()
 
     rows = (
         db.query(HomeBanner)
-        .filter(HomeBanner.is_active == True)
+        .filter(HomeBanner.is_active == True, HomeBanner.page_key == page_key)
         .order_by(HomeBanner.sort_order.asc(), HomeBanner.created_at.desc())
         .all()
     )

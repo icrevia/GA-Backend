@@ -11,6 +11,7 @@ class HomeBanner(Base):
     title = Column(String(120), nullable=False)
     image_url = Column(String(500), nullable=False)
     redirect_url = Column(String(500), nullable=True)
+    page_key = Column(String(50), default="HOME", nullable=False, index=True) # HOME, FREE_FIRE, CLASH_SQUAD, etc.
     notes = Column(String(300), nullable=True)
 
     is_active = Column(Boolean, default=True, nullable=False)

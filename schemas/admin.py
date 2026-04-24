@@ -208,6 +208,7 @@ class BannerCreateRequest(BaseModel):
     redirect_url: Optional[str] = Field(default=None, max_length=500)
     sort_order: int = Field(default=0, ge=0, le=10_000)
     status: str = Field(default="ACTIVE")
+    page_key: str = Field(default="HOME")
     notes: Optional[str] = Field(default=None, max_length=300)
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
@@ -219,6 +220,7 @@ class BannerUpdateRequest(BaseModel):
     redirect_url: Optional[str] = Field(default=None, max_length=500)
     sort_order: Optional[int] = Field(default=None, ge=0, le=10_000)
     status: Optional[str] = None
+    page_key: Optional[str] = None
     notes: Optional[str] = Field(default=None, max_length=300)
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
