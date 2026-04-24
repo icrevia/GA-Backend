@@ -74,6 +74,7 @@ class WalletTransactionResponse(BaseModel):
     status: str
     reference_id: Optional[str] = None
     failure_reason: Optional[str] = None
+    remark: Optional[str] = None
     created_at: datetime
 
     class Config:
