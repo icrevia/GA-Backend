@@ -298,3 +298,22 @@ class ReferralRewardConfigResponse(BaseModel):
     rules: list[ReferralRewardRule]
 
 
+
+class HomePopupCreateRequest(BaseModel):
+    title: str = Field(..., min_length=2, max_length=120)
+    message: Optional[str] = Field(default=None, max_length=512)
+    image_url: Optional[str] = Field(default=None, max_length=500)
+    button_text: Optional[str] = Field(default=None, max_length=50)
+    redirect_url: Optional[str] = Field(default=None, max_length=500)
+    is_active: bool = True
+    show_frequency: str = "ONCE_PER_DAY"
+    starts_at: Optional[datetime] = None
+    ends_at: Optional[datetime] = None
+
+class HomePopupResponse(HomePopupCreateRequest):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

@@ -33,7 +33,7 @@ from models.user_activity_lock import UserActivityLock
 from models.restriction import UserRestriction
 from models.tournament import Tournament
 from models.wallet import WalletTransaction
-from models.config import SystemConfig
+from models.config import SystemConfig, HomePopup
 from models.notification import Notification
 from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
@@ -124,6 +124,8 @@ from schemas.admin import (
     BannerCreateRequest,
     BannerUpdateRequest,
     KillRewardEntry,
+    HomePopupCreateRequest,
+    HomePopupResponse,
 )
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
 from services.admin_sessions import get_admin_device_id
@@ -3450,6 +3452,63 @@ def get_admin_referral_reward_config(
     current_user: User = Depends(get_current_active_admin),
 ):
     return get_referral_reward_config(db)
+
+# ── Home Popup Management ───────────────────────────────────
+
+@router.get("/home-popups", response_model=List[HomePopupResponse])
+def list_home_popups(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    return db.query(HomePopup).order_by(HomePopup.id.desc()).all()
+
+@router.post("/home-popups", response_model=HomePopupResponse)
+def create_home_popup(
+    data: HomePopupCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = HomePopup(**data.model_dump())
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"Home popup created: title={db_obj.title} by admin={current_user.username}")
+    return db_obj
+
+@router.put("/home-popups/{popup_id}", response_model=HomePopupResponse)
+def update_home_popup(
+    popup_id: int,
+    data: HomePopupCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = db.query(HomePopup).filter(HomePopup.id == popup_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Popup not found")
+    
+    for field, value in data.model_dump().items():
+        setattr(db_obj, field, value)
+    
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"Home popup updated: id={popup_id} by admin={current_user.username}")
+    return db_obj
+
+@router.delete("/home-popups/{popup_id}")
+def delete_home_popup(
+    popup_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = db.query(HomePopup).filter(HomePopup.id == popup_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Popup not found")
+    
+    db.delete(db_obj)
+    db.commit()
+    logger.info(f"Home popup deleted: id={popup_id} by admin={current_user.username}")
+    return {"message": "Popup deleted successfully"}
 
 
 @router.put("/referral-reward/config", response_model=ReferralRewardConfigResponse)

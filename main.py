@@ -24,7 +24,7 @@ logger = logging.getLogger("GamerzAdda")
 
 from api.router import api_router
 from core.database import engine, Base
-from models import user, tournament, wallet, support, withdraw_upi_account, promo, banner, restriction, otp_phone_lock, user_activity_lock, admin_access_session
+from models import user, tournament, wallet, support, withdraw_upi_account, promo, banner, restriction, otp_phone_lock, user_activity_lock, admin_access_session, config
 
 SYSTEM_STATUS_CACHE_TTL_SECONDS = 15.0
 _system_status_cache: dict[str, object] = {
@@ -147,6 +147,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS prize_distribution JSONB",
                 # Map name
                 "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS map_name VARCHAR(100)",
+                
+                # Home Popup table creation (if manual migration needed, but metadata.create_all handles it)
+                "CREATE TABLE IF NOT EXISTS home_popups (id SERIAL PRIMARY KEY, title VARCHAR(120) NOT NULL, message VARCHAR(512), image_url VARCHAR(500), button_text VARCHAR(50), redirect_url VARCHAR(500), is_active BOOLEAN DEFAULT TRUE, show_frequency VARCHAR(32) DEFAULT 'ONCE_PER_DAY', starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ)",
             ]
             for query in queries:
                 await conn.execute(text(query))
@@ -714,14 +717,41 @@ async def get_system_status(request: Request):
         return cached_payload
 
     from core.database import SessionLocal
-    from models.config import SystemConfig
-    from sqlalchemy import select
+    from models.config import SystemConfig, HomePopup
+    from sqlalchemy import select, and_, or_
+    from datetime import datetime, timezone
     async with SessionLocal() as db:
         try:
             result = await db.execute(select(SystemConfig))
             configs = result.scalars().all()
             config_map = {c.config_key: c.config_value for c in configs}
             payload = _status_payload_from_config(config_map)
+
+            # Add Home Popup Config
+            now_dt = datetime.now(timezone.utc)
+            popup_result = await db.execute(
+                select(HomePopup).where(
+                    and_(
+                        HomePopup.is_active == True,
+                        or_(HomePopup.starts_at == None, HomePopup.starts_at <= now_dt),
+                        or_(HomePopup.ends_at == None, HomePopup.ends_at >= now_dt)
+                    )
+                ).order_by(HomePopup.id.desc()).limit(1)
+            )
+            active_popup = popup_result.scalar_one_or_none()
+            if active_popup:
+                payload["home_popup"] = {
+                    "id": active_popup.id,
+                    "title": active_popup.title,
+                    "message": active_popup.message,
+                    "image_url": active_popup.image_url,
+                    "button_text": active_popup.button_text,
+                    "redirect_url": active_popup.redirect_url,
+                    "show_frequency": active_popup.show_frequency
+                }
+            else:
+                payload["home_popup"] = None
+
             _system_status_cache["value"] = payload
             _system_status_cache["expires_at"] = now + SYSTEM_STATUS_CACHE_TTL_SECONDS
             return payload
