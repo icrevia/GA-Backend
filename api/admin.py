@@ -878,12 +878,12 @@ def conclude_tournament(
                 participant.participant_rank = entry.rank
                 db.add(participant)
 
-            if amount <= 0: continue
-
             member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
             if not member_user: continue
 
-            credit_wallet(member_user, amount, WALLET_BUCKET_WINNING)
+            if amount > 0:
+                credit_wallet(member_user, amount, WALLET_BUCKET_WINNING)
+                
             tx = WalletTransaction(
                 user_id=member_user.id,
                 amount=amount,
@@ -891,25 +891,26 @@ def conclude_tournament(
                 status="SUCCESS",
                 reference_id=f"MNL-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
                 payment_mode=payout_payment_mode,
+                remark=tournament.title
             )
             db.add(tx)
             total_paid += amount
             winners_set.add(user_id)
             
-            try:
-                add_user_notification(
-                    db, member_user.id,
-                    "TOURNAMENT WINNINGS! 🏆",
-                    f"Congratulations! You've been awarded ₹{amount:.2f} for '{tournament.title}'. Check your wallet!",
-                    "APP"
-                )
-            except Exception: pass
+            if amount > 0:
+                try:
+                    add_user_notification(
+                        db, member_user.id,
+                        "TOURNAMENT WINNINGS! 🏆",
+                        f"Congratulations! You've been awarded ₹{amount:.2f} for '{tournament.title}'. Check your wallet!",
+                        "APP"
+                    )
+                except Exception: pass
     else:
         # FALLBACK: ORIGINAL KILL-BASED LOGIC
         for entry in data.kill_rewards:
             user_id = entry.user_id
-            kills = entry.kills
-            if kills <= 0: continue
+            kills = entry.kills or 0
                 
             participant = db.query(TournamentParticipant).filter(
                 TournamentParticipant.tournament_id == tournament_id,
@@ -927,21 +928,24 @@ def conclude_tournament(
             member_prize = per_kill_prize * kills
             if member_prize > 0:
                 credit_wallet(member_user, member_prize, WALLET_BUCKET_WINNING)
-                tx = WalletTransaction(
-                    user_id=member_user.id,
-                    amount=member_prize,
-                    transaction_type="PRIZE_WIN",
-                    status="SUCCESS",
-                    reference_id=f"PRZ-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
-                    payment_mode=payout_payment_mode,
-                )
-                db.add(tx)
-                total_paid += member_prize
-                winners_set.add(user_id)
-                if kills > top_kills:
-                    top_kills = kills
-                    best_player_id = user_id
+                
+            tx = WalletTransaction(
+                user_id=member_user.id,
+                amount=member_prize,
+                transaction_type="PRIZE_WIN",
+                status="SUCCESS",
+                reference_id=f"PRZ-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
+                payment_mode=payout_payment_mode,
+                remark=tournament.title
+            )
+            db.add(tx)
+            total_paid += member_prize
+            winners_set.add(user_id)
+            if kills > top_kills:
+                top_kills = kills
+                best_player_id = user_id
 
+            if member_prize > 0:
                 try:
                     add_user_notification(
                         db, member_user.id,

@@ -785,6 +785,7 @@ def join_tournament(
             status="SUCCESS",
             reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
             failure_reason=_build_join_failure_reason(tournament_id, deductions),
+            remark=tournament.title
         )
         db.add(transaction)
 
@@ -950,6 +951,7 @@ def join_tournament(
             status="SUCCESS",
             reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
             failure_reason=_build_join_failure_reason(tournament_id, deductions),
+            remark=tournament.title
         )
         db.add(transaction)
 
@@ -1126,6 +1128,7 @@ def join_tournament(
         status="SUCCESS",
         reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
         failure_reason=_build_join_failure_reason(tournament_id, deductions),
+        remark=tournament.title
     )
     db.add(transaction)
 
@@ -1304,6 +1307,7 @@ def cancel_tournament_participation(
                         f"{cancel_dedup_key};BUCKET:{bucket};"
                         f"REFUND_PERCENT:70"
                     ),
+                    remark=f"Refund: {tournament.title}"
                 )
             )
 

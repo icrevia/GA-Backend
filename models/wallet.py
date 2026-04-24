@@ -29,6 +29,7 @@ class WalletTransaction(Base):
     gateway_order_id   = Column(String, nullable=True, index=True)
     gateway_payment_id = Column(String, nullable=True, index=True)
     gateway_signature  = Column(String, nullable=True)
+    remark             = Column(String, nullable=True) # Custom display name (e.g. Tournament Title)
 
     created_at       = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at       = Column(DateTime(timezone=True), onupdate=func.now())
