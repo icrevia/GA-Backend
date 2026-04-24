@@ -728,12 +728,16 @@ async def get_system_status(request: Request):
             payload = _status_payload_from_config(config_map)
 
             # Add Home Popup Config
+            # We add a buffer to starts_at to handle timezone differences (e.g. IST vs UTC)
+            from datetime import timedelta
             now_dt = datetime.now(timezone.utc)
+            check_dt = now_dt + timedelta(hours=6) 
+            
             popup_result = await db.execute(
                 select(HomePopup).where(
                     and_(
                         HomePopup.is_active == True,
-                        or_(HomePopup.starts_at == None, HomePopup.starts_at <= now_dt),
+                        or_(HomePopup.starts_at == None, HomePopup.starts_at <= check_dt),
                         or_(HomePopup.ends_at == None, HomePopup.ends_at >= now_dt)
                     )
                 ).order_by(HomePopup.id.desc()).limit(1)
