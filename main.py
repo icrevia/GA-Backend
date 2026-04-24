@@ -147,6 +147,8 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS prize_distribution JSONB",
                 # Map name
                 "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS map_name VARCHAR(100)",
+                # Home Popups
+                "ALTER TABLE home_popups ADD COLUMN IF NOT EXISTS popup_type VARCHAR(32) DEFAULT 'STANDARD' NOT NULL",
                 
                 # Home Popup table creation (if manual migration needed, but metadata.create_all handles it)
                 "CREATE TABLE IF NOT EXISTS home_popups (id SERIAL PRIMARY KEY, title VARCHAR(120) NOT NULL, message VARCHAR(512), image_url VARCHAR(500), button_text VARCHAR(50), redirect_url VARCHAR(500), is_active BOOLEAN DEFAULT TRUE, show_frequency VARCHAR(32) DEFAULT 'ONCE_PER_DAY', starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ)",
