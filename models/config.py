@@ -26,6 +26,9 @@ class HomePopup(Base):
     # Frequency: ALWAYS, ONCE_PER_DAY, ONCE_PER_SESSION, ONCE_FOREVER
     show_frequency = Column(String(32), default="ONCE_PER_DAY", nullable=False)
     
+    # Type: STANDARD, IMAGE_ONLY
+    popup_type = Column(String(32), default="STANDARD", nullable=False)
+    
     starts_at = Column(DateTime(timezone=True), nullable=True)
     ends_at = Column(DateTime(timezone=True), nullable=True)
 

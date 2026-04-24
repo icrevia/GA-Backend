@@ -307,6 +307,7 @@ class HomePopupCreateRequest(BaseModel):
     redirect_url: Optional[str] = Field(default=None, max_length=500)
     is_active: bool = True
     show_frequency: str = "ONCE_PER_DAY"
+    popup_type: str = "STANDARD"
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
 

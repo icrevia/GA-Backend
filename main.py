@@ -751,7 +751,8 @@ async def get_system_status(request: Request):
                     "image_url": active_popup.image_url,
                     "button_text": active_popup.button_text,
                     "redirect_url": active_popup.redirect_url,
-                    "show_frequency": active_popup.show_frequency
+                    "show_frequency": active_popup.show_frequency,
+                    "popup_type": active_popup.popup_type
                 }
             else:
                 payload["home_popup"] = None
