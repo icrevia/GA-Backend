@@ -4181,3 +4181,107 @@ def run_bonus_expiry(
         "reminders": result["reminders"],
     }
 
+
+# ------------------------------------------------------------------------------
+# Sub-Admin Management
+# ------------------------------------------------------------------------------
+
+def _ensure_super_admin(current_user: User):
+    """Ensure the user has super-admin rights. For now, empty or '*' permissions, or specific phone number."""
+    # Assuming primary phone number or empty permissions means super admin
+    if current_user.phone_number == settings.ADMIN_LOGIN_PHONE:
+        return
+    if not current_user.admin_permissions or current_user.admin_permissions == "*":
+        return
+    raise HTTPException(status_code=403, detail="Super Admin access required")
+
+
+@router.get("/sub-admins", response_model=List[UserResponse])
+def get_sub_admins(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    _ensure_super_admin(current_user)
+    # Exclude the super admin themselves or users without role='ADMIN'
+    admins = db.query(User).filter(User.role == "ADMIN").all()
+    return admins
+
+
+@router.post("/sub-admins", response_model=UserResponse)
+def create_sub_admin(
+    payload: SubAdminCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    _ensure_super_admin(current_user)
+    
+    # Check if user already exists
+    user = db.query(User).filter(User.phone_number == payload.phone_number).first()
+    
+    if not user:
+        # Create a new user record
+        username = f"admin_{str(uuid.uuid4())[:8]}"
+        email = f"{username}@gmail.com"
+        user = User(
+            username=username,
+            email=email,
+            phone_number=payload.phone_number,
+            role="ADMIN",
+            admin_permissions=payload.admin_permissions
+        )
+        db.add(user)
+    else:
+        # Promote existing user
+        user.role = "ADMIN"
+        user.admin_permissions = payload.admin_permissions
+        
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.put("/sub-admins/{user_id}", response_model=UserResponse)
+def update_sub_admin(
+    user_id: int,
+    payload: SubAdminUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    _ensure_super_admin(current_user)
+    
+    user = db.query(User).filter(User.id == user_id, User.role == "ADMIN").first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Sub-admin not found")
+        
+    if user.phone_number == settings.ADMIN_LOGIN_PHONE:
+        raise HTTPException(status_code=403, detail="Cannot modify the Super Admin")
+        
+    user.admin_permissions = payload.admin_permissions
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.delete("/sub-admins/{user_id}")
+def delete_sub_admin(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    _ensure_super_admin(current_user)
+    
+    user = db.query(User).filter(User.id == user_id, User.role == "ADMIN").first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Sub-admin not found")
+        
+    if user.phone_number == settings.ADMIN_LOGIN_PHONE:
+        raise HTTPException(status_code=403, detail="Cannot revoke the Super Admin")
+        
+    # Revoke admin privileges
+    user.role = "USER"
+    user.admin_permissions = None
+    # Invalidate tokens
+    user.token_version = (user.token_version or 0) + 1
+    
+    db.commit()
+    return {"message": "Admin privileges revoked successfully"}

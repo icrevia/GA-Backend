@@ -12,6 +12,7 @@ class User(Base):
     email           = Column(String, unique=True, index=True, nullable=False)
     phone_number    = Column(String, unique=True, index=True, nullable=True)
     role            = Column(String, default="USER")   # USER or ADMIN
+    admin_permissions = Column(String(512), nullable=True) # Comma-separated list of allowed pages (e.g. "TOURNAMENTS,USERS")
 
     profile_pic     = Column(String, nullable=True)
     bio             = Column(String(30), nullable=True)

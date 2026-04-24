@@ -61,6 +61,7 @@ class UserResponse(BaseModel):
     bio: Optional[str] = None
     freefire_id: Optional[str] = None
     is_active: bool = True
+    admin_permissions: Optional[str] = None
     active_restrictions: List[UserRestrictionView] = Field(default_factory=list)
 
     # Path to stored face image (if enrolled)
@@ -104,5 +105,9 @@ class UserRestrictionView(BaseModel):
     ends_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
 
+class SubAdminCreate(BaseModel):
+    phone_number: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
+    admin_permissions: Optional[str] = None
 
-
+class SubAdminUpdate(BaseModel):
+    admin_permissions: Optional[str] = None

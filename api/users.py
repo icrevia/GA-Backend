@@ -138,6 +138,7 @@ def upload_profile_pic(
         "bio": current_user.bio,
         "freefire_id": current_user.freefire_id,
         "is_active": bool(current_user.is_active),
+        "admin_permissions": getattr(current_user, "admin_permissions", None),
         "face_image_path": getattr(current_user, "face_image_path", None),
         "active_restrictions": [serialize_user_restriction(r) for r in active_restrictions],
     }
@@ -271,6 +272,7 @@ def read_user_me(
         "bio": current_user.bio,
         "freefire_id": current_user.freefire_id,
         "is_active": bool(current_user.is_active),
+        "admin_permissions": getattr(current_user, "admin_permissions", None),
         "face_image_path": getattr(current_user, "face_image_path", None),
         "active_restrictions": [serialize_user_restriction(r) for r in active_restrictions],
     }
