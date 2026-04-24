@@ -114,4 +114,7 @@ class SubAdminCreate(BaseModel):
     admin_permissions: Optional[str] = None
 
 class SubAdminUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_ .\-]+$")
+    email: Optional[EmailStr] = None
+    password: Optional[str] = Field(None, min_length=6, max_length=128)
     admin_permissions: Optional[str] = None

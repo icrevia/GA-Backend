@@ -4261,7 +4261,15 @@ def update_sub_admin(
     if user.phone_number == settings.ADMIN_LOGIN_PHONE:
         raise HTTPException(status_code=403, detail="Cannot modify the Super Admin")
         
-    user.admin_permissions = payload.admin_permissions
+    if payload.admin_permissions is not None:
+        user.admin_permissions = payload.admin_permissions
+    if payload.name:
+        user.username = payload.name
+    if payload.email:
+        user.email = payload.email
+    if payload.password:
+        user.password_hash = hash_password(payload.password)
+        
     db.commit()
     db.refresh(user)
     return user
