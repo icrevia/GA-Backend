@@ -140,6 +140,8 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS ix_chat_messages_media_expires_at ON chat_messages (media_expires_at)",
                 # Prize distribution per rank
                 "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS prize_distribution JSONB",
+                # Map name
+                "ALTER TABLE tournaments ADD COLUMN IF NOT EXISTS map_name VARCHAR(100)",
             ]
             for query in queries:
                 await conn.execute(text(query))

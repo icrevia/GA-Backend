@@ -109,6 +109,7 @@ class TournamentCreateAdmin(BaseModel):
     commission_percentage: float = Field(10.0, ge=0.0, le=100.0)
     match_type: str = "SOLO"
     match_time: str
+    map_name: Optional[str] = None
     game_image_url: Optional[str] = None
     max_slots: Optional[int] = 100
     prize_distribution: Optional[list[Any]] = None

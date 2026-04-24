@@ -736,6 +736,7 @@ def create_tournament(
         commission_percentage=data.commission_percentage,
         match_type=data.match_type,
         match_time=dt,
+        map_name=data.map_name,
         game_image_url=data.game_image_url,
         max_slots=data.max_slots or 100,
         prize_distribution=data.prize_distribution,

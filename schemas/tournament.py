@@ -17,6 +17,7 @@ class TournamentBase(BaseModel):
     commission_percentage: Optional[float] = 10.0
     match_time: datetime
     match_type: str = "SOLO"
+    map_name: Optional[str] = None
     game_image_url: Optional[str] = None
     max_slots: Optional[int] = 100
     # List of {rank, prize} dicts — e.g. [{"rank":1,"prize":50},{"rank":2,"prize":30}]
@@ -37,6 +38,7 @@ class TournamentUpdate(BaseModel):
     room_password: Optional[str] = None
     winner_id: Optional[int] = None
     max_slots: Optional[int] = None
+    map_name: Optional[str] = None
     prize_distribution: Optional[List[Any]] = None
 
 class ParticipantResponse(BaseModel):

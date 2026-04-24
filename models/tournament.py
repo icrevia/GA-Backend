@@ -27,6 +27,7 @@ class Tournament(Base):
 
     status     = Column(String,  default="UPCOMING", index=True)  # UPCOMING, LIVE, COMPLETED
     match_type = Column(String,  default="SOLO")       # SOLO, DUO, SQUAD
+    map_name   = Column(String, nullable=True)           # e.g. "Bermuda", "Kalahari"
     game_image_url = Column(String, nullable=True)
     max_slots  = Column(Integer, default=100)
     winner_id  = Column(Integer, nullable=True)
