@@ -114,6 +114,21 @@ class TournamentCreateAdmin(BaseModel):
     max_slots: Optional[int] = 100
     prize_distribution: Optional[list[Any]] = None
 
+class TournamentUpdateAdmin(BaseModel):
+    title: Optional[str] = None
+    game_name: Optional[str] = None
+    entry_fee: Optional[float] = None
+    prize_pool: Optional[float] = None
+    per_kill_prize: Optional[float] = None
+    commission_percentage: Optional[float] = None
+    match_type: Optional[str] = None
+    match_time: Optional[str] = None
+    map_name: Optional[str] = None
+    game_image_url: Optional[str] = None
+    max_slots: Optional[int] = None
+    prize_distribution: Optional[list[Any]] = None
+    status: Optional[str] = None
+
 
 class DeveloperOtpRequestResponse(BaseModel):
     otp_required: bool = True

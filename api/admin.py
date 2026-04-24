@@ -111,6 +111,7 @@ from schemas.admin import (
     TournamentRoomUpdate,
     TournamentConclude,
     TournamentCreateAdmin,
+    TournamentUpdateAdmin,
     DeveloperOtpRequestResponse,
     DeveloperOtpVerifyRequest,
     DeveloperOtpVerifyResponse,
@@ -747,7 +748,39 @@ def create_tournament(
     db.refresh(db_obj)
     return _with_count(db_obj, db)
 
+@router.put("/tournaments/{tournament_id}", response_model=TournamentResponse)
+def update_tournament(
+    tournament_id: int,
+    data: TournamentUpdateAdmin,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    from datetime import datetime
+    from api.tournaments import _with_count
+    
+    db_obj = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Tournament not found")
 
+    # Update simple fields
+    update_data = data.model_dump(exclude_unset=True)
+    
+    if "match_time" in update_data and update_data["match_time"]:
+        try:
+            update_data["match_time"] = datetime.fromisoformat(update_data["match_time"].replace('Z', '+00:00'))
+        except Exception:
+            del update_data["match_time"]
+
+    for field, value in update_data.items():
+        setattr(db_obj, field, value)
+
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return _with_count(db_obj, db)
+
+
+@router.put("/tournaments/{tournament_id}/room", response_model=TournamentResponse)
 @router.post("/tournaments/{tournament_id}/set-room", response_model=TournamentResponse)
 def set_tournament_room(
     tournament_id: int,
