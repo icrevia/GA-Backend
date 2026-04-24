@@ -833,6 +833,37 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
             logger.error("ADMIN OTP SEND ERR LOGIN: %s", e)
             raise HTTPException(status_code=503, detail=f"Failed to send admin OTP: {str(e)}")
 
+    if _is_admin_web_login_request(request) and user.role == "ADMIN" and user.password_hash:
+        if not login_data.password:
+            return {
+                "message": "Please enter your password",
+                "status": "password_required",
+            }
+        if not verify_password(login_data.password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid password")
+            
+        # Login successful! Bypass OTP and generate token directly
+        client_ip = extract_client_ip(request)
+        device_name = _resolve_login_device(request)
+
+        await upsert_admin_access_session_async(db, user, request)
+
+        user.last_login_ip = (client_ip or "")[:64] or None
+        user.last_login_device = device_name
+        user.last_login_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(user)
+
+        token_version = getattr(user, "token_version", 0) or 0
+        user_payload = UserResponse.model_validate(user).model_dump(mode="json")
+        response = {
+            "access_token": create_access_token({"sub": str(user.id), "tv": token_version}),
+            "token_type": "bearer",
+            "role": user.role,
+            "user": user_payload,
+        }
+        return response
+
     try:
         from services import otp as otp_service
         # Async call with await

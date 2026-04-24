@@ -28,6 +28,7 @@ class UserCreate(BaseModel):
 
 class LoginRequest(BaseModel):
     email: str = Field(..., max_length=320)   # RFC 5321 max email length
+    password: Optional[str] = Field(None, max_length=128)
     browser_geo_latitude: Optional[float] = Field(None, ge=-90, le=90)
     browser_geo_longitude: Optional[float] = Field(None, ge=-180, le=180)
     browser_geo_accuracy_m: Optional[float] = Field(None, ge=0)
@@ -106,7 +107,10 @@ class UserRestrictionView(BaseModel):
     created_at: Optional[datetime] = None
 
 class SubAdminCreate(BaseModel):
+    name: str = Field(..., min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_ .\-]+$")
+    email: EmailStr
     phone_number: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
+    password: str = Field(..., min_length=6, max_length=128)
     admin_permissions: Optional[str] = None
 
 class SubAdminUpdate(BaseModel):

@@ -23,6 +23,7 @@ import string
 
 from api.deps import get_db, get_current_active_admin
 from core.config import settings
+from core.security import hash_password
 from models.user import User
 from models.admin_access_session import AdminAccessSession
 from models.banner import HomeBanner
@@ -4221,12 +4222,11 @@ def create_sub_admin(
     
     if not user:
         # Create a new user record
-        username = f"admin_{str(uuid.uuid4())[:8]}"
-        email = f"{username}@gmail.com"
         user = User(
-            username=username,
-            email=email,
+            username=payload.name,
+            email=payload.email,
             phone_number=payload.phone_number,
+            password_hash=hash_password(payload.password),
             role="ADMIN",
             admin_permissions=payload.admin_permissions
         )
@@ -4235,6 +4235,7 @@ def create_sub_admin(
         # Promote existing user
         user.role = "ADMIN"
         user.admin_permissions = payload.admin_permissions
+        user.password_hash = hash_password(payload.password)
         
     db.commit()
     db.refresh(user)

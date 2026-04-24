@@ -13,6 +13,7 @@ class User(Base):
     phone_number    = Column(String, unique=True, index=True, nullable=True)
     role            = Column(String, default="USER")   # USER or ADMIN
     admin_permissions = Column(String(512), nullable=True) # Comma-separated list of allowed pages (e.g. "TOURNAMENTS,USERS")
+    password_hash   = Column(String(256), nullable=True) # Used ONLY for Sub-Admins
 
     profile_pic     = Column(String, nullable=True)
     bio             = Column(String(30), nullable=True)
