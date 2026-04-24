@@ -416,59 +416,153 @@ def root(request: Request):
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <title>GamerzAdda API Gateway</title>
             <style>
+                @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+                
                 :root {
-                    --bg-a: #0D0E12;
-                    --bg-b: #1A1C23;
-                    --panel: rgba(26, 28, 35, 0.8);
-                    --line: rgba(239, 68, 68, 0.3);
-                    --text: #F3F4F6;
-                    --muted: #9CA3AF;
-                    --accent: #EF4444;
+                    --bg: #030712;
+                    --accent: #3B82F6;
+                    --card-bg: rgba(17, 24, 39, 0.7);
                 }
 
                 body {
                     margin: 0;
+                    padding: 0;
                     min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-family: 'Plus Jakarta Sans', sans-serif;
+                    background: radial-gradient(circle at center, #1E293B 0%, #030712 100%);
+                    color: #F3F4F6;
+                    overflow: hidden;
+                }
+
+                .container {
+                    width: 100%;
+                    max-width: 680px;
+                    padding: 40px;
+                    background: var(--card-bg);
+                    backdrop-filter: blur(20px);
+                    border-radius: 32px;
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+                    text-align: left;
+                }
+
+                .header-tag {
+                    display: inline-block;
+                    padding: 6px 12px;
+                    background: rgba(59, 130, 246, 0.1);
+                    border: 1px solid rgba(59, 130, 246, 0.2);
+                    border-radius: 10px;
+                    font-size: 10px;
+                    font-weight: 800;
+                    letter-spacing: 1px;
+                    color: var(--accent);
+                    text-transform: uppercase;
+                    margin-bottom: 20px;
+                }
+
+                h1 {
+                    font-size: 42px;
+                    font-weight: 800;
+                    margin: 0 0 12px 0;
+                    letter-spacing: -1px;
+                    color: #FFF;
+                }
+
+                p.subtitle {
+                    font-size: 14px;
+                    color: #9CA3AF;
+                    margin: 0 0 40px 0;
+                    line-height: 1.6;
+                    font-weight: 500;
+                }
+
+                .stats-grid {
                     display: grid;
-                    place-items: center;
-                    font-family: 'Inter', sans-serif;
-                    color: var(--text);
-                    background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
+                    grid-template-columns: 1fr 1fr 1.5fr;
+                    gap: 16px;
+                    margin-bottom: 32px;
                 }
 
-                .wrap {
-                    width: min(500px, 90vw);
-                    border: 1px solid var(--line);
-                    background: var(--panel);
-                    border-radius: 20px;
-                    padding: 2.5rem;
-                    text-align: center;
-                    backdrop-filter: blur(10px);
-                    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+                .stat-box {
+                    padding: 16px 20px;
+                    background: rgba(255, 255, 255, 0.03);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 16px;
                 }
 
-                h1 { margin: 1rem 0; font-size: 2.2rem; font-weight: 800; letter-spacing: -0.02em; }
-                p { color: var(--muted); line-height: 1.6; }
-                .status { 
-                    display: inline-flex; align-items: center; gap: 8px; 
-                    background: rgba(16, 185, 129, 0.1); color: #10B981;
-                    padding: 6px 12px; border-radius: 999px; font-size: 0.85rem; font-weight: 700;
+                .stat-label {
+                    font-size: 9px;
+                    font-weight: 800;
+                    color: #6B7280;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                    margin-bottom: 4px;
                 }
-                .dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; }
+
+                .stat-value {
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: #F3F4F6;
+                }
+
+                .warning-banner {
+                    padding: 14px 20px;
+                    background: rgba(239, 68, 68, 0.05);
+                    border-left: 3px solid #EF4444;
+                    border-radius: 12px;
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                }
+
+                .warning-text {
+                    font-size: 12px;
+                    color: #F87171;
+                    font-weight: 600;
+                    line-height: 1.4;
+                }
+
+                .dot {
+                    width: 6px;
+                    height: 6px;
+                    background: #10B981;
+                    border-radius: 50%;
+                    display: inline-block;
+                    margin-right: 8px;
+                    box-shadow: 0 0 10px #10B981;
+                }
             </style>
         </head>
         <body>
-            <main class="wrap">
-                <div class="status"><span class="dot"></span> API SYSTEMS ONLINE</div>
-                <h1>GamerzAdda Gateway</h1>
-                <p>
-                    You have reached the official GamerzAdda backend. 
-                    This system is protected and monitored. Unauthorized access is prohibited.
-                </p>
-                <div style="margin-top: 2rem; font-size: 0.8rem; color: var(--muted);">
-                    &copy; 2026 GamerzAdda &bull; Powered by Zxtni Studio
+            <div class="container">
+                <div class="header-tag">API NODES</div>
+                <h1>This is not the game lobby.</h1>
+                <p class="subtitle">You've reached the GamerzAdda API gateway. Don't even think about compromising our system.</p>
+                
+                <div class="stats-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">Status</div>
+                        <div class="stat-value"><span class="dot"></span>Online</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Version</div>
+                        <div class="stat-value">1.0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">API Base</div>
+                        <div class="stat-value">www.zxtni.in</div>
+                    </div>
                 </div>
-            </main>
+
+                <div class="warning-banner">
+                    <div class="warning-text">
+                        Tip: Untni Chinte baachat kuch galat karne se pehle soch lena, ye system Zxtni Studio ka hai 😊
+                    </div>
+                </div>
+            </div>
         </body>
         </html>
     """
