@@ -30,7 +30,7 @@ class LoginRequest(BaseModel):
     email: str = Field(..., max_length=320)   # RFC 5321 max email length
     browser_geo_latitude: Optional[float] = Field(None, ge=-90, le=90)
     browser_geo_longitude: Optional[float] = Field(None, ge=-180, le=180)
-    browser_geo_accuracy_m: Optional[float] = Field(None, ge=0, le=100000)
+    browser_geo_accuracy_m: Optional[float] = Field(None, ge=0)
     browser_geo_captured_at: Optional[str] = Field(None, max_length=64)
     browser_geo_provider: Optional[str] = Field(None, max_length=40)
     browser_geo_permission: Optional[str] = Field(None, max_length=24)
