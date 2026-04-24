@@ -935,10 +935,10 @@ def conclude_tournament(
                     )
                 except Exception: pass
 
-    # SAFETY CHECK: Ensure total kill rewards don't exceed the intended prize pool.
-    # If this is a 'Per Kill' tournament, the prize_pool acts as a hard limit on payouts.
+    # SAFETY CHECK: Ensure total rewards don't exceed the intended prize pool.
+    # We skip this for manual_prizes because the admin is explicitly overriding the pool (e.g. adding rank prizes).
     prize_pool = to_money(getattr(tournament, 'prize_pool', 0.0))
-    if total_paid > prize_pool:
+    if not data.manual_prizes and total_paid > prize_pool:
         # Roll back everything if the payout exceeds the pool (data entry error)
         raise HTTPException(
             status_code=400, 
