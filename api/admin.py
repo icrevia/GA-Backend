@@ -1679,6 +1679,49 @@ async def upload_banner_image(
         logger.error(f"Banner upload failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to process image")
 
+@router.post("/popups/upload")
+async def upload_popup_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Upload a popup image without resizing to 1200x400. Keeps original aspect ratio."""
+    content_type = (file.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only images are allowed.")
+
+    data = await file.read()
+    
+    try:
+        img = Image.open(io.BytesIO(data))
+        
+        # We DON'T resize here. We just convert to RGB and optimize.
+        img = img.convert("RGB")
+        
+        output = io.BytesIO()
+        # Higher quality for popups (90)
+        img.save(output, format="JPEG", quality=90, optimize=True)
+        compressed_data = output.getvalue()
+        
+        filename = f"popup_{uuid.uuid4().hex[:12]}.jpg"
+        
+        from services.storage import upload_file
+        try:
+            public_url = upload_file(compressed_data, filename, sub_dir="banners")
+        except Exception as e:
+            logger.error(f"Failed to upload popup image to storage: {e}")
+            os.makedirs(BANNER_STORAGE_DIR, exist_ok=True)
+            save_path = os.path.join(BANNER_STORAGE_DIR, filename)
+            with open(save_path, "wb") as f:
+                f.write(compressed_data)
+            base_url = (settings.APP_URL or "").rstrip("/")
+            public_url = f"{base_url}/static/banners/{filename}"
+
+        return {"image_url": public_url}
+        
+    except Exception as e:
+        logger.error(f"Popup image upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process image")
+
 @router.post("/tournaments/upload")
 async def upload_tournament_image(
     file: UploadFile = File(...),
