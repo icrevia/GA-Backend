@@ -26,6 +26,7 @@ class TournamentParticipant(Base):
     # Team-based fields (DUO / SQUAD)
     team_name       = Column(String, nullable=True)  # Team name chosen by captain
     team_join_code  = Column(String, nullable=True, index=True)  # 6-char code shared with teammates
+    is_team_captain = Column(Boolean, default=False)
     # Results (populated during conclude_tournament)
     participant_rank = Column(Integer, nullable=True)
     kills        = Column(Integer, default=0)
