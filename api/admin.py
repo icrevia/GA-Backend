@@ -1461,6 +1461,7 @@ def get_tournament_roster(
         )
         return {
             "id":            p.user_id,
+            "user_id":       p.user_id,
             "username":      user_map[p.user_id].username     if p.user_id in user_map else "Unknown",
             "avatar_url":    user_map[p.user_id].profile_pic  if p.user_id in user_map else None,
             "game_username": primary["name"] if primary else p.game_username,
@@ -1472,6 +1473,13 @@ def get_tournament_roster(
             "bgmi_id":       None,
             "freefire_id":   user_map[p.user_id].freefire_id  if p.user_id in user_map else None,
             "valorant_id":   None,
+            "user": {
+                "id":            p.user_id,
+                "game_username": primary["name"] if primary else p.game_username,
+                "full_name":     user_map[p.user_id].full_name if p.user_id in user_map else "Unknown",
+                "phone":         user_map[p.user_id].phone if p.user_id in user_map else "",
+                "username":      user_map[p.user_id].username if p.user_id in user_map else "Unknown"
+            }
         }
 
     return [_serialize_participant(p) for p in participants]
