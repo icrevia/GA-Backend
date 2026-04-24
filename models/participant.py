@@ -27,7 +27,7 @@ class TournamentParticipant(Base):
     team_name       = Column(String, nullable=True)  # Team name chosen by captain
     team_join_code  = Column(String, nullable=True, index=True)  # 6-char code shared with teammates
     # Results (populated during conclude_tournament)
-    participant_rank = Column("rank", Integer, quote=True, nullable=True)
+    participant_rank = Column(Integer, nullable=True)
     kills        = Column(Integer, default=0)
     prize_amount = Column(String, nullable=True) # Stored as string to handle decimals/formating if needed, or Numeric
     
