@@ -866,12 +866,8 @@ def conclude_tournament(
         for entry in data.manual_prizes:
             user_id = entry.user_id
             amount = to_money(entry.amount)
-            if amount <= 0: continue
 
-            member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
-            if not member_user: continue
-
-            # SAVE RESULTS TO PARTICIPANT RECORD (NEW)
+            # 1. ALWAYS UPDATE PARTICIPANT STATS (kills and rank)
             participant = db.query(TournamentParticipant).filter(
                 TournamentParticipant.tournament_id == tournament_id,
                 TournamentParticipant.user_id == user_id
@@ -881,6 +877,11 @@ def conclude_tournament(
                 participant.kills = entry.kills or 0
                 participant.participant_rank = entry.rank
                 db.add(participant)
+
+            if amount <= 0: continue
+
+            member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
+            if not member_user: continue
 
             credit_wallet(member_user, amount, WALLET_BUCKET_WINNING)
             tx = WalletTransaction(
@@ -915,6 +916,10 @@ def conclude_tournament(
                 TournamentParticipant.user_id == user_id
             ).first()
             if not participant: continue
+
+            # Save kills to participant record (ALWAYS)
+            participant.kills = kills
+            db.add(participant)
 
             member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
             if not member_user: continue
