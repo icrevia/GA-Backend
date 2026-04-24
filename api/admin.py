@@ -976,21 +976,33 @@ def conclude_tournament(
     db.add(tournament)
     db.commit()
 
-    # Notify non-winners
+    # Notify and record 0-reward transactions for non-winners
     try:
         all_parts = db.query(TournamentParticipant).filter(
             TournamentParticipant.tournament_id == tournament_id
         ).all()
         for p in all_parts:
             if p.user_id not in winners_set:
+                # Create a zero-amount transaction so it shows up in "Match Lost" history
+                lost_tx = WalletTransaction(
+                    user_id=p.user_id,
+                    amount=Decimal("0.00"),
+                    transaction_type="PRIZE_WIN",
+                    status="SUCCESS",
+                    reference_id=f"LST-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
+                    payment_mode=payout_payment_mode,
+                    remark=tournament.title
+                )
+                db.add(lost_tx)
+                
                 add_user_notification(
                     db, p.user_id,
                     "Tournament Completed 🏆",
                     f"'{tournament.title}' has ended. Better luck next time!",
                     "APP"
                 )
-    except Exception:
-        pass
+    except Exception as notify_err:
+        logger.error(f"Failed to process non-winner records for tournament {tournament_id}: {notify_err}")
 
     logger.info(
         f"Tournament {tournament_id} concluded. "

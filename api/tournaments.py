@@ -1497,6 +1497,7 @@ def get_tournament_leaderboard_public(tournament_id: int, db: Session = Depends(
         {
             "user_id": p.user_id,
             "username": p.user.username if p.user else "Unknown",
+            "bio": p.user.bio if p.user else None,
             "profile_pic": p.user.profile_pic if p.user else None,
             "rank": p.participant_rank,
             "kills": p.kills,
