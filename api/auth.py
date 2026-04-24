@@ -730,53 +730,65 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
                 ),
             )
 
-        if not is_admin_identifier_attempt:
-            raise HTTPException(status_code=403, detail="Invalid admin credentials")
+        if is_admin_identifier_attempt:
+            phone_variants = list(_phone_variants(settings.ADMIN_LOGIN_PHONE))
 
-        phone_variants = list(_phone_variants(settings.ADMIN_LOGIN_PHONE))
+            admin_match_conditions = []
+            configured_identifier_lower = configured_identifier.lower()
+            if configured_identifier_lower:
+                admin_match_conditions.extend(
+                    [
+                        func.lower(User.email) == configured_identifier_lower,
+                        func.lower(User.username) == configured_identifier_lower,
+                    ]
+                )
+            if phone_variants:
+                admin_match_conditions.append(User.phone_number.in_(phone_variants))
+            else:
+                admin_match_conditions.append(User.phone_number == configured_phone)
 
-        admin_match_conditions = []
-        configured_identifier_lower = configured_identifier.lower()
-        if configured_identifier_lower:
-            admin_match_conditions.extend(
-                [
-                    func.lower(User.email) == configured_identifier_lower,
-                    func.lower(User.username) == configured_identifier_lower,
-                ]
+            result = await db.execute(
+                select(User)
+                .where(
+                    User.role == "ADMIN",
+                    or_(*admin_match_conditions),
+                )
+                .order_by(User.id.asc())
             )
-        if phone_variants:
-            admin_match_conditions.append(User.phone_number.in_(phone_variants))
+            user = result.scalars().first()
+
+            if user and not user.is_active:
+                user.is_active = True
+                await db.commit()
+                await db.refresh(user)
+
+            if not user:
+                user = await _provision_or_activate_env_admin_user(
+                    db,
+                    configured_identifier=configured_identifier,
+                    configured_phone=configured_phone,
+                )
+
+            if not user:
+                logger.error("Admin-web login blocked: unable to provision active ADMIN user")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Admin account provisioning failed",
+                )
         else:
-            admin_match_conditions.append(User.phone_number == configured_phone)
-
-        result = await db.execute(
-            select(User)
-            .where(
-                User.role == "ADMIN",
-                or_(*admin_match_conditions),
+            result = await db.execute(
+                select(User).where(
+                    User.role == "ADMIN",
+                    or_(
+                        User.email == identifier,
+                        User.username == raw_identifier,
+                        User.phone_number == identifier
+                    )
+                )
             )
-            .order_by(User.id.asc())
-        )
-        user = result.scalars().first()
-
-        if user and not user.is_active:
-            user.is_active = True
-            await db.commit()
-            await db.refresh(user)
-
-        if not user:
-            user = await _provision_or_activate_env_admin_user(
-                db,
-                configured_identifier=configured_identifier,
-                configured_phone=configured_phone,
-            )
-
-        if not user:
-            logger.error("Admin-web login blocked: unable to provision active ADMIN user")
-            raise HTTPException(
-                status_code=403,
-                detail="Admin account provisioning failed",
-            )
+            user = result.scalar_one_or_none()
+            if not user or not user.is_active:
+                raise HTTPException(status_code=403, detail="Invalid admin credentials")
     else:
         result = await db.execute(
             select(User).where(
@@ -800,7 +812,7 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
         if await _is_blocked_for_login_support(db, user):
             return _build_banned_support_response(user, identifier)
 
-    if _is_admin_web_login_request(request):
+    if _is_admin_web_login_request(request) and is_admin_identifier_attempt:
         admin_phone = _admin_login_phone_key()
         if not admin_phone:
             raise HTTPException(status_code=503, detail="Admin login phone is not configured")
