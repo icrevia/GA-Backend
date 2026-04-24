@@ -1480,3 +1480,26 @@ def get_tournament(
 
     tournament.joined_count = joined_count
     return tournament
+@router.get("/{tournament_id}/leaderboard")
+def get_tournament_leaderboard_public(tournament_id: int, db: Session = Depends(get_db)):
+    participants = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id
+    ).order_by(
+        TournamentParticipant.rank.asc().nulls_last(),
+        TournamentParticipant.kills.desc()
+    ).all()
+    
+    return [
+        {
+            "user_id": p.user_id,
+            "username": p.user.username if p.user else "Unknown",
+            "profile_pic": p.user.profile_pic if p.user else None,
+            "rank": p.rank,
+            "kills": p.kills,
+            "prize_amount": p.prize_amount,
+            "slot_no": p.slot_no,
+            "game_uid": p.game_uid,
+            "game_username": p.game_username
+        }
+        for p in participants
+    ]
