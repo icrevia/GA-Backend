@@ -879,7 +879,7 @@ def conclude_tournament(
             if participant:
                 participant.prize_amount = str(amount)
                 participant.kills = entry.kills or 0
-                participant.rank = entry.rank
+                participant.participant_rank = entry.rank
                 db.add(participant)
 
             credit_wallet(member_user, amount, WALLET_BUCKET_WINNING)
@@ -1501,7 +1501,7 @@ def get_tournament_leaderboard(tournament_id: int, db: Session = Depends(get_db)
     participants = db.query(TournamentParticipant).filter(
         TournamentParticipant.tournament_id == tournament_id
     ).order_by(
-        TournamentParticipant.rank.asc().nulls_last(),
+        TournamentParticipant.participant_rank.asc().nulls_last(),
         TournamentParticipant.kills.desc()
     ).all()
     
@@ -1510,7 +1510,7 @@ def get_tournament_leaderboard(tournament_id: int, db: Session = Depends(get_db)
             "user_id": p.user_id,
             "username": p.user.username if p.user else "Unknown",
             "profile_pic": p.user.profile_pic if p.user else None,
-            "rank": p.rank,
+            "rank": p.participant_rank,
             "kills": p.kills,
             "prize_amount": p.prize_amount,
             "slot_no": p.slot_no,

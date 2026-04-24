@@ -1485,7 +1485,7 @@ def get_tournament_leaderboard_public(tournament_id: int, db: Session = Depends(
     participants = db.query(TournamentParticipant).filter(
         TournamentParticipant.tournament_id == tournament_id
     ).order_by(
-        TournamentParticipant.rank.asc().nulls_last(),
+        TournamentParticipant.participant_rank.asc().nulls_last(),
         TournamentParticipant.kills.desc()
     ).all()
     
@@ -1494,7 +1494,7 @@ def get_tournament_leaderboard_public(tournament_id: int, db: Session = Depends(
             "user_id": p.user_id,
             "username": p.user.username if p.user else "Unknown",
             "profile_pic": p.user.profile_pic if p.user else None,
-            "rank": p.rank,
+            "rank": p.participant_rank,
             "kills": p.kills,
             "prize_amount": p.prize_amount,
             "slot_no": p.slot_no,
