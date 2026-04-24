@@ -99,6 +99,8 @@ class KillRewardEntry(BaseModel):
 class ManualRewardEntry(BaseModel):
     user_id: int
     amount: float
+    kills: Optional[int] = 0
+    rank: Optional[int] = None
 
 class TournamentConclude(BaseModel):
     winner_id: Optional[str] = None

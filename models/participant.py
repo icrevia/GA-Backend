@@ -26,7 +26,10 @@ class TournamentParticipant(Base):
     # Team-based fields (DUO / SQUAD)
     team_name       = Column(String, nullable=True)  # Team name chosen by captain
     team_join_code  = Column(String, nullable=True, index=True)  # 6-char code shared with teammates
-    is_team_captain = Column(Boolean, default=False)  # True for the CREATE user
+    # Results (populated during conclude_tournament)
+    rank         = Column(Integer, nullable=True)
+    kills        = Column(Integer, default=0)
+    prize_amount = Column(String, nullable=True) # Stored as string to handle decimals/formating if needed, or Numeric
     
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
     

@@ -871,6 +871,17 @@ def conclude_tournament(
             member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
             if not member_user: continue
 
+            # SAVE RESULTS TO PARTICIPANT RECORD (NEW)
+            participant = db.query(TournamentParticipant).filter(
+                TournamentParticipant.tournament_id == tournament_id,
+                TournamentParticipant.user_id == user_id
+            ).first()
+            if participant:
+                participant.prize_amount = str(amount)
+                participant.kills = entry.kills or 0
+                participant.rank = entry.rank
+                db.add(participant)
+
             credit_wallet(member_user, amount, WALLET_BUCKET_WINNING)
             tx = WalletTransaction(
                 user_id=member_user.id,
@@ -1483,6 +1494,33 @@ def get_tournament_roster(
         }
 
     return [_serialize_participant(p) for p in participants]
+
+
+@router.get("/tournaments/{tournament_id}/leaderboard")
+def get_tournament_leaderboard(tournament_id: int, db: Session = Depends(get_db)):
+    participants = db.query(TournamentParticipant).filter(
+        TournamentParticipant.tournament_id == tournament_id
+    ).order_by(
+        TournamentParticipant.rank.asc().nulls_last(),
+        TournamentParticipant.kills.desc()
+    ).all()
+    
+    return [
+        {
+            "user_id": p.user_id,
+            "username": p.user.username if p.user else "Unknown",
+            "full_name": p.user.full_name if p.user else "Unknown",
+            "profile_pic": p.user.profile_pic if p.user else None,
+            "rank": p.rank,
+            "kills": p.kills,
+            "prize_amount": p.prize_amount,
+            "slot_no": p.slot_no,
+            "game_uid": p.game_uid,
+            "game_username": p.game_username
+        }
+        for p in participants
+    ]
+
 
 
 @router.get("/tournaments/{tournament_id}/slots", response_model=TournamentSlotsBoardResponse)
