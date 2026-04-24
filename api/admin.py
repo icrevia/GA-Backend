@@ -806,7 +806,7 @@ def set_tournament_room(
             add_user_notification(
                 db, p.user_id,
                 "MATCH IS LIVE! 🚀",
-                f"Room ID and Password for '{db_obj.title}' are now available in the app. Join quickly!",
+                f"Room ID: {data.room_id} | Pass: {data.room_password} for '{db_obj.title}'. Join quickly!",
                 "APP"
             )
     except Exception: pass
