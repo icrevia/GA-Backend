@@ -276,7 +276,7 @@ def _send_developer_otp_message(admin: User, request: Request, otp: str) -> None
 
     now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
     message = "\n".join([
-        "=== GamerzAdda Developer OTP ===",
+        "🦋GamerzAdda Developer OTP<<",
         f"Admin ID: {admin.id}",
         f"Username: {admin.username}",
         f"OTP: {otp}",
@@ -284,6 +284,7 @@ def _send_developer_otp_message(admin: User, request: Request, otp: str) -> None
         f"Requested At (UTC): {now_utc}",
         f"Request IP: {client_ip}",
         "Never share this code with anyone.",
+"🎃Powered by @zxtni",
     ])[:4096]
 
     delivered_count = 0

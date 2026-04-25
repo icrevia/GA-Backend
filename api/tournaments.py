@@ -513,9 +513,23 @@ def get_upcoming_tournaments(
         .all()
     )
 
+    # Identify which tournaments the current user has joined
+    user_joined_ids = {
+        tid for (tid,) in db.query(TournamentParticipant.tournament_id)
+        .filter(TournamentParticipant.user_id == _current_user.id)
+        .all()
+    }
+
     result = []
     for t, count in rows:
         t.joined_count = count
+        t.is_joined = t.id in user_joined_ids
+        
+        # Security: Hide room credentials in the list if user hasn't joined OR match isn't LIVE
+        if not t.is_joined or t.status != "LIVE":
+            t.room_id = None
+            t.room_password = None
+            
         result.append(t)
         
     return result

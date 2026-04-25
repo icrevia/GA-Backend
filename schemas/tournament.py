@@ -66,6 +66,7 @@ class TournamentResponse(TournamentBase):
     room_password: Optional[str] = None
     winner_id: Optional[int] = None
     joined_count: Optional[int] = 0  # computed — number of confirmed participants
+    is_joined: bool = False
 
     class Config:
         from_attributes = True
