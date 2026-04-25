@@ -691,6 +691,16 @@ async def verify_otp(
     db_user.last_login_ip = (client_ip or "")[:64] or None
     db_user.last_login_device = device_name
     db_user.last_login_at = datetime.utcnow()
+
+    # ── Single-device enforcement ──────────────────────────────────────────────
+    # Bump token_version for existing users so all previously issued JWTs are
+    # immediately invalid. The old device will receive a 401 on its next API
+    # call, triggering the "Session ended — logged in from another device" dialog.
+    # Skip for new signups: their token_version starts at 0, which is correct.
+    if not is_signup_pending:
+        db_user.token_version = (getattr(db_user, "token_version", 0) or 0) + 1
+    # ──────────────────────────────────────────────────────────────────────────
+
     await db.commit()
     await db.refresh(db_user)
 
