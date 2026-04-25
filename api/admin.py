@@ -1541,7 +1541,8 @@ def get_tournament_leaderboard(tournament_id: int, db: Session = Depends(get_db)
             "prize_amount": p.prize_amount,
             "slot_no": p.slot_no,
             "game_uid": p.game_uid,
-            "game_username": p.game_username
+            "game_username": p.game_username,
+            "bio": p.user.bio if p.user else None
         }
         for p in participants
     ]
