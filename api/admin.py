@@ -2992,9 +2992,37 @@ def unlock_user_restriction(
     restriction.lifted_by_admin_id = current_user.id
     restriction.lifted_at = utcnow_naive()
     restriction.lift_note = (payload.note or "").strip() or None
+    db.add(restriction)
+    # Flush FIRST so that subsequent queries for remaining restrictions
+    # do NOT count this just-unlocked restriction as still active.
+    db.flush()
 
     user = db.query(User).filter(User.id == restriction.user_id).with_for_update().first()
-    if user and not user.is_active:
+
+    if user and restriction.scope == RESTRICTION_SCOPE_FULL_APP:
+        unlock_note = (payload.note or "").strip() or "Restriction unlocked from admin panel"
+
+        # 1. Reset the OTP phone lock so OTP can be sent immediately.
+        #    clear_otp_lock_for_user_sync already re-checks remaining restrictions
+        #    internally, but since we flushed above, it will see the correct state.
+        clear_otp_lock_for_user_sync(
+            db,
+            user=user,
+            admin_id=current_user.id,
+            note=unlock_note,
+        )
+
+        # 2. Reset the LOGIN_SESSION activity lock so the "wait till 12:01 AM"
+        #    message is gone immediately — admin unlock must be instant.
+        clear_activity_locks_for_user_sync(
+            db,
+            user=user,
+            admin_id=current_user.id,
+            note=unlock_note,
+        )
+
+    elif user and not user.is_active:
+        # For non-FULL_APP scopes, still reactivate the user if nothing else blocks them.
         has_other_full_app_restriction = bool(
             get_active_restrictions_for_user(
                 db,
@@ -3006,20 +3034,11 @@ def unlock_user_restriction(
             user.is_active = True
             db.add(user)
 
-    if user and restriction.scope == RESTRICTION_SCOPE_FULL_APP:
-        clear_otp_lock_for_user_sync(
-            db,
-            user=user,
-            admin_id=current_user.id,
-            note=(payload.note or "").strip() or "Restriction unlocked from admin panel",
-        )
-
-    db.add(restriction)
     db.commit()
-    db.refresh(restriction)
 
     if user:
         try:
+            db.refresh(restriction)
             add_user_notification(
                 db,
                 user.id,
