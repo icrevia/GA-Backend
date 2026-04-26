@@ -8,6 +8,7 @@ from core.websockets import manager, ALLOWED_WS_EVENTS
 from core.security import decode_access_token
 from core.database import SessionLocal
 from models.user import User
+from models.quiz import QuizResponse, QuizQuestion
 
 logger = logging.getLogger("GamerzAdda.ws")
 router = APIRouter()
@@ -168,6 +169,31 @@ async def websocket_endpoint(websocket: WebSocket):
                 quiz_id = int(msg.get("quiz_id", 0))
                 if quiz_id:
                     await manager.leave_quiz_room(user_id, quiz_id)
+                continue
+
+            if msg_type == "quiz_answer":
+                quiz_id = int(msg.get("quiz_id", 0))
+                question_id = int(msg.get("question_id", 0))
+                option_index = int(msg.get("option_index", -1))
+                response_time = int(msg.get("response_time_ms", 0))
+                
+                if quiz_id and question_id and option_index != -1:
+                    async with SessionLocal() as db:
+                        # Check if correct
+                        q_res = await db.execute(select(QuizQuestion).where(QuizQuestion.id == question_id))
+                        question = q_res.scalar_one_or_none()
+                        if question:
+                            is_correct = (question.correct_option_index == option_index)
+                            ans = QuizResponse(
+                                quiz_id=quiz_id,
+                                question_id=question_id,
+                                user_id=user_id,
+                                option_index=option_index,
+                                is_correct=is_correct,
+                                response_time_ms=response_time
+                            )
+                            db.add(ans)
+                            await db.commit()
                 continue
 
             if msg_type not in ALLOWED_WS_EVENTS:

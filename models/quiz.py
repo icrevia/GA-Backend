@@ -60,3 +60,14 @@ class QuizParticipant(Base):
 
     quiz = relationship("QuizMatch", back_populates="participants")
     user = relationship("User")
+
+class QuizResponse(Base):
+    __tablename__ = "quiz_responses"
+    id = Column(Integer, primary_key=True, index=True)
+    quiz_id = Column(Integer, ForeignKey("quiz_matches.id"), nullable=False)
+    question_id = Column(Integer, ForeignKey("quiz_questions.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    option_index = Column(Integer, nullable=False)
+    is_correct = Column(Boolean, default=False)
+    response_time_ms = Column(Integer, nullable=False) # Time taken in ms
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

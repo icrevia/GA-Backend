@@ -97,55 +97,78 @@ class QuizOrchestrator:
             quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
             if not quiz: return
 
-            # Find all participants
-            participants = db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).all()
-            if not participants: return
+            from models.quiz import QuizResponse
+            from sqlalchemy import func
 
-            # Calculate scores (correct answers)
-            # For simplicity, we just count correct answers. 
-            # In a real app, you'd store individual responses.
-            # Here I'll just assume participants who stayed connected are winners for now
-            # as I haven't implemented the response storage yet.
+            # 1. Calculate scores for all participants
+            # Group by user_id, count is_correct=True, sum response_time_ms
+            results = (
+                db.query(
+                    QuizResponse.user_id,
+                    func.count(QuizResponse.id).filter(QuizResponse.is_correct == True).label("score"),
+                    func.sum(QuizResponse.response_time_ms).label("total_time")
+                )
+                .filter(QuizResponse.quiz_id == quiz_id)
+                .group_by(QuizResponse.user_id)
+                .order_by(func.count(QuizResponse.id).filter(QuizResponse.is_correct == True).desc(), func.sum(QuizResponse.response_time_ms).asc())
+                .all()
+            )
+
+            if not results:
+                logger.warning(f"No responses recorded for quiz_id={quiz_id}")
+                return
+
+            # 2. Determine winners and distribute prizes
+            # For now, let's give the full pool to the top scorer. 
+            # In future, use quiz.prize_distribution JSON.
             
-            # TODO: Store responses in a table to calculate winners properly.
-            # For now, let's distribute the prize pool among all participants who joined.
-            # But the user wants "whoever choose the correct he will win".
+            top_winner_id, top_score, top_time = results[0]
             
-            # I'll implement a simple win distribution: 
-            # Top scorer gets the prize. If tie, split.
-            
-            # Since I haven't implemented responses table yet, I'll just notify them
-            # that the results are being calculated.
-            
-            # Actually, I'll add a 'QuizResponse' model quickly.
-            
-            message = "Quiz ended! Results are being processed."
-            await ws_manager.broadcast_to_quiz(quiz_id, {"type": "quiz_result", "message": message})
-            
-            # Logic for Payout (Example: Top 3 split the pool)
-            # For now, I'll just credit the prize_pool to the first participant as a test.
-            if participants:
-                winner = participants[0]
-                user = db.query(User).filter(User.id == winner.user_id).first()
+            # If multiple people have the same score and time (unlikely), they share.
+            winners = [r for r in results if r.score == top_score and r.total_time == top_time]
+            prize_per_winner = to_money(quiz.prize_pool) / Decimal(len(winners))
+
+            for w_id, score, time in winners:
+                user = db.query(User).filter(User.id == w_id).first()
                 if user:
-                    amount = to_money(quiz.prize_pool)
-                    credit_wallet(user, amount, WALLET_BUCKET_WINNING)
+                    credit_wallet(user, prize_per_winner, WALLET_BUCKET_WINNING)
                     
                     tx = WalletTransaction(
                         user_id=user.id,
-                        amount=amount,
+                        amount=prize_per_winner,
                         transaction_type="QUIZ_WIN",
-                        status="SUCCESS"
+                        status="SUCCESS",
+                        reference_id=f"WIN-QZ-{quiz_id}-{user.id}"
                     )
                     db.add(tx)
                     
                     add_user_notification(
                         db, user.id,
-                        "CONGRATULATIONS! 🏆",
-                        f"You won ₹{amount} in the '{quiz.title}' quiz!",
+                        "🏆 CHAMPION! 🏆",
+                        f"You won ₹{prize_per_winner} in '{quiz.title}'! Score: {score} Correct.",
                         "APP"
                     )
-                    db.commit()
+            
+            db.commit()
+            
+            # 3. Notify the room
+            winner_names = []
+            for w_id, _, _ in winners:
+                u = db.query(User).filter(User.id == w_id).first()
+                if u: winner_names.append(u.username or f"User {u.id}")
+            
+            msg = f"Quiz Finished! Winner(s): {', '.join(winner_names)} with {top_score} correct answers!"
+            await ws_manager.broadcast_to_quiz(quiz_id, {
+                "type": "quiz_result", 
+                "message": msg,
+                "winners": winner_names,
+                "score": int(top_score)
+            })
+
+        except Exception as e:
+            logger.error(f"Error processing results for quiz {quiz_id}: {e}")
+        finally:
+            db.close()
 
         finally:
             db.close()
