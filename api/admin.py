@@ -966,8 +966,8 @@ def add_quiz_question(
         quiz_id=quiz_id,
         question_text=data.question_text,
         options=data.options,
-        correct_option_index=data.correct_option,
-        time_limit=data.timer_seconds
+        correct_option_index=data.correct_option_index,
+        time_limit=data.time_limit
     )
     db.add(db_obj)
     db.commit()

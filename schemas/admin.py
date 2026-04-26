@@ -156,8 +156,8 @@ class QuizUpdateAdmin(BaseModel):
 class QuizQuestionCreate(BaseModel):
     question_text: str
     options: list[str]
-    correct_option: int
-    timer_seconds: int = 15
+    correct_option_index: int
+    time_limit: int = 15
 
 class QuizQuestionResponse(QuizQuestionCreate):
     id: int
