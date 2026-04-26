@@ -170,7 +170,4 @@ class QuizOrchestrator:
         finally:
             db.close()
 
-        finally:
-            db.close()
-
 orchestrator = QuizOrchestrator()
