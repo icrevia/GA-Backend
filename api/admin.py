@@ -884,7 +884,7 @@ def create_quiz(
     try:
         dt = datetime.fromisoformat(data.start_time.replace('Z', '+00:00'))
     except Exception:
-        dt = datetime.now()
+        dt = datetime.now(timezone.utc)
 
     db_obj = QuizMatch(
         title=data.title,
@@ -966,8 +966,8 @@ def add_quiz_question(
         quiz_id=quiz_id,
         question_text=data.question_text,
         options=data.options,
-        correct_option=data.correct_option,
-        timer_seconds=data.timer_seconds
+        correct_option_index=data.correct_option,
+        time_limit=data.timer_seconds
     )
     db.add(db_obj)
     db.commit()

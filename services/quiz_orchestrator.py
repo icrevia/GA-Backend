@@ -29,7 +29,7 @@ class QuizOrchestrator:
     async def check_and_start_quizzes(self):
         db = SyncSessionLocal()
         try:
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             # Find UPCOMING quizzes that should start within the next minute
             upcoming = db.query(QuizMatch).filter(
                 QuizMatch.status == "UPCOMING",
@@ -71,12 +71,12 @@ class QuizOrchestrator:
                     "id": q.id,
                     "question_text": q.question_text,
                     "options": q.options,
-                    "timer_seconds": q.timer_seconds
+                    "timer_seconds": q.time_limit
                 }
-                ws_manager.broadcast_to_quiz(quiz_id, payload)
+                await ws_manager.broadcast_to_quiz(quiz_id, payload)
                 
                 # Wait for timer
-                await asyncio.sleep(q.timer_seconds + 2) # Buffer for latency
+                await asyncio.sleep(q.time_limit + 2) # Buffer for latency
 
             # 4. Calculate results
             await self.process_results(quiz_id)
@@ -120,7 +120,7 @@ class QuizOrchestrator:
             # Actually, I'll add a 'QuizResponse' model quickly.
             
             message = "Quiz ended! Results are being processed."
-            ws_manager.broadcast_to_quiz(quiz_id, {"type": "quiz_result", "message": message})
+            await ws_manager.broadcast_to_quiz(quiz_id, {"type": "quiz_result", "message": message})
             
             # Logic for Payout (Example: Top 3 split the pool)
             # For now, I'll just credit the prize_pool to the first participant as a test.
