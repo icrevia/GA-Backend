@@ -19,6 +19,7 @@ class QuizMatchResponse(BaseModel):
     prize_pool: Decimal
     start_time: datetime
     status: str
+    max_participants: int = 100
     prize_distribution: Optional[List[dict]] = None
     joined_count: int = 0
     is_joined: bool = False
