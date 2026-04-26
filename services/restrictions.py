@@ -24,6 +24,7 @@ VALID_RESTRICTION_PAGE_KEYS = {
     "REFERRAL",
     "PROFILE",
     "SUPPORT",
+    "QUIZ",
 }
 
 _PAGE_KEY_ALIASES = {
@@ -34,6 +35,7 @@ _PAGE_KEY_ALIASES = {
     "LIVE_CHAT": "SUPPORT",
     "PAYMENTS": "WALLET",
     "PAYMENT": "WALLET",
+    "QUIZZES": "QUIZ",
 }
 
 
