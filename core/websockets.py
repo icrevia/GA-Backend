@@ -7,7 +7,8 @@ from collections import deque
 logger = logging.getLogger("GamerzAdda.ws")
 
 ALLOWED_WS_EVENTS = {
-    "chat_message", "support_escalation", "support_activity"
+    "chat_message", "support_escalation", "support_activity",
+    "join_quiz", "leave_quiz", "quiz_answer", "quiz_sync"
 }
 
 SUPPORT_EVENT_TYPES = {
@@ -29,6 +30,8 @@ class ConnectionManager:
         # admin_connections: List[WebSocket] already declared
         # Buffer support events when no admins are online so reconnecting admin panels can catch up.
         self.pending_admin_support_events: deque[dict] = deque(maxlen=MAX_PENDING_ADMIN_SUPPORT_EVENTS)
+        # quiz_id -> Set[user_id]
+        self.quiz_rooms: Dict[int, set[int]] = {}
 
     async def connect(self, user_id: int, websocket: WebSocket, is_admin: bool = False):
         if user_id not in self.active_connections:
@@ -78,6 +81,11 @@ class ConnectionManager:
             f"total_users={len(self.active_connections)} "
             f"total_admins={len(self.admin_connections)}"
         )
+        # Remove from any quiz rooms
+        for qid in list(self.quiz_rooms.keys()):
+            self.quiz_rooms[qid].discard(user_id)
+            if not self.quiz_rooms[qid]:
+                del self.quiz_rooms[qid]
 
 
 
@@ -187,6 +195,26 @@ class ConnectionManager:
                     pass
 
         self.active_connections.pop(user_id, None)
+
+    async def join_quiz_room(self, user_id: int, quiz_id: int):
+        if quiz_id not in self.quiz_rooms:
+            self.quiz_rooms[quiz_id] = set()
+        self.quiz_rooms[quiz_id].add(user_id)
+        logger.info(f"WS Quiz: User {user_id} joined room {quiz_id}. Total: {len(self.quiz_rooms[quiz_id])}")
+
+    async def leave_quiz_room(self, user_id: int, quiz_id: int):
+        if quiz_id in self.quiz_rooms:
+            self.quiz_rooms[quiz_id].discard(user_id)
+            if not self.quiz_rooms[quiz_id]:
+                del self.quiz_rooms[quiz_id]
+            logger.info(f"WS Quiz: User {user_id} left room {quiz_id}")
+
+    async def broadcast_to_quiz(self, quiz_id: int, message: dict):
+        if quiz_id not in self.quiz_rooms:
+            return
+        user_ids = list(self.quiz_rooms[quiz_id])
+        for user_id in user_ids:
+            await self.send_personal_message(message, user_id)
 
 
 manager = ConnectionManager()

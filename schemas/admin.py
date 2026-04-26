@@ -136,6 +136,36 @@ class TournamentUpdateAdmin(BaseModel):
     prize_distribution: Optional[list[Any]] = None
     status: Optional[str] = None
 
+class QuizCreateAdmin(BaseModel):
+    title: str
+    description: Optional[str] = None
+    entry_fee: float
+    prize_pool: float
+    start_time: str
+    max_participants: Optional[int] = 100
+
+class QuizUpdateAdmin(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    entry_fee: Optional[float] = None
+    prize_pool: Optional[float] = None
+    start_time: Optional[str] = None
+    max_participants: Optional[int] = None
+    status: Optional[str] = None
+
+class QuizQuestionCreate(BaseModel):
+    question_text: str
+    options: list[str]
+    correct_option: int
+    timer_seconds: int = 15
+
+class QuizQuestionResponse(QuizQuestionCreate):
+    id: int
+    quiz_id: int
+
+    class Config:
+        from_attributes = True
+
 
 class DeveloperOtpRequestResponse(BaseModel):
     otp_required: bool = True

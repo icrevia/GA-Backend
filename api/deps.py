@@ -406,6 +406,15 @@ def get_current_user_referral(
     return current_user
 
 
+def get_current_user_quizzes(
+    db: Session = Depends(get_db_sync),
+    current_user: User = Depends(get_current_user),
+) -> User:
+    _enforce_full_app_restriction(db, current_user)
+    _enforce_page_restriction(db, current_user, "QUIZ")
+    return current_user
+
+
 def get_current_user_profile(
     db: Session = Depends(get_db_sync),
     current_user: User = Depends(get_current_user),

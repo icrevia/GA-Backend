@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from api import auth, users, tournaments, wallet, ws, admin, support, notifications, referral, ledger
+from api import auth, users, tournaments, wallet, ws, admin, support, notifications, referral, ledger, quizzes
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -12,3 +12,4 @@ api_router.include_router(support.router, prefix="/support", tags=["support"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(referral.router, prefix="/user/referral", tags=["referral"])
 api_router.include_router(ledger.router, prefix="/ledger-bot", tags=["ledger-bot"])
+api_router.include_router(quizzes.router, prefix="/quizzes", tags=["quizzes"])

@@ -158,6 +158,18 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_type = msg.get("type", "")
             logger.info(f"WS Signal: From={user_id} Type={msg_type} IsAdmin={is_admin}")
 
+            if msg_type == "join_quiz":
+                quiz_id = int(msg.get("quiz_id", 0))
+                if quiz_id:
+                    await manager.join_quiz_room(user_id, quiz_id)
+                continue
+
+            if msg_type == "leave_quiz":
+                quiz_id = int(msg.get("quiz_id", 0))
+                if quiz_id:
+                    await manager.leave_quiz_room(user_id, quiz_id)
+                continue
+
             if msg_type not in ALLOWED_WS_EVENTS:
                 logger.debug(f"WS Signal: Unknown type={msg_type} from user_id={user_id}")
                 continue

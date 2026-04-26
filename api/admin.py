@@ -38,6 +38,8 @@ from models.notification import Notification
 from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
 from models.withdraw_upi_account import WithdrawUpiAccount
+from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
+from schemas.quiz import QuizMatchResponse
 from services.notifications import add_user_notification
 from services.push_notifications import send_push, send_push_to_many, send_push_to_many_detailed
 from services.notification_text import append_firebase_suffix
@@ -126,6 +128,10 @@ from schemas.admin import (
     KillRewardEntry,
     HomePopupCreateRequest,
     HomePopupResponse,
+    QuizCreateAdmin,
+    QuizUpdateAdmin,
+    QuizQuestionCreate,
+    QuizQuestionResponse,
 )
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
 from services.admin_sessions import get_admin_device_id
@@ -835,6 +841,152 @@ def delete_tournament(
     db.delete(tournament)
     db.commit()
     return {"message": "Tournament deleted successfully"}
+
+
+# ─────────────────────────────────────────────────────────────────
+# Quiz management
+# ─────────────────────────────────────────────────────────────────
+
+@router.get("/quizzes", response_model=List[QuizMatchResponse])
+def list_quizzes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    # Join count subquery
+    joined_subq = (
+        db.query(
+            QuizParticipant.quiz_id,
+            func.count(QuizParticipant.id).label('j_count')
+        )
+        .group_by(QuizParticipant.quiz_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(QuizMatch, func.coalesce(joined_subq.c.j_count, 0))
+        .outerjoin(joined_subq, QuizMatch.id == joined_subq.c.quiz_id)
+        .order_by(QuizMatch.created_at.desc())
+        .all()
+    )
+
+    result = []
+    for q, count in rows:
+        q.joined_count = count
+        result.append(q)
+    return result
+
+@router.post("/quizzes", response_model=QuizMatchResponse)
+def create_quiz(
+    data: QuizCreateAdmin,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    try:
+        dt = datetime.fromisoformat(data.start_time.replace('Z', '+00:00'))
+    except Exception:
+        dt = datetime.now()
+
+    db_obj = QuizMatch(
+        title=data.title,
+        description=data.description,
+        entry_fee=data.entry_fee,
+        prize_pool=data.prize_pool,
+        start_time=dt,
+        max_participants=data.max_participants or 100,
+        status="UPCOMING"
+    )
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    db_obj.joined_count = 0
+    return db_obj
+
+@router.put("/quizzes/{quiz_id}", response_model=QuizMatchResponse)
+def update_quiz(
+    quiz_id: int,
+    data: QuizUpdateAdmin,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    update_data = data.model_dump(exclude_unset=True)
+    if "start_time" in update_data and update_data["start_time"]:
+        try:
+            update_data["start_time"] = datetime.fromisoformat(update_data["start_time"].replace('Z', '+00:00'))
+        except Exception:
+            del update_data["start_time"]
+
+    for field, value in update_data.items():
+        setattr(db_obj, field, value)
+
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    
+    # Refresh count
+    db_obj.joined_count = db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).count()
+    return db_obj
+
+@router.delete("/quizzes/{quiz_id}")
+def delete_quiz(
+    quiz_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).delete()
+    db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).delete()
+    db.delete(quiz)
+    db.commit()
+    return {"message": "Quiz deleted successfully"}
+
+# Quiz Questions
+@router.get("/quizzes/{quiz_id}/questions", response_model=List[QuizQuestionResponse])
+def list_quiz_questions(
+    quiz_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    return db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.id.asc()).all()
+
+@router.post("/quizzes/{quiz_id}/questions", response_model=QuizQuestionResponse)
+def add_quiz_question(
+    quiz_id: int,
+    data: QuizQuestionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = QuizQuestion(
+        quiz_id=quiz_id,
+        question_text=data.question_text,
+        options=data.options,
+        correct_option=data.correct_option,
+        timer_seconds=data.timer_seconds
+    )
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+@router.delete("/quizzes/{quiz_id}/questions/{question_id}")
+def delete_quiz_question(
+    quiz_id: int,
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    q = db.query(QuizQuestion).filter(QuizQuestion.id == question_id, QuizQuestion.quiz_id == quiz_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    db.delete(q)
+    db.commit()
+    return {"message": "Question deleted"}
 
 
 # ─────────────────────────────────────────────────────────────────

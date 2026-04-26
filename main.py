@@ -290,9 +290,19 @@ async def lifespan(app: FastAPI):
     logger.info("Bonus expiry background worker started (interval: 6h)")
     # ─────────────────────────────────────────────────────────────
 
+    # ── Quiz Arena Orchestrator ──────────────────────────────────
+    from services.quiz_orchestrator import orchestrator as quiz_orchestrator
+    quiz_task = asyncio.create_task(quiz_orchestrator.start())
+    logger.info("Quiz Arena Orchestrator started")
+    # ─────────────────────────────────────────────────────────────
+
     try:
         yield
     finally:
+        if quiz_task is not None:
+            quiz_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await quiz_task
         if support_media_cleanup_task is not None:
             support_media_cleanup_task.cancel()
             with suppress(asyncio.CancelledError):
