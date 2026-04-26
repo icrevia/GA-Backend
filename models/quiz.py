@@ -15,6 +15,7 @@ class QuizMatch(Base):
     
     start_time = Column(DateTime(timezone=True), nullable=False, index=True)
     status = Column(String, default="UPCOMING", index=True) # UPCOMING, LIVE, COMPLETED
+    max_participants = Column(Integer, default=100)
     
     # JSON list of prize distribution e.g. [{"rank": 1, "prize": 50}]
     prize_distribution = Column(JSON, nullable=True)
