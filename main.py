@@ -232,8 +232,8 @@ async def lifespan(app: FastAPI):
                 push_result = await asyncio.to_thread(
                     send_push_to_many_detailed,
                     tokens,
-                    "🚀 GamerzAdda is Live! -- Firebase",
-                    "Server is active — Check out new tournaments 🎮 -- Firebase",
+                    "🚀 GamerzAdda is Live!",
+                    "Server is active — Check out new tournaments 🎮",
                 )
 
                 sent = int(push_result.get("success_count", 0))
