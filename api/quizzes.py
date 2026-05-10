@@ -4,6 +4,9 @@ from sqlalchemy import func
 from typing import List
 from decimal import Decimal
 import uuid
+import logging
+
+logger = logging.getLogger("GamerzAdda.quizzes")
 
 from api.deps import get_current_user_quizzes as get_current_user
 from core.database import get_db_sync as get_db
@@ -71,6 +74,7 @@ def join_quiz(
         raise HTTPException(status_code=404, detail="Quiz not found")
     
     if quiz.status != "UPCOMING":
+        logger.warning(f"Join failed: quiz {quiz_id} status is {quiz.status}")
         raise HTTPException(status_code=400, detail="Quiz has already started or completed")
     
     existing = db.query(QuizParticipant).filter(
@@ -78,10 +82,12 @@ def join_quiz(
         QuizParticipant.user_id == current_user.id
     ).first()
     if existing:
+        logger.warning(f"Join failed: user {current_user.id} already joined quiz {quiz_id}")
         raise HTTPException(status_code=400, detail="Already joined this quiz")
 
     current_count = db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).count()
     if quiz.max_participants and current_count >= quiz.max_participants:
+        logger.warning(f"Join failed: quiz {quiz_id} is full ({current_count}/{quiz.max_participants})")
         raise HTTPException(status_code=400, detail="Quiz is full")
 
     total_fee = to_money(quiz.entry_fee)
@@ -123,6 +129,7 @@ def join_quiz(
         
     except InsufficientWalletBalanceError as exc:
         db.rollback()
+        logger.warning(f"Join failed: user {current_user.id} insufficient balance. Required={exc.required}, Available={exc.available}")
         raise HTTPException(
             status_code=400,
             detail={
