@@ -1039,8 +1039,12 @@ async def upload_quiz_image(
 ):
     max_upload_bytes = 5 * 1024 * 1024
     content_type = (file.content_type or "").lower()
-    if not content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Only image uploads are allowed")
+    filename = (file.filename or "").lower()
+    is_image_ext = any(filename.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"])
+    
+    if not content_type.startswith("image/") and not is_image_ext:
+        logger.warning(f"Rejected upload: filename={filename}, content_type={content_type}")
+        raise HTTPException(status_code=400, detail=f"Only image uploads are allowed (got {content_type})")
 
     data = await file.read(max_upload_bytes + 1)
     if len(data) > max_upload_bytes:
