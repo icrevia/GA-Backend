@@ -8,10 +8,57 @@ from core.websockets import manager, ALLOWED_WS_EVENTS
 from core.security import decode_access_token
 from core.database import SessionLocal
 from models.user import User
-from models.quiz import QuizResponse, QuizQuestion
+from models.quiz import QuizMatch, QuizResponse, QuizQuestion
 
 logger = logging.getLogger("GamerzAdda.ws")
 router = APIRouter()
+
+
+async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
+    quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id))
+    quiz = quiz_res.scalar_one_or_none()
+    if not quiz or quiz.status != "LIVE":
+        return None
+
+    q_res = await db.execute(
+        select(QuizQuestion)
+        .where(QuizQuestion.quiz_id == quiz_id)
+        .order_by(QuizQuestion.id.asc())
+    )
+    questions = q_res.scalars().all()
+    if quiz.question_pool_size:
+        questions = questions[:quiz.question_pool_size]
+    if not questions:
+        return None
+
+    question_pool = []
+    for q in questions:
+        option_images = list(q.option_images or [])
+        options_payload = []
+        for idx, opt_text in enumerate(q.options or []):
+            image_url = option_images[idx] if idx < len(option_images) else None
+            options_payload.append({"text": opt_text, "image_url": image_url})
+
+        question_pool.append({
+            "id": q.id,
+            "question_text": q.question_text,
+            "question_image_url": q.question_image_url,
+            "options": options_payload,
+            "time_limit": q.time_limit or quiz.time_per_question or 5,
+        })
+
+    total_questions = quiz.questions_per_quiz or min(10, len(question_pool))
+    time_per_question = quiz.time_per_question or 5
+
+    return {
+        "type": "quiz_sync",
+        "quiz_id": quiz_id,
+        "questions_per_quiz": min(total_questions, len(question_pool)),
+        "question_pool_size": quiz.question_pool_size or len(question_pool),
+        "time_per_question": time_per_question,
+        "duration_seconds": min(total_questions, len(question_pool)) * time_per_question,
+        "question_pool": question_pool,
+    }
 
 
 def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, str | None]:
@@ -163,6 +210,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 quiz_id = int(msg.get("quiz_id", 0))
                 if quiz_id:
                     await manager.join_quiz_room(user_id, quiz_id)
+                    async with SessionLocal() as db:
+                        payload = await _build_quiz_sync_payload(db, quiz_id)
+                    if payload:
+                        await manager.send_personal_message(payload, user_id)
                 continue
 
             if msg_type == "leave_quiz":
@@ -175,14 +226,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 quiz_id = int(msg.get("quiz_id", 0))
                 question_id = int(msg.get("question_id", 0))
                 option_index = int(msg.get("option_index", -1))
-                response_time = int(msg.get("response_time_ms", 0))
+                response_time = max(0, int(msg.get("response_time_ms", 0)))
                 
                 if quiz_id and question_id and option_index != -1:
                     async with SessionLocal() as db:
                         # Check if correct
-                        q_res = await db.execute(select(QuizQuestion).where(QuizQuestion.id == question_id))
+                        q_res = await db.execute(
+                            select(QuizQuestion).where(
+                                QuizQuestion.id == question_id,
+                                QuizQuestion.quiz_id == quiz_id
+                            )
+                        )
                         question = q_res.scalar_one_or_none()
                         if question:
+                            existing_res = await db.execute(
+                                select(QuizResponse.id).where(
+                                    QuizResponse.quiz_id == quiz_id,
+                                    QuizResponse.question_id == question_id,
+                                    QuizResponse.user_id == user_id
+                                )
+                            )
+                            if existing_res.scalar_one_or_none() is not None:
+                                continue
+
                             is_correct = (question.correct_option_index == option_index)
                             ans = QuizResponse(
                                 quiz_id=quiz_id,
@@ -194,6 +260,15 @@ async def websocket_endpoint(websocket: WebSocket):
                             )
                             db.add(ans)
                             await db.commit()
+                continue
+
+            if msg_type == "quiz_sync":
+                quiz_id = int(msg.get("quiz_id", 0))
+                if quiz_id:
+                    async with SessionLocal() as db:
+                        payload = await _build_quiz_sync_payload(db, quiz_id)
+                    if payload:
+                        await manager.send_personal_message(payload, user_id)
                 continue
 
             if msg_type not in ALLOWED_WS_EVENTS:

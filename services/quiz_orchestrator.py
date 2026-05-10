@@ -57,26 +57,46 @@ class QuizOrchestrator:
 
             # 2. Get questions
             questions = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.id.asc()).all()
+            if quiz.question_pool_size:
+                questions = questions[:quiz.question_pool_size]
             if not questions:
                 logger.warning(f"No questions for quiz_id={quiz_id}, ending.")
                 quiz.status = "COMPLETED"
                 db.commit()
                 return
 
-            # 3. Broadcast questions one by one
+            # 3. Broadcast quiz sync payload (question pool + settings)
+            question_pool = []
             for q in questions:
-                # Send question to room
-                payload = {
-                    "type": "quiz_question",
+                option_images = list(q.option_images or [])
+                options_payload = []
+                for idx, opt_text in enumerate(q.options or []):
+                    image_url = option_images[idx] if idx < len(option_images) else None
+                    options_payload.append({"text": opt_text, "image_url": image_url})
+
+                question_pool.append({
                     "id": q.id,
                     "question_text": q.question_text,
-                    "options": q.options,
-                    "timer_seconds": q.time_limit
-                }
-                await ws_manager.broadcast_to_quiz(quiz_id, payload)
-                
-                # Wait for timer
-                await asyncio.sleep(q.time_limit + 2) # Buffer for latency
+                    "question_image_url": q.question_image_url,
+                    "options": options_payload,
+                    "time_limit": q.time_limit or quiz.time_per_question or 5
+                })
+
+            total_questions = quiz.questions_per_quiz or min(10, len(question_pool))
+            time_per_question = quiz.time_per_question or 5
+            payload = {
+                "type": "quiz_sync",
+                "quiz_id": quiz_id,
+                "questions_per_quiz": min(total_questions, len(question_pool)),
+                "question_pool_size": quiz.question_pool_size or len(question_pool),
+                "time_per_question": time_per_question,
+                "duration_seconds": min(total_questions, len(question_pool)) * time_per_question,
+                "question_pool": question_pool
+            }
+            await ws_manager.broadcast_to_quiz(quiz_id, payload)
+
+            # Wait for the quiz duration
+            await asyncio.sleep(payload["duration_seconds"] + 3)
 
             # 4. Calculate results
             await self.process_results(quiz_id)

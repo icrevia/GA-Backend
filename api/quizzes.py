@@ -80,6 +80,10 @@ def join_quiz(
     if existing:
         raise HTTPException(status_code=400, detail="Already joined this quiz")
 
+    current_count = db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).count()
+    if quiz.max_participants and current_count >= quiz.max_participants:
+        raise HTTPException(status_code=400, detail="Quiz is full")
+
     total_fee = to_money(quiz.entry_fee)
     user_wallet = db.query(User).filter(User.id == current_user.id).with_for_update().first()
     

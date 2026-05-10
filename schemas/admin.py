@@ -143,6 +143,9 @@ class QuizCreateAdmin(BaseModel):
     prize_pool: float
     start_time: str
     max_participants: Optional[int] = 100
+    questions_per_quiz: Optional[int] = 10
+    question_pool_size: Optional[int] = 30
+    time_per_question: Optional[int] = 5
 
 class QuizUpdateAdmin(BaseModel):
     title: Optional[str] = None
@@ -151,13 +154,18 @@ class QuizUpdateAdmin(BaseModel):
     prize_pool: Optional[float] = None
     start_time: Optional[str] = None
     max_participants: Optional[int] = None
+    questions_per_quiz: Optional[int] = None
+    question_pool_size: Optional[int] = None
+    time_per_question: Optional[int] = None
     status: Optional[str] = None
 
 class QuizQuestionCreate(BaseModel):
     question_text: str
+    question_image_url: Optional[str] = None
     options: list[str]
+    option_images: Optional[list[Optional[str]]] = None
     correct_option_index: int
-    time_limit: int = 15
+    time_limit: int = 5
 
 class QuizQuestionResponse(QuizQuestionCreate):
     id: int

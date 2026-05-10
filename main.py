@@ -152,6 +152,11 @@ async def lifespan(app: FastAPI):
                 
                 # Quiz Arena migration
                 "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS max_participants INTEGER DEFAULT 100",
+                "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS questions_per_quiz INTEGER DEFAULT 10",
+                "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS question_pool_size INTEGER DEFAULT 30",
+                "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS time_per_question INTEGER DEFAULT 5",
+                "ALTER TABLE quiz_questions ADD COLUMN IF NOT EXISTS question_image_url VARCHAR(500)",
+                "ALTER TABLE quiz_questions ADD COLUMN IF NOT EXISTS option_images JSONB",
                 
                 # Home Popup table creation (if manual migration needed, but metadata.create_all handles it)
                 "CREATE TABLE IF NOT EXISTS home_popups (id SERIAL PRIMARY KEY, title VARCHAR(120) NOT NULL, message VARCHAR(512), image_url VARCHAR(500), button_text VARCHAR(50), redirect_url VARCHAR(500), is_active BOOLEAN DEFAULT TRUE, show_frequency VARCHAR(32) DEFAULT 'ONCE_PER_DAY', starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ)",
@@ -391,7 +396,7 @@ except Exception as support_mount_error:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

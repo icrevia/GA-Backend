@@ -886,6 +886,13 @@ def create_quiz(
     except Exception:
         dt = datetime.now(timezone.utc)
 
+    questions_per_quiz = data.questions_per_quiz or 10
+    question_pool_size = data.question_pool_size or 30
+    time_per_question = data.time_per_question or 5
+
+    if questions_per_quiz > question_pool_size:
+        raise HTTPException(status_code=400, detail="Questions per quiz cannot exceed pool size")
+
     db_obj = QuizMatch(
         title=data.title,
         description=data.description,
@@ -893,6 +900,9 @@ def create_quiz(
         prize_pool=data.prize_pool,
         start_time=dt,
         max_participants=data.max_participants or 100,
+        questions_per_quiz=questions_per_quiz,
+        question_pool_size=question_pool_size,
+        time_per_question=time_per_question,
         status="UPCOMING"
     )
     db.add(db_obj)
@@ -918,6 +928,16 @@ def update_quiz(
             update_data["start_time"] = datetime.fromisoformat(update_data["start_time"].replace('Z', '+00:00'))
         except Exception:
             del update_data["start_time"]
+
+    if "questions_per_quiz" in update_data or "question_pool_size" in update_data:
+        new_questions_per_quiz = update_data.get("questions_per_quiz", db_obj.questions_per_quiz)
+        new_pool_size = update_data.get("question_pool_size", db_obj.question_pool_size)
+        if new_questions_per_quiz and new_pool_size and new_questions_per_quiz > new_pool_size:
+            raise HTTPException(status_code=400, detail="Questions per quiz cannot exceed pool size")
+
+        existing_count = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).count()
+        if new_pool_size and existing_count > new_pool_size:
+            raise HTTPException(status_code=400, detail="Pool size cannot be less than current question count")
 
     for field, value in update_data.items():
         setattr(db_obj, field, value)
@@ -962,12 +982,36 @@ def add_quiz_question(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
+    quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    current_count = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).count()
+    if quiz.question_pool_size and current_count >= quiz.question_pool_size:
+        raise HTTPException(status_code=400, detail="Question pool limit reached")
+
+    options = list(data.options or [])
+    if len(options) != 4:
+        raise HTTPException(status_code=400, detail="Exactly 4 options are required")
+
+    if data.correct_option_index < 0 or data.correct_option_index >= len(options):
+        raise HTTPException(status_code=400, detail="Correct option index is out of range")
+
+    option_images = list(data.option_images or [])
+    if option_images:
+        if len(option_images) < len(options):
+            option_images.extend([None] * (len(options) - len(option_images)))
+        elif len(option_images) > len(options):
+            option_images = option_images[:len(options)]
+
     db_obj = QuizQuestion(
         quiz_id=quiz_id,
         question_text=data.question_text,
-        options=data.options,
+        question_image_url=data.question_image_url,
+        options=options,
+        option_images=option_images or None,
         correct_option_index=data.correct_option_index,
-        time_limit=data.time_limit
+        time_limit=data.time_limit or (quiz.time_per_question or 5)
     )
     db.add(db_obj)
     db.commit()
@@ -987,6 +1031,27 @@ def delete_quiz_question(
     db.delete(q)
     db.commit()
     return {"message": "Question deleted"}
+
+@router.post("/quizzes/upload")
+async def upload_quiz_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_admin)
+):
+    max_upload_bytes = 5 * 1024 * 1024
+    content_type = (file.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image uploads are allowed")
+
+    data = await file.read(max_upload_bytes + 1)
+    if len(data) > max_upload_bytes:
+        raise HTTPException(status_code=400, detail="Image is too large (max 5 MB)")
+
+    ext = os.path.splitext(file.filename or "")[1].lower().lstrip(".") or "jpg"
+    safe_name = f"quiz_{uuid.uuid4().hex[:12]}.{ext}"
+
+    from services.storage import upload_file
+    public_url = upload_file(data, safe_name, sub_dir="quiz")
+    return {"image_url": public_url}
 
 
 # ─────────────────────────────────────────────────────────────────

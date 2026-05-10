@@ -3,6 +3,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker, declarative_base
 from core.config import settings
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+import ssl
+import os
 
 
 def _to_sync_database_url(database_url: str) -> str:
@@ -36,6 +38,49 @@ def _to_sync_database_url(database_url: str) -> str:
     return urlunsplit(rebuilt)
 
 
+def _to_async_database_url(database_url: str) -> str:
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif database_url.startswith("postgresql://") and "+asyncpg" not in database_url:
+        database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    parsed = urlsplit(database_url)
+    if not parsed.query:
+        return database_url
+
+    normalized_params: list[tuple[str, str]] = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        lowered = key.lower()
+        if lowered == "sslmode":
+            mode = (value or "").strip().lower()
+            if mode in {"disable", "false", "0"}:
+                normalized_params.append(("ssl", "false"))
+            else:
+                normalized_params.append(("ssl", "true"))
+            continue
+        normalized_params.append((key, value))
+
+    rebuilt = parsed._replace(query=urlencode(normalized_params, doseq=True))
+    return urlunsplit(rebuilt)
+
+
+def _strip_sslmode(database_url: str) -> tuple[str, str | None]:
+    parsed = urlsplit(database_url)
+    if not parsed.query:
+        return database_url, None
+
+    sslmode_value: str | None = None
+    remaining_params: list[tuple[str, str]] = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() == "sslmode":
+            sslmode_value = value
+            continue
+        remaining_params.append((key, value))
+
+    rebuilt = parsed._replace(query=urlencode(remaining_params, doseq=True))
+    return urlunsplit(rebuilt), sslmode_value
+
+
 def _pool_kwargs_for_url(database_url: str) -> dict:
     lowered = (database_url or "").lower()
     if lowered.startswith("sqlite"):
@@ -50,11 +95,23 @@ def _pool_kwargs_for_url(database_url: str) -> dict:
     }
 
 
-async_url = settings.DATABASE_URL
-if async_url.startswith("postgresql://") and "+asyncpg" not in async_url:
-    async_url = async_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-elif async_url.startswith("postgres://") and "+asyncpg" not in async_url:
-    async_url = async_url.replace("postgres://", "postgresql+asyncpg://", 1)
+raw_async_url, sslmode = _strip_sslmode(settings.DATABASE_URL)
+async_url = _to_async_database_url(raw_async_url)
+
+async_connect_args: dict[str, object] = {}
+if sslmode:
+    normalized_sslmode = sslmode.strip().lower()
+    if normalized_sslmode in {"disable", "false", "0"}:
+        async_connect_args["ssl"] = False
+    else:
+        ssl_insecure = os.getenv("DB_SSL_INSECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+        if ssl_insecure:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            async_connect_args["ssl"] = ctx
+        else:
+            async_connect_args["ssl"] = True
 
 sync_url = _to_sync_database_url(settings.DATABASE_URL)
 
@@ -63,6 +120,7 @@ engine = create_async_engine(
     async_url,
     echo=False,
     future=True,
+    connect_args=async_connect_args,
     **_pool_kwargs_for_url(async_url)
 )
 

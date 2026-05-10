@@ -16,6 +16,9 @@ class QuizMatch(Base):
     start_time = Column(DateTime(timezone=True), nullable=False, index=True)
     status = Column(String, default="UPCOMING", index=True) # UPCOMING, LIVE, COMPLETED
     max_participants = Column(Integer, default=100)
+    questions_per_quiz = Column(Integer, default=10)
+    question_pool_size = Column(Integer, default=30)
+    time_per_question = Column(Integer, default=5)
     
     # JSON list of prize distribution e.g. [{"rank": 1, "prize": 50}]
     prize_distribution = Column(JSON, nullable=True)
@@ -33,8 +36,10 @@ class QuizQuestion(Base):
     quiz_id = Column(Integer, ForeignKey("quiz_matches.id"), nullable=False)
     
     question_text = Column(String, nullable=False)
+    question_image_url = Column(String, nullable=True)
     # JSON list of 4 options
     options = Column(JSON, nullable=False)
+    option_images = Column(JSON, nullable=True)
     correct_option_index = Column(Integer, nullable=False)
     
     # Seconds allowed for this question
