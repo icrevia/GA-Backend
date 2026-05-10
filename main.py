@@ -338,12 +338,20 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    from fastapi import HTTPException
     request_id = getattr(request.state, "request_id", "unknown")
+    
+    if isinstance(exc, HTTPException):
+        logger.warning(f"rid={request_id} http_exception: status={exc.status_code} detail={exc.detail}")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail}
+        )
+
     logger.error(f"rid={request_id} global_error={str(exc)}", exc_info=True)
-    return Response(
-        content='{"detail": "An internal server error occurred."}',
-        status_code=500,
-        media_type="application/json"
+    return JSONResponse(
+        content={"detail": "An internal server error occurred."},
+        status_code=500
     )
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
