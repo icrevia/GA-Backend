@@ -1039,7 +1039,7 @@ async def upload_quiz_image(
 ):
     logger.info(f"--- START QUIZ UPLOAD --- filename={file.filename}, type={file.content_type}")
     try:
-        max_upload_bytes = 5 * 1024 * 1024
+        max_upload_bytes = 10 * 1024 * 1024
         content_type = (file.content_type or "").lower()
         filename = (file.filename or "").lower()
         is_image_ext = any(filename.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"])
