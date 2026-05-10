@@ -1037,25 +1037,37 @@ async def upload_quiz_image(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_active_admin)
 ):
-    max_upload_bytes = 5 * 1024 * 1024
-    content_type = (file.content_type or "").lower()
-    filename = (file.filename or "").lower()
-    is_image_ext = any(filename.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"])
-    
-    if not content_type.startswith("image/") and not is_image_ext:
-        logger.warning(f"Rejected upload: filename={filename}, content_type={content_type}")
-        raise HTTPException(status_code=400, detail=f"Only image uploads are allowed (got {content_type})")
+    logger.info(f"--- START QUIZ UPLOAD --- filename={file.filename}, type={file.content_type}")
+    try:
+        max_upload_bytes = 5 * 1024 * 1024
+        content_type = (file.content_type or "").lower()
+        filename = (file.filename or "").lower()
+        is_image_ext = any(filename.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"])
+        
+        if not content_type.startswith("image/") and not is_image_ext:
+            logger.warning(f"Rejected upload: filename={filename}, content_type={content_type}")
+            raise HTTPException(status_code=400, detail=f"Only image uploads are allowed (got {content_type})")
 
-    data = await file.read(max_upload_bytes + 1)
-    if len(data) > max_upload_bytes:
-        raise HTTPException(status_code=400, detail="Image is too large (max 5 MB)")
+        logger.info(f"Reading file data...")
+        data = await file.read(max_upload_bytes + 1)
+        if len(data) > max_upload_bytes:
+            logger.warning(f"File too large: {len(data)} bytes")
+            raise HTTPException(status_code=400, detail="Image is too large (max 5 MB)")
 
-    ext = os.path.splitext(file.filename or "")[1].lower().lstrip(".") or "jpg"
-    safe_name = f"quiz_{uuid.uuid4().hex[:12]}.{ext}"
+        ext = os.path.splitext(file.filename or "")[1].lower().lstrip(".") or "jpg"
+        safe_name = f"quiz_{uuid.uuid4().hex[:12]}.{ext}"
 
-    from services.storage import upload_file
-    public_url = upload_file(data, safe_name, sub_dir="quiz")
-    return {"image_url": public_url}
+        logger.info(f"Calling storage.upload_file for {safe_name}...")
+        from services.storage import upload_file
+        public_url = upload_file(data, safe_name, sub_dir="quiz")
+        
+        logger.info(f"Upload SUCCESS: {public_url}")
+        return {"image_url": public_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"UNEXPECTED UPLOAD ERROR: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during upload")
 
 
 # ─────────────────────────────────────────────────────────────────
