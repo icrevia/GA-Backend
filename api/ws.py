@@ -168,10 +168,12 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None]
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    logger.info(f"WS Attempt: path={websocket.url.path} headers={dict(websocket.headers)}")
     token, selected_protocol = _extract_ws_token_and_protocol(websocket)
 
     # Accept first to avoid ASGI proxy rejections, then verify token
     await websocket.accept(subprotocol=selected_protocol)
+    logger.info(f"WS Accepted: protocol={selected_protocol}")
 
     user_id, is_admin, username = await get_user_from_token(token)
     if not user_id:
