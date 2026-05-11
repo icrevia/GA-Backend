@@ -71,8 +71,31 @@ class QuizOrchestrator:
                 return
 
             logger.info(f"Starting quiz session for quiz_id={quiz_id} with {len(questions)} questions")
-            
-            # 3. Update status to LIVE
+
+            # 3. Wait until actual start_time before going LIVE
+            now = datetime.now(timezone.utc)
+            start = quiz.start_time
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            wait_secs = (start - now).total_seconds()
+            if wait_secs > 0:
+                logger.info(f"Quiz {quiz_id}: waiting {wait_secs:.1f}s until scheduled start")
+                db.close()
+                db = None
+                await asyncio.sleep(wait_secs)
+                db = SyncSessionLocal()
+                quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+                if not quiz or quiz.status == "COMPLETED":
+                    return
+                # Re-fetch questions in case admin added more
+                questions = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.id.asc()).all()
+                if not questions:
+                    logger.warning(f"Quiz {quiz_id}: still no questions at start time, expiring.")
+                    quiz.status = "COMPLETED"
+                    db.commit()
+                    return
+
+            # Mark LIVE
             quiz.status = "LIVE"
             db.add(quiz)
             db.commit()

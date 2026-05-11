@@ -31,15 +31,18 @@ async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
         .where(QuizQuestion.quiz_id == quiz_id)
         .order_by(QuizQuestion.id.asc())
     )
-    questions = q_res.scalars().all()
-    if quiz.question_pool_size:
-        questions = questions[:quiz.question_pool_size]
+    all_questions = q_res.scalars().all()
     
-    if not questions:
+    if not all_questions:
         logger.warning(f"No questions found for quiz {quiz_id}!")
         return None
 
-    logger.info(f"Syncing {len(questions)} questions for quiz {quiz_id}")
+    # Respect admin settings
+    questions_per_quiz = quiz.questions_per_quiz if (quiz.questions_per_quiz and quiz.questions_per_quiz > 0) else 10
+    time_per_question = quiz.time_per_question if (quiz.time_per_question and quiz.time_per_question > 0) else 5
+    questions = all_questions[:questions_per_quiz]
+
+    logger.info(f"Syncing {len(questions)} questions (of {len(all_questions)}) for quiz {quiz_id}, {time_per_question}s each")
     question_pool = []
     for q in questions:
         option_images = list(q.option_images or [])
@@ -53,23 +56,34 @@ async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
             "question_text": q.question_text,
             "question_image_url": q.question_image_url,
             "options": options_payload,
-            "time_limit": q.time_limit or quiz.time_per_question or 5,
+            "time_limit": time_per_question,
+            "correct_index": q.correct_option_index,  # Sent for client-side feedback
         })
 
-    total_questions = quiz.questions_per_quiz or min(10, len(question_pool))
-    time_per_question = quiz.time_per_question or 5
+    session_duration = quiz.duration_seconds or max(60, (len(question_pool) * time_per_question) + 30)
+    
+    # Calculate how many seconds have already elapsed since quiz went LIVE
+    # So clients who join mid-quiz can sync to the right question
+    from datetime import datetime, timezone as tz
+    now = datetime.now(tz.utc)
+    start_time = quiz.start_time
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=tz.utc)
+    elapsed_seconds = max(0, int((now - start_time).total_seconds()))
 
     payload = {
         "type": "quiz_sync",
         "quiz_id": quiz_id,
-        "questions_per_quiz": min(total_questions, len(question_pool)),
-        "question_pool_size": quiz.question_pool_size or len(question_pool),
+        "questions_per_quiz": len(question_pool),
+        "question_pool_size": len(question_pool),
         "time_per_question": time_per_question,
-        "duration_seconds": min(total_questions, len(question_pool)) * time_per_question,
+        "duration_seconds": session_duration,
+        "elapsed_seconds": elapsed_seconds,
         "question_pool": question_pool,
     }
-    logger.info(f"Generated quiz_sync payload for {quiz_id}: {len(question_pool)} questions")
+    logger.info(f"Generated quiz_sync payload for {quiz_id}: {len(question_pool)} questions, elapsed={elapsed_seconds}s")
     return payload
+
 
 
 def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, str | None]:
