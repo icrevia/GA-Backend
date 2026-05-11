@@ -45,26 +45,37 @@ class QuizOrchestrator:
             db.close()
 
     async def run_quiz_session(self, quiz_id: int):
-        logger.info(f"Starting quiz session for quiz_id={quiz_id}")
-        
-        # 1. Update status to LIVE
+        # 1. Check questions and timing
         db = SyncSessionLocal()
         try:
             quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
             if not quiz: return
-            quiz.status = "LIVE"
-            db.add(quiz)
-            db.commit()
 
             # 2. Get questions
             questions = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.id.asc()).all()
             if quiz.question_pool_size:
                 questions = questions[:quiz.question_pool_size]
+            
             if not questions:
-                logger.warning(f"No questions for quiz_id={quiz_id}, ending.")
-                quiz.status = "COMPLETED"
-                db.commit()
+                # If it's more than 5 minutes past start time and still no questions, expire it.
+                now = datetime.now(timezone.utc)
+                if quiz.start_time < now - timedelta(minutes=5):
+                    logger.warning(f"Quiz {quiz_id} expired (no questions for 5 mins).")
+                    quiz.status = "COMPLETED"
+                    db.commit()
+                    return
+                
+                logger.warning(f"No questions for quiz_id={quiz_id}, skipping start for now.")
+                # We return and don't change status to LIVE. 
+                # The next cycle will try again because we'll remove it from active_quizzes in 'finally'.
                 return
+
+            logger.info(f"Starting quiz session for quiz_id={quiz_id} with {len(questions)} questions")
+            
+            # 3. Update status to LIVE
+            quiz.status = "LIVE"
+            db.add(quiz)
+            db.commit()
 
             # 3. Broadcast quiz sync payload (question pool + settings)
             question_pool = []
