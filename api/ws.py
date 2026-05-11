@@ -15,9 +15,15 @@ router = APIRouter()
 
 
 async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
+    logger.info(f"Building quiz_sync for quiz_id={quiz_id}")
     quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id))
     quiz = quiz_res.scalar_one_or_none()
-    if not quiz or quiz.status != "LIVE":
+    if not quiz:
+        logger.warning(f"Quiz {quiz_id} not found for sync")
+        return None
+    
+    if quiz.status != "LIVE":
+        logger.warning(f"Quiz {quiz_id} is not LIVE (status={quiz.status}), skipping sync")
         return None
 
     q_res = await db.execute(
@@ -28,9 +34,12 @@ async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
     questions = q_res.scalars().all()
     if quiz.question_pool_size:
         questions = questions[:quiz.question_pool_size]
+    
     if not questions:
+        logger.warning(f"No questions found for quiz {quiz_id}!")
         return None
 
+    logger.info(f"Syncing {len(questions)} questions for quiz {quiz_id}")
     question_pool = []
     for q in questions:
         option_images = list(q.option_images or [])
@@ -50,7 +59,7 @@ async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
     total_questions = quiz.questions_per_quiz or min(10, len(question_pool))
     time_per_question = quiz.time_per_question or 5
 
-    return {
+    payload = {
         "type": "quiz_sync",
         "quiz_id": quiz_id,
         "questions_per_quiz": min(total_questions, len(question_pool)),
@@ -59,6 +68,8 @@ async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
         "duration_seconds": min(total_questions, len(question_pool)) * time_per_question,
         "question_pool": question_pool,
     }
+    logger.info(f"Generated quiz_sync payload for {quiz_id}: {len(question_pool)} questions")
+    return payload
 
 
 def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, str | None]:
