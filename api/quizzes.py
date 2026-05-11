@@ -63,6 +63,68 @@ def get_upcoming_quizzes(
     
     return result
 
+@router.get("/{quiz_id}/questions", response_model=dict)
+def get_quiz_questions(
+    quiz_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    REST Backup: Returns the question pool for a LIVE quiz. 
+    Used by the app if WebSocket fails to deliver the 'quiz_sync' payload.
+    """
+    quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+    
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    
+    if quiz.status != "LIVE":
+        raise HTTPException(status_code=400, detail=f"Quiz is not LIVE (status={quiz.status})")
+
+    # Verify participation
+    participant = db.query(QuizParticipant).filter(
+        QuizParticipant.quiz_id == quiz_id,
+        QuizParticipant.user_id == current_user.id
+    ).first()
+    
+    if not participant:
+        raise HTTPException(status_code=403, detail="You have not joined this quiz")
+
+    questions = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.id.asc()).all()
+    if quiz.question_pool_size:
+        questions = questions[:quiz.question_pool_size]
+    
+    if not questions:
+        raise HTTPException(status_code=404, detail="No questions found for this quiz")
+
+    question_pool = []
+    for q in questions:
+        option_images = list(q.option_images or [])
+        options_payload = []
+        for idx, opt_text in enumerate(q.options or []):
+            image_url = option_images[idx] if idx < len(option_images) else None
+            options_payload.append({"text": opt_text, "image_url": image_url})
+
+        question_pool.append({
+            "id": q.id,
+            "question_text": q.question_text,
+            "question_image_url": q.question_image_url,
+            "options": options_payload,
+            "time_limit": q.time_limit or quiz.time_per_question or 5,
+        })
+
+    total_questions = quiz.questions_per_quiz or min(10, len(question_pool))
+    time_per_question = quiz.time_per_question or 5
+
+    return {
+        "quiz_id": quiz_id,
+        "questions_per_quiz": min(total_questions, len(question_pool)),
+        "question_pool_size": quiz.question_pool_size or len(question_pool),
+        "time_per_question": time_per_question,
+        "duration_seconds": min(total_questions, len(question_pool)) * time_per_question,
+        "question_pool": question_pool,
+    }
+
 @router.post("/{quiz_id}/join", response_model=QuizJoinResponse)
 def join_quiz(
     quiz_id: int,

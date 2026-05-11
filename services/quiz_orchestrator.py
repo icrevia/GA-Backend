@@ -85,21 +85,34 @@ class QuizOrchestrator:
 
             total_questions = quiz.questions_per_quiz or min(10, len(question_pool))
             time_per_question = quiz.time_per_question or 5
+            
+            # Minimum duration is 60 seconds to allow for network lag/joins
+            session_duration = max(60, (total_questions * time_per_question) + 30)
+            
             payload = {
                 "type": "quiz_sync",
                 "quiz_id": quiz_id,
                 "questions_per_quiz": min(total_questions, len(question_pool)),
                 "question_pool_size": quiz.question_pool_size or len(question_pool),
                 "time_per_question": time_per_question,
-                "duration_seconds": min(total_questions, len(question_pool)) * time_per_question,
+                "duration_seconds": session_duration,
                 "question_pool": question_pool
             }
+            
+            # Save the duration to the quiz object so the REST API also knows it
+            quiz.duration_seconds = session_duration
+            db.add(quiz)
+            db.commit()
+
+            logger.info(f"Broadcasting quiz_sync for quiz {quiz_id}. Duration: {session_duration}s")
             await ws_manager.broadcast_to_quiz(quiz_id, payload)
 
-            # Wait for the quiz duration
-            await asyncio.sleep(payload["duration_seconds"] + 3)
+            # Wait for the quiz duration + extra grace period
+            logger.info(f"Quiz {quiz_id} session sleeping for {session_duration}s")
+            await asyncio.sleep(session_duration)
 
             # 4. Calculate results
+            logger.info(f"Quiz {quiz_id} time up. Processing results...")
             await self.process_results(quiz_id)
 
             # 5. Update status to COMPLETED

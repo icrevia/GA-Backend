@@ -19,6 +19,7 @@ class QuizMatch(Base):
     questions_per_quiz = Column(Integer, default=10)
     question_pool_size = Column(Integer, default=30)
     time_per_question = Column(Integer, default=5)
+    duration_seconds = Column(Integer, nullable=True)
     
     # JSON list of prize distribution e.g. [{"rank": 1, "prize": 50}]
     prize_distribution = Column(JSON, nullable=True)

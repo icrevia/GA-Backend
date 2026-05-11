@@ -97,6 +97,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(255) UNIQUE",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by_id INTEGER",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(256)",
+                "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS duration_seconds INTEGER",
                 # FCM push notification token
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token VARCHAR(512)",
                 # Sub-admin custom permissions

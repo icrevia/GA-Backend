@@ -168,23 +168,29 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None]
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    logger.info(f"WS Attempt: path={websocket.url.path} headers={dict(websocket.headers)}")
+    # Log detailed connection metadata to identify client/proxy issues
+    headers = dict(websocket.headers)
+    logger.info(f"WS Attempt: origin={headers.get('origin')} user_agent={headers.get('user-agent')} protocols={headers.get('sec-websocket-protocol')}")
+    
     token, selected_protocol = _extract_ws_token_and_protocol(websocket)
 
-    # Accept first to avoid ASGI proxy rejections, then verify token
-    await websocket.accept(subprotocol=selected_protocol)
-    logger.info(f"WS Accepted: protocol={selected_protocol}")
+    try:
+        # If client sent subprotocols, we MUST select one or None
+        # Passing subprotocol=None is safest if we don't strictly enforce versioning at the handshake level.
+        await websocket.accept(subprotocol=selected_protocol)
+        logger.info(f"WS Accepted: protocol={selected_protocol}")
+    except Exception as e:
+        logger.error(f"WS Accept Failed: {str(e)}")
+        return
 
     user_id, is_admin, username = await get_user_from_token(token)
     if not user_id:
+        logger.warning("WS rejected: Invalid/Missing token")
         try:
             await websocket.send_text(json.dumps({
                 "type": "error",
                 "message": "Authentication failed. Invalid or missing token."
             }))
-        except Exception:
-            pass
-        try:
             await websocket.close(code=1008)
         except Exception:
             pass
