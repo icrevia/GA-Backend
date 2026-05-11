@@ -67,7 +67,7 @@ def get_upcoming_quizzes(
 def get_quiz_questions(
     quiz_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_user)
 ):
     """
     REST Backup: Returns the question pool for a LIVE quiz. 
