@@ -30,13 +30,14 @@ class QuizOrchestrator:
         db = SyncSessionLocal()
         try:
             now = datetime.now(timezone.utc)
-            # Find UPCOMING quizzes that should start within the next minute
-            upcoming = db.query(QuizMatch).filter(
-                QuizMatch.status == "UPCOMING",
-                QuizMatch.start_time <= now + timedelta(seconds=60)
+            # Find UPCOMING quizzes that should start within the next minute, 
+            # OR quizzes that are already LIVE but not in our active tracker (recovery)
+            to_process = db.query(QuizMatch).filter(
+                (QuizMatch.status == "LIVE") | 
+                ((QuizMatch.status == "UPCOMING") & (QuizMatch.start_time <= now + timedelta(seconds=60)))
             ).all()
 
-            for quiz in upcoming:
+            for quiz in to_process:
                 if quiz.id not in self.active_quizzes:
                     self.active_quizzes.add(quiz.id)
                     asyncio.create_task(self.run_quiz_session(quiz.id))
