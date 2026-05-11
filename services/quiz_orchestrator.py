@@ -94,20 +94,28 @@ class QuizOrchestrator:
                     "time_limit": q.time_limit or quiz.time_per_question or 5
                 })
 
-            total_questions = quiz.questions_per_quiz or min(10, len(question_pool))
-            time_per_question = quiz.time_per_question or 5
+            # Determine actual counts and timers from Admin Settings
+            questions_per_quiz = quiz.questions_per_quiz if (quiz.questions_per_quiz and quiz.questions_per_quiz > 0) else 10
+            time_per_question = quiz.time_per_question if (quiz.time_per_question and quiz.time_per_question > 0) else 5
             
-            # Minimum duration is 60 seconds to allow for network lag/joins
-            session_duration = max(60, (total_questions * time_per_question) + 30)
+            # Limit the questions we actually send to the pool size requested
+            # We shuffle here to give everyone the same set but a random subset of the total pool if needed
+            import random
+            final_pool = question_pool
+            random.shuffle(final_pool)
+            final_pool = final_pool[:questions_per_quiz]
+
+            # Minimum duration is questions * time + buffer
+            session_duration = max(60, (len(final_pool) * time_per_question) + 30)
             
             payload = {
                 "type": "quiz_sync",
                 "quiz_id": quiz_id,
-                "questions_per_quiz": min(total_questions, len(question_pool)),
-                "question_pool_size": quiz.question_pool_size or len(question_pool),
+                "questions_per_quiz": len(final_pool),
+                "question_pool_size": len(final_pool),
                 "time_per_question": time_per_question,
                 "duration_seconds": session_duration,
-                "question_pool": question_pool
+                "question_pool": final_pool
             }
             
             # Save the duration to the quiz object so the REST API also knows it

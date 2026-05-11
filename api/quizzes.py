@@ -113,16 +113,23 @@ def get_quiz_questions(
             "time_limit": q.time_limit or quiz.time_per_question or 5,
         })
 
-    total_questions = quiz.questions_per_quiz or min(10, len(question_pool))
-    time_per_question = quiz.time_per_question or 5
+    # Determine actual counts and timers from Admin Settings
+    questions_per_quiz = quiz.questions_per_quiz if (quiz.questions_per_quiz and quiz.questions_per_quiz > 0) else 10
+    time_per_question = quiz.time_per_question if (quiz.time_per_question and quiz.time_per_question > 0) else 5
+    
+    # Limit questions to the requested amount (don't shuffle here to keep it stable per user request)
+    final_pool = question_pool[:questions_per_quiz]
+    
+    # Use stored duration if available, else calculate
+    session_duration = quiz.duration_seconds or max(60, (len(final_pool) * time_per_question) + 30)
 
     return {
         "quiz_id": quiz_id,
-        "questions_per_quiz": min(total_questions, len(question_pool)),
-        "question_pool_size": quiz.question_pool_size or len(question_pool),
+        "questions_per_quiz": len(final_pool),
+        "question_pool_size": len(final_pool),
         "time_per_question": time_per_question,
-        "duration_seconds": min(total_questions, len(question_pool)) * time_per_question,
-        "question_pool": question_pool,
+        "duration_seconds": session_duration,
+        "question_pool": final_pool,
     }
 
 @router.post("/{quiz_id}/join", response_model=QuizJoinResponse)
