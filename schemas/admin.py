@@ -148,6 +148,7 @@ class QuizCreateAdmin(BaseModel):
     time_per_question: Optional[int] = 5
     banner_url: Optional[str] = None
     match_type: str = "BATTLE"
+    prize_distribution: Optional[List[dict]] = None
 
 class QuizUpdateAdmin(BaseModel):
     title: Optional[str] = None
@@ -162,6 +163,7 @@ class QuizUpdateAdmin(BaseModel):
     banner_url: Optional[str] = None
     status: Optional[str] = None
     match_type: Optional[str] = None
+    prize_distribution: Optional[List[dict]] = None
 
 class QuizQuestionCreate(BaseModel):
     question_text: str
