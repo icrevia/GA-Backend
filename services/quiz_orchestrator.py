@@ -163,6 +163,16 @@ class QuizOrchestrator:
             # 5. Update status to COMPLETED
             quiz.status = "COMPLETED"
             db.commit()
+
+            # Mark all participants as COMPLETED
+            from sqlalchemy import update
+            db.execute(
+                update(QuizParticipant)
+                .where(QuizParticipant.quiz_id == quiz_id)
+                .values(status="COMPLETED")
+            )
+            db.commit()
+            
             logger.info(f"Quiz session finished for quiz_id={quiz_id}")
         except Exception as e:
             logger.error(f"Error running quiz session {quiz_id}: {e}")

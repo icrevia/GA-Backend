@@ -49,8 +49,8 @@ def get_upcoming_quizzes(
         .all()
     )
 
-    user_joined_ids = {
-        qid for (qid,) in db.query(QuizParticipant.quiz_id)
+    user_participation = {
+        qid: status for (qid, status) in db.query(QuizParticipant.quiz_id, QuizParticipant.status)
         .filter(QuizParticipant.user_id == current_user.id)
         .all()
     }
@@ -58,7 +58,8 @@ def get_upcoming_quizzes(
     result = []
     for q, count in rows:
         q.joined_count = count
-        q.is_joined = q.id in user_joined_ids
+        q.is_joined = q.id in user_participation
+        q.is_played = user_participation.get(q.id) == "COMPLETED"
         result.append(q)
     
     return result

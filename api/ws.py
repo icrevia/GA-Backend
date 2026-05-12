@@ -295,6 +295,22 @@ async def websocket_endpoint(websocket: WebSocket):
                             await db.commit()
                 continue
 
+            if msg_type == "quiz_complete":
+                quiz_id = int(msg.get("quiz_id", 0))
+                if quiz_id:
+                    async with SessionLocal() as db:
+                        from sqlalchemy import update
+                        from models.quiz import QuizParticipant
+                        await db.execute(
+                            update(QuizParticipant)
+                            .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == user_id)
+                            .values(status="COMPLETED")
+                        )
+                        await db.commit()
+                        # Signal client to refresh lobby
+                        await manager.send_personal_message({"type": "lobby_refresh"}, user_id)
+                continue
+
             if msg_type == "quiz_sync":
                 quiz_id = int(msg.get("quiz_id", 0))
                 if quiz_id:

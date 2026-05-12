@@ -29,6 +29,7 @@ class QuizMatchResponse(BaseModel):
     prize_distribution: Optional[List[dict]] = None
     joined_count: int = 0
     is_joined: bool = False
+    is_played: bool = False
     
     model_config = ConfigDict(from_attributes=True)
 
