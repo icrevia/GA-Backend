@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks, Request, Form
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import DataError
 from typing import List
 from decimal import Decimal, ROUND_HALF_UP
@@ -51,12 +52,13 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 
 # --- 1v1 Battle Pool Management ---
 @router.get("/quizzes/1v1/questions", response_model=List[QuizQuestionResponse])
-def get_1v1_questions(
-    db: Session = Depends(get_db),
+async def get_1v1_questions(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
     try:
-        questions = db.query(QuizQuestion).filter(QuizQuestion.category == "BATTLE_1V1").all()
+        result = await db.execute(select(QuizQuestion).filter(QuizQuestion.category == "BATTLE_1V1"))
+        questions = result.scalars().all()
         logger.info(f"FETCHED 1v1 QUESTIONS: count={len(questions)}")
         return questions
     except Exception as e:
@@ -64,32 +66,37 @@ def get_1v1_questions(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/quizzes/1v1/questions")
-def add_1v1_question(
+async def add_1v1_question(
     data: QuizQuestionCreate,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    q = QuizQuestion(
-        **data.dict(),
-        category="BATTLE_1V1",
-        quiz_id=None
-    )
-    db.add(q)
-    db.commit()
-    db.refresh(q)
-    return q
+    try:
+        q = QuizQuestion(
+            **data.dict(),
+            category="BATTLE_1V1",
+            quiz_id=None
+        )
+        db.add(q)
+        await db.commit()
+        await db.refresh(q)
+        return q
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.delete("/quizzes/1v1/questions/{question_id}")
-def delete_1v1_question(
+async def delete_1v1_question(
     question_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    q = db.query(QuizQuestion).filter(QuizQuestion.id == question_id, QuizQuestion.category == "BATTLE_1V1").first()
+    result = await db.execute(select(QuizQuestion).filter(QuizQuestion.id == question_id, QuizQuestion.category == "BATTLE_1V1"))
+    q = result.scalar_one_or_none()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found in 1v1 pool")
-    db.delete(q)
-    db.commit()
+    await db.delete(q)
+    await db.commit()
     return {"message": "1v1 Question deleted"}
 
 from schemas.quiz import QuizMatchResponse
@@ -1425,30 +1432,30 @@ def _get_today_finance_metrics(db: Session):
     }
 
 @router.get("/stats")
-def get_admin_stats(
-    db: Session = Depends(get_db),
+async def get_admin_stats(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    total_users       = db.query(User).count()
-    total_tournaments = db.query(Tournament).count()
+    total_users       = (await db.execute(select(func.count(User.id)))).scalar()
+    total_tournaments = (await db.execute(select(func.count(Tournament.id)))).scalar()
 
     # Base Metrics
-    total_joins = db.query(func.sum(WalletTransaction.amount)).filter(
+    total_joins = (await db.execute(select(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
         WalletTransaction.status == "SUCCESS"
-    ).scalar() or 0.0
+    ))).scalar() or 0.0
 
     total_revenue_pool = abs(float(total_joins))
 
-    total_prizes = db.query(func.sum(Tournament.prize_pool)).filter(
+    total_prizes = (await db.execute(select(func.sum(Tournament.prize_pool)).filter(
         Tournament.status == "COMPLETED"
-    ).scalar() or 0.0
+    ))).scalar() or 0.0
 
     # Subtract refunds from revenue pool to get real estimated revenue
-    total_refunds = db.query(func.sum(WalletTransaction.amount)).filter(
+    total_refunds = (await db.execute(select(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "REFUND",
         WalletTransaction.status == "SUCCESS"
-    ).scalar() or 0.0
+    ))).scalar() or 0.0
 
     estimated_revenue = total_revenue_pool - float(total_prizes) - float(total_refunds)
 
