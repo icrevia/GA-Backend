@@ -9,6 +9,7 @@ class QuizMatch(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     description = Column(String, nullable=True)
+    banner_url = Column(String, nullable=True)
     
     entry_fee = Column(Numeric(precision=12, scale=2), nullable=False)
     prize_pool = Column(Numeric(precision=12, scale=2), nullable=False)

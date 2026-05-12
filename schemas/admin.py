@@ -146,6 +146,7 @@ class QuizCreateAdmin(BaseModel):
     questions_per_quiz: Optional[int] = 10
     question_pool_size: Optional[int] = 30
     time_per_question: Optional[int] = 5
+    banner_url: Optional[str] = None
 
 class QuizUpdateAdmin(BaseModel):
     title: Optional[str] = None
@@ -157,6 +158,7 @@ class QuizUpdateAdmin(BaseModel):
     questions_per_quiz: Optional[int] = None
     question_pool_size: Optional[int] = None
     time_per_question: Optional[int] = None
+    banner_url: Optional[str] = None
     status: Optional[str] = None
 
 class QuizQuestionCreate(BaseModel):

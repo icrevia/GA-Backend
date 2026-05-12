@@ -17,6 +17,7 @@ class QuizMatchResponse(BaseModel):
     id: int
     title: str
     description: Optional[str]
+    banner_url: Optional[str] = None
     entry_fee: Decimal
     prize_pool: Decimal
     start_time: datetime

@@ -896,6 +896,7 @@ def create_quiz(
     db_obj = QuizMatch(
         title=data.title,
         description=data.description,
+        banner_url=data.banner_url,
         entry_fee=data.entry_fee,
         prize_pool=data.prize_pool,
         start_time=dt,
