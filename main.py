@@ -218,6 +218,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"DB migration partial failure: {e}")
 
+    from services.support_media import ensure_support_media_storage_dir, support_media_cleanup_worker
     from services.ledger_bot import register_ledger_bot_webhook
     from services.quiz_matchmaker import matchmaker
 
