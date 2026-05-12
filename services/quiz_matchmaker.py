@@ -62,58 +62,80 @@ class QuizMatchmaker:
 
     async def find_match(self, entry_fee: int):
         if self.is_redis_active:
-            # Redis logic for ELO matchmaking
-            # 1. Fetch all users in pool
-            # 2. Find two with closest MMR
-            # 3. Create battle
+            # Redis logic for ELO matchmaking...
             pass
         else:
             pool = self.match_pools.get(entry_fee, [])
-            if len(pool) < 2:
+            if not pool:
                 return
 
-            # Sort by MMR to find closest matches
-            pool.sort(key=lambda x: x["mmr"])
+            now = asyncio.get_event_loop().time()
             
-            for i in range(len(pool) - 1):
-                u1 = pool[i]
-                u2 = pool[i+1]
-                
-                # ELO Matchmaking: Only match if MMR difference is small (e.g., < 200)
-                # Or if they've been waiting for too long
-                mmr_diff = abs(u1["mmr"] - u2["mmr"])
-                wait_time = asyncio.get_event_loop().time() - min(u1["joined_at"], u2["joined_at"])
-                
-                if mmr_diff < 200 or wait_time > 15:
-                    # MATCH FOUND!
-                    self.match_pools[entry_fee].remove(u1)
-                    self.match_pools[entry_fee].remove(u2)
-                    await self.create_battle(u1, u2, entry_fee)
+            # 1. Try to find a human match first
+            if len(pool) >= 2:
+                pool.sort(key=lambda x: x["mmr"])
+                for i in range(len(pool) - 1):
+                    u1 = pool[i]
+                    u2 = pool[i+1]
+                    mmr_diff = abs(u1["mmr"] - u2["mmr"])
+                    wait_time = now - min(u1["joined_at"], u2["joined_at"])
+                    
+                    if mmr_diff < 200 or wait_time > 15:
+                        self.match_pools[entry_fee].remove(u1)
+                        self.match_pools[entry_fee].remove(u2)
+                        await self.create_battle(u1, u2, entry_fee)
+                        return
+
+            # 2. If no human match, check for BOT trigger (wait > 8s)
+            for user in pool[:]:
+                wait_time = now - user["joined_at"]
+                if wait_time > 8:
+                    logger.info(f"Matchmaking Timeout for {user['username']} (waited {wait_time:.1f}s). Spawning BOT.")
+                    self.match_pools[entry_fee].remove(user)
+                    
+                    from services.bot_manager import bot_manager
+                    bot = bot_manager.get_random_bot()
+                    await self.create_battle(user, bot, entry_fee, is_bot=True)
                     return
 
-    async def create_battle(self, u1: Dict, u2: Dict, entry_fee: int):
+    async def create_battle(self, u1: Dict, u2: Dict, entry_fee: int, is_bot: bool = False):
         battle_id = f"battle_{uuid.uuid4().hex[:8]}"
-        logger.info(f"BATTLE CREATED: {battle_id} | {u1['username']} vs {u2['username']}")
+        logger.info(f"BATTLE CREATED: {battle_id} | {u1['username']} vs {u2['username']} {'(BOT)' if is_bot else ''}")
+        
+        # In a real app, we would create a LIVE QuizMatch record in DB here for this 1v1
+        # For now, we'll assume a dummy quiz_id 100 or create one.
+        # Let's assume we use a pool of battle quizzes.
+        quiz_id = 100 # Mock battle quiz ID
         
         from core.websockets import manager as ws_manager
         
+        # Notify User 1
         payload = {
             "type": "battle_found",
             "battle_id": battle_id,
+            "quiz_id": quiz_id,
             "entry_fee": entry_fee,
             "opponent": {
                 "user_id": u2["user_id"],
                 "username": u2["username"],
-                "mmr": u2["mmr"]
+                "mmr": u2["mmr"],
+                "is_bot": is_bot
             }
         }
         await ws_manager.send_personal_message(payload, u1["user_id"])
         
-        payload["opponent"] = {
-            "user_id": u1["user_id"],
-            "username": u1["username"],
-            "mmr": u1["mmr"]
-        }
-        await ws_manager.send_personal_message(payload, u2["user_id"])
+        if not is_bot:
+            # Notify User 2 (only if human)
+            payload["opponent"] = {
+                "user_id": u1["user_id"],
+                "username": u1["username"],
+                "mmr": u1["mmr"],
+                "is_bot": False
+            }
+            await ws_manager.send_personal_message(payload, u2["user_id"])
+        else:
+            # Start Bot Simulation
+            from services.bot_manager import bot_manager
+            asyncio.create_task(bot_manager.simulate_bot_game(battle_id, u2["user_id"], quiz_id))
 
 matchmaker = QuizMatchmaker()
