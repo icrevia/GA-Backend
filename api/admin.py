@@ -50,12 +50,18 @@ from core.database import get_db
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 # --- 1v1 Battle Pool Management ---
-@router.get("/quizzes/1v1/questions")
+@router.get("/quizzes/1v1/questions", response_model=List[QuizQuestionResponse])
 def get_1v1_questions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
-    return db.query(QuizQuestion).filter(QuizQuestion.category == "BATTLE_1V1").all()
+    try:
+        questions = db.query(QuizQuestion).filter(QuizQuestion.category == "BATTLE_1V1").all()
+        logger.info(f"FETCHED 1v1 QUESTIONS: count={len(questions)}")
+        return questions
+    except Exception as e:
+        logger.error(f"ERROR FETCHING 1v1 QUESTIONS: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/quizzes/1v1/questions")
 def add_1v1_question(
