@@ -99,6 +99,9 @@ class QuizOrchestrator:
             quiz.status = "LIVE"
             db.add(quiz)
             db.commit()
+            
+            from core.websockets import manager as ws_manager
+            await ws_manager.broadcast({"type": "lobby_refresh"})
 
             # 3. Broadcast quiz sync payload (question pool + settings)
             question_pool = []
@@ -240,6 +243,9 @@ class QuizOrchestrator:
                 "winners": winner_names,
                 "score": int(top_score)
             })
+            
+            # Refresh lobby for everyone
+            await ws_manager.broadcast({"type": "lobby_refresh"})
 
         except Exception as e:
             logger.error(f"Error processing results for quiz {quiz_id}: {e}")
