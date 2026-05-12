@@ -175,7 +175,7 @@ class QuizQuestionCreate(BaseModel):
 
 class QuizQuestionResponse(QuizQuestionCreate):
     id: int
-    quiz_id: int
+    quiz_id: Optional[int] = None
 
     class Config:
         from_attributes = True
