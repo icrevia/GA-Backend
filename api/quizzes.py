@@ -216,6 +216,8 @@ def join_quiz(
 @router.get("/online-count")
 def get_online_count():
     from core.websockets import manager
-    # Combine a base premium number with actual active socket connections for a 'real' feel
+    import random
+    # Base users + active connections + random jitter for a 'Live' feel
     actual_connections = len(manager.active_connections)
-    return {"count": 1240 + actual_connections}
+    jitter = random.randint(-5, 8) 
+    return {"count": 1240 + actual_connections + jitter}
