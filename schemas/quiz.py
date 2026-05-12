@@ -26,6 +26,7 @@ class QuizMatchResponse(BaseModel):
     questions_per_quiz: int = 10
     question_pool_size: int = 30
     time_per_question: int = 5
+    match_type: str = "BATTLE"
     prize_distribution: Optional[List[dict]] = None
     joined_count: int = 0
     is_joined: bool = False

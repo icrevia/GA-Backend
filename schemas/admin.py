@@ -147,6 +147,7 @@ class QuizCreateAdmin(BaseModel):
     question_pool_size: Optional[int] = 30
     time_per_question: Optional[int] = 5
     banner_url: Optional[str] = None
+    match_type: str = "BATTLE"
 
 class QuizUpdateAdmin(BaseModel):
     title: Optional[str] = None
@@ -160,6 +161,7 @@ class QuizUpdateAdmin(BaseModel):
     time_per_question: Optional[int] = None
     banner_url: Optional[str] = None
     status: Optional[str] = None
+    match_type: Optional[str] = None
 
 class QuizQuestionCreate(BaseModel):
     question_text: str

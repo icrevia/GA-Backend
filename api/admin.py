@@ -904,6 +904,7 @@ def create_quiz(
         questions_per_quiz=questions_per_quiz,
         question_pool_size=question_pool_size,
         time_per_question=time_per_question,
+        match_type=data.match_type,
         status="UPCOMING"
     )
     db.add(db_obj)

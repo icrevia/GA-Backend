@@ -16,6 +16,7 @@ class QuizMatch(Base):
     
     start_time = Column(DateTime(timezone=True), nullable=False, index=True)
     status = Column(String, default="UPCOMING", index=True) # UPCOMING, LIVE, COMPLETED
+    match_type = Column(String, default="BATTLE", index=True) # BATTLE, TOURNAMENT, SURVIVOR
     max_participants = Column(Integer, default=100)
     questions_per_quiz = Column(Integer, default=10)
     question_pool_size = Column(Integer, default=30)
