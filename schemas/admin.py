@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Optional, Union, Any, Literal
+from typing import Optional, Union, Any, Literal, List
 from datetime import datetime
 
 MAX_NUMERIC_12_2 = Decimal("9999999999.99")
