@@ -102,10 +102,61 @@ class QuizMatchmaker:
         battle_id = f"battle_{uuid.uuid4().hex[:8]}"
         logger.info(f"BATTLE CREATED: {battle_id} | {u1['username']} vs {u2['username']} {'(BOT)' if is_bot else ''}")
         
-        # In a real app, we would create a LIVE QuizMatch record in DB here for this 1v1
-        # For now, we'll assume a dummy quiz_id 100 or create one.
-        # Let's assume we use a pool of battle quizzes.
-        quiz_id = 100 # Mock battle quiz ID
+        # 1. Create a VIRTUAL QuizMatch for this 1v1 Battle
+        quiz_id = 0
+        async with SessionLocal() as db:
+            from models.quiz import QuizMatch, QuizQuestion
+            from sqlalchemy import func
+            
+            new_quiz = QuizMatch(
+                title=f"1v1 Battle: {u1['username']} vs {u2['username']}",
+                entry_fee=entry_fee,
+                prize_pool=entry_fee * 1.8, # 10% platform fee
+                status="LIVE",
+                match_type="BATTLE",
+                start_time=func.now(),
+                questions_per_quiz=10,
+                time_per_question=10
+            )
+            db.add(new_quiz)
+            await db.flush() # Get ID
+            quiz_id = new_quiz.id
+
+            # 2. Pick 10 random questions from BATTLE_1V1 pool
+            q_res = await db.execute(
+                select(QuizQuestion)
+                .where(QuizQuestion.category == "BATTLE_1V1")
+                .order_by(func.random())
+                .limit(10)
+            )
+            master_questions = q_res.scalars().all()
+            
+            # If no BATTLE_1V1 questions, fallback to ARENA
+            if not master_questions:
+                logger.warning("No BATTLE_1V1 questions found! Falling back to ARENA questions.")
+                q_res = await db.execute(
+                    select(QuizQuestion)
+                    .where(QuizQuestion.category == "ARENA")
+                    .order_by(func.random())
+                    .limit(10)
+                )
+                master_questions = q_res.scalars().all()
+
+            # 3. Clone questions for this specific match
+            for mq in master_questions:
+                cloned_q = QuizQuestion(
+                    quiz_id=quiz_id,
+                    category="BATTLE_INSTANCE",
+                    question_text=mq.question_text,
+                    question_image_url=mq.question_image_url,
+                    options=mq.options,
+                    option_images=mq.option_images,
+                    correct_option_index=mq.correct_option_index,
+                    time_limit=10
+                )
+                db.add(cloned_q)
+            
+            await db.commit()
         
         from core.websockets import manager as ws_manager
         

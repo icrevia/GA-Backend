@@ -36,7 +36,8 @@ class QuizQuestion(Base):
     __tablename__ = "quiz_questions"
 
     id = Column(Integer, primary_key=True, index=True)
-    quiz_id = Column(Integer, ForeignKey("quiz_matches.id"), nullable=False)
+    quiz_id = Column(Integer, ForeignKey("quiz_matches.id"), nullable=True) # Nullable for Global/1v1 questions
+    category = Column(String, default="ARENA", index=True) # ARENA or BATTLE_1V1
     
     question_text = Column(String, nullable=False)
     question_image_url = Column(String, nullable=True)

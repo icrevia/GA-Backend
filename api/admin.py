@@ -1035,6 +1035,44 @@ def delete_quiz_question(
     db.commit()
     return {"message": "Question deleted"}
 
+# --- 1v1 Battle Pool Management ---
+@router.get("/quizzes/1v1/questions")
+def get_1v1_questions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    return db.query(QuizQuestion).filter(QuizQuestion.category == "BATTLE_1V1").all()
+
+@router.post("/quizzes/1v1/questions")
+def add_1v1_question(
+    data: QuizQuestionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    # For 1v1 pool, quiz_id can be null or we can use a dummy. Null is fine now.
+    q = QuizQuestion(
+        **data.dict(),
+        category="BATTLE_1V1",
+        quiz_id=None
+    )
+    db.add(q)
+    db.commit()
+    db.refresh(q)
+    return q
+
+@router.delete("/quizzes/1v1/questions/{question_id}")
+def delete_1v1_question(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    q = db.query(QuizQuestion).filter(QuizQuestion.id == question_id, QuizQuestion.category == "BATTLE_1V1").first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found in 1v1 pool")
+    db.delete(q)
+    db.commit()
+    return {"message": "1v1 Question deleted"}
+
 @router.post("/quizzes/upload")
 async def upload_quiz_image(
     file: UploadFile = File(...),
