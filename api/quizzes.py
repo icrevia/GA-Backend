@@ -212,3 +212,10 @@ def join_quiz(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/online-count")
+def get_online_count():
+    from core.websockets import manager
+    # Combine a base premium number with actual active socket connections for a 'real' feel
+    actual_connections = len(manager.active_connections)
+    return {"count": 1240 + actual_connections}
