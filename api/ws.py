@@ -149,6 +149,7 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None]
                         User.username,
                         User.is_active,
                         User.token_version,
+                        User.mmr,
                     ).where(User.id == uid)
                 ),
                 timeout=5,
@@ -171,7 +172,8 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None]
 
         is_admin = (row.role == "ADMIN")
         username = row.username
-        return uid, is_admin, username
+        mmr = row.mmr or 1200
+        return uid, is_admin, username, mmr
     except asyncio.TimeoutError:
         logger.warning("WS Auth DB timeout while checking token")
         return None, False, None
@@ -197,7 +199,7 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WS Accept Failed: {str(e)}")
         return
 
-    user_id, is_admin, username = await get_user_from_token(token)
+    user_id, is_admin, username, mmr = await get_user_from_token(token)
     if not user_id:
         logger.warning("WS rejected: Invalid/Missing token")
         try:
@@ -247,6 +249,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         payload = await _build_quiz_sync_payload(db, quiz_id)
                     if payload:
                         await manager.send_personal_message(payload, user_id)
+                continue
+
+            if msg_type == "join_battle":
+                entry_fee = int(msg.get("entry_fee", 0))
+                from services.quiz_matchmaker import matchmaker
+                await matchmaker.add_to_pool(user_id, username, mmr, entry_fee)
+                continue
+
+            if msg_type == "battle_taunt":
+                opponent_id = int(msg.get("opponent_id", 0))
+                taunt_id = msg.get("taunt_id", "")
+                if opponent_id:
+                    await manager.send_personal_message({
+                        "type": "battle_taunt",
+                        "taunt_id": taunt_id,
+                        "from_username": username
+                    }, opponent_id)
                 continue
 
             if msg_type == "leave_quiz":

@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT_SECONDS: int = 30
     DB_POOL_RECYCLE_SECONDS: int = 1800
 
+    # ── Redis ─────────────────────────────────────────────────────────────────
+    REDIS_URL: str = "redis://localhost:6379/0"
+
     # ── Pay0.shop ─────────────────────────────────────────────────────────────
     PAY0_MERCHANT_KEY: str = ""
 

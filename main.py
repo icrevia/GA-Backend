@@ -160,6 +160,13 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE quiz_questions ADD COLUMN IF NOT EXISTS option_images JSONB",
                 "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS banner_url VARCHAR(500)",
                 
+                # Progression & Matchmaking
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS xp INTEGER DEFAULT 0",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS mmr INTEGER DEFAULT 1200",
+                "ALTER TABLE quiz_participants ADD COLUMN IF NOT EXISTS xp_earned INTEGER DEFAULT 0",
+                "ALTER TABLE quiz_participants ADD COLUMN IF NOT EXISTS mmr_delta INTEGER DEFAULT 0",
+                
                 # Home Popup table creation (if manual migration needed, but metadata.create_all handles it)
                 "CREATE TABLE IF NOT EXISTS home_popups (id SERIAL PRIMARY KEY, title VARCHAR(120) NOT NULL, message VARCHAR(512), image_url VARCHAR(500), button_text VARCHAR(50), redirect_url VARCHAR(500), is_active BOOLEAN DEFAULT TRUE, show_frequency VARCHAR(32) DEFAULT 'ONCE_PER_DAY', starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ)",
             ]
@@ -211,13 +218,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"DB migration partial failure: {e}")
 
-    from services.support_media import ensure_support_media_storage_dir, support_media_cleanup_worker
     from services.ledger_bot import register_ledger_bot_webhook
+    from services.quiz_matchmaker import matchmaker
 
     try:
         ensure_support_media_storage_dir()
-    except Exception as media_dir_error:
-        logger.warning("Support media storage dir init failed: %s", media_dir_error)
+        await matchmaker.initialize()
+    except Exception as startup_init_error:
+        logger.warning("Startup service init failed: %s", startup_init_error)
 
     support_media_cleanup_task = asyncio.create_task(support_media_cleanup_worker())
     logger.info("Support media cleanup worker started")

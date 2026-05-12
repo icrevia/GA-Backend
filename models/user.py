@@ -52,6 +52,11 @@ class User(Base):
     # FCM push notification token (refreshed by Android app automatically)
     fcm_token       = Column(String(512), nullable=True)
 
+    # Progression & Matchmaking
+    xp              = Column(Integer, default=0, nullable=False, server_default="0")
+    level           = Column(Integer, default=1, nullable=False, server_default="1")
+    mmr             = Column(Integer, default=1200, nullable=False, server_default="1200") # ELO rating starts at 1200
+
     created_at      = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at      = Column(DateTime(timezone=True), onupdate=func.now())
 

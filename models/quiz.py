@@ -63,6 +63,10 @@ class QuizParticipant(Base):
     
     status = Column(String, default="JOINED") # JOINED, COMPLETED
     
+    # Post-match stats
+    xp_earned = Column(Integer, default=0)
+    mmr_delta = Column(Integer, default=0) # Change in ELO rating (+/-)
+    
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
 
     quiz = relationship("QuizMatch", back_populates="participants")
