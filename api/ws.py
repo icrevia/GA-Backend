@@ -119,22 +119,22 @@ def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, st
     return None, selected_protocol
 
 
-async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None]:
-    """Decode JWT and return (user_id, is_admin, username)."""
+async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None, int | None]:
+    """Decode JWT and return (user_id, is_admin, username, mmr)."""
     if not token or token in ("null", "undefined", ""):
         logger.warning("WS Auth: Token is empty or null")
-        return None, False, None
+        return None, False, None, None
 
     try:
         payload = decode_access_token(token)
     except Exception as e:
         logger.warning(f"WS Auth Token Decode Error: {e}")
-        return None, False, None
+        return None, False, None, None
 
     user_id = payload.get("sub")
     if user_id is None:
         logger.warning("WS Auth: No 'sub' in token payload")
-        return None, False, None
+        return None, False, None, None
 
     uid = int(user_id)
 
@@ -158,17 +158,17 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None]
 
         if not row:
             logger.warning(f"WS Auth: user_id={uid} not found in DB")
-            return None, False, None
+            return None, False, None, None
 
         token_version = payload.get("tv", 0)
         db_token_version = row.token_version or 0
         if not row.is_active:
             logger.warning(f"WS Auth: user_id={uid} is banned")
-            return None, False, None
+            return None, False, None, None
 
         if int(token_version) != int(db_token_version):
             logger.warning(f"WS Auth: user_id={uid} token version mismatch")
-            return None, False, None
+            return None, False, None, None
 
         is_admin = (row.role == "ADMIN")
         username = row.username
@@ -176,10 +176,10 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None]
         return uid, is_admin, username, mmr
     except asyncio.TimeoutError:
         logger.warning("WS Auth DB timeout while checking token")
-        return None, False, None
+        return None, False, None, None
     except Exception as e:
         logger.error(f"WS Auth DB Error: {e}")
-        return None, False, None
+        return None, False, None, None
 
 
 @router.websocket("/ws")
