@@ -122,7 +122,6 @@ engine = create_async_engine(
     echo=False,
     future=True,
     connect_args=async_connect_args,
-    json_serializer=lambda obj: json.dumps(obj, default=str),
     **_pool_kwargs_for_url(async_url)
 )
 
