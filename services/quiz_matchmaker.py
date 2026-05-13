@@ -6,6 +6,8 @@ import uuid
 from typing import Dict, List, Optional
 from core.config import settings
 from redis import asyncio as aioredis
+from core.database import SessionLocal
+from sqlalchemy.future import select
 
 logger = logging.getLogger("GamerzAdda.matchmaker")
 
@@ -24,6 +26,16 @@ class QuizMatchmaker:
         except Exception as e:
             logger.warning(f"Matchmaker: Redis connection failed ({e}). Using in-memory fallback.")
             self.is_redis_active = False
+            
+        # Start background matchmaking loop
+        asyncio.create_task(self._matchmaking_loop())
+        
+    async def _matchmaking_loop(self):
+        while True:
+            await asyncio.sleep(1)
+            if not self.is_redis_active:
+                for entry_fee in list(self.match_pools.keys()):
+                    await self.find_match(entry_fee)
 
     async def add_to_pool(self, user_id: int, username: str, mmr: int, entry_fee: int):
         user_data = {
