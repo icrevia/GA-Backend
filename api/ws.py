@@ -69,7 +69,7 @@ async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
     start_time = quiz.start_time
     if start_time.tzinfo is None:
         start_time = start_time.replace(tzinfo=tz.utc)
-    elapsed_seconds = max(0, int((now - start_time).total_seconds()))
+    elapsed_seconds = int((now - start_time).total_seconds())
 
     payload = {
         "type": "quiz_sync",
