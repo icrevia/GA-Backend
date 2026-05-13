@@ -22,7 +22,9 @@ from urllib import request as urllib_request
 import random
 import string
 
-from api.deps import get_db, get_current_active_admin
+logger = logging.getLogger("GamerzAdda.admin")
+
+from api.deps import get_current_active_admin
 from core.config import settings
 from core.security import hash_password
 from models.user import User
@@ -46,14 +48,14 @@ from schemas.admin import (
     QuizQuestionCreate, QuizQuestionResponse
 )
 from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
-from core.database import get_db
+from core.database import get_db as get_db_async, get_db_sync as get_db
 
-router = APIRouter(prefix="/admin", tags=["Admin"])
+router = APIRouter()
 
 # --- 1v1 Battle Pool Management ---
 @router.get("/quizzes/1v1/questions", response_model=List[QuizQuestionResponse])
 async def get_1v1_questions(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
     current_user: User = Depends(get_current_active_admin)
 ):
     try:
@@ -68,7 +70,7 @@ async def get_1v1_questions(
 @router.post("/quizzes/1v1/questions")
 async def add_1v1_question(
     data: QuizQuestionCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
     current_user: User = Depends(get_current_active_admin)
 ):
     try:
@@ -88,7 +90,7 @@ async def add_1v1_question(
 @router.delete("/quizzes/1v1/questions/{question_id}")
 async def delete_1v1_question(
     question_id: int,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
     current_user: User = Depends(get_current_active_admin)
 ):
     result = await db.execute(select(QuizQuestion).filter(QuizQuestion.id == question_id, QuizQuestion.category == "BATTLE_1V1"))
@@ -196,8 +198,8 @@ from schemas.admin import (
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
 from services.admin_sessions import get_admin_device_id
 
-logger = logging.getLogger("GamerzAdda.admin")
-router = APIRouter()
+# logger = logging.getLogger("GamerzAdda.admin") # Moved to top
+# router = APIRouter() # Unified with the one at the top
 
 # ─────────────────────────────────────────────────────────────────
 # APK Upload — FIXED: path traversal prevention + size cap
@@ -1433,7 +1435,7 @@ async def _get_today_finance_metrics(db: AsyncSession):
 
 @router.get("/stats")
 async def get_admin_stats(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
     current_user: User = Depends(get_current_active_admin)
 ):
     total_users       = (await db.execute(select(func.count(User.id)))).scalar()
