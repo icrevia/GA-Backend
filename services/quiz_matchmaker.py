@@ -116,6 +116,9 @@ class QuizMatchmaker:
         
         # 1. Create a VIRTUAL QuizMatch for this 1v1 Battle
         quiz_id = 0
+        async with SessionLocal() as db:
+            from models.quiz import QuizMatch, QuizQuestion
+            from sqlalchemy import func
             from datetime import datetime, timedelta, timezone
             start_delay = datetime.now(timezone.utc) + timedelta(seconds=6)
             
