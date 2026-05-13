@@ -84,6 +84,7 @@ async def add_1v1_question(
         await db.refresh(q)
         return q
     except Exception as e:
+        logger.error(f"Error adding 1v1 question: {str(e)}", exc_info=True)
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
