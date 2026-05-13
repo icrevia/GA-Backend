@@ -322,14 +322,26 @@ async def websocket_endpoint(websocket: WebSocket):
                 quiz_id = int(msg.get("quiz_id", 0))
                 if quiz_id:
                     async with SessionLocal() as db:
-                        from sqlalchemy import update
-                        from models.quiz import QuizParticipant
+                        from sqlalchemy import update, select
+                        from models.quiz import QuizParticipant, QuizMatch
                         await db.execute(
                             update(QuizParticipant)
                             .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == user_id)
                             .values(status="COMPLETED")
                         )
                         await db.commit()
+                        
+                        # Check if everyone is done for BATTLE
+                        quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id))
+                        quiz = quiz_res.scalar_one_or_none()
+                        
+                        if quiz and quiz.match_type == "BATTLE":
+                            part_res = await db.execute(select(QuizParticipant).where(QuizParticipant.quiz_id == quiz_id))
+                            all_parts = part_res.scalars().all()
+                            if all(p.status == "COMPLETED" for p in all_parts):
+                                from services.quiz_orchestrator import orchestrator
+                                asyncio.create_task(orchestrator.process_battle_results(quiz_id))
+
                         # Signal client to refresh lobby
                         await manager.send_personal_message({"type": "lobby_refresh"}, user_id)
                 continue

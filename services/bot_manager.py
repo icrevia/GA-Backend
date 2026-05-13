@@ -81,6 +81,20 @@ class BotManager:
                 wait_next = max(0.1, time_per_q - (response_time / 1000.0))
                 await asyncio.sleep(wait_next)
 
+            # Mark BOT as completed
+            from models.quiz import QuizParticipant
+            from sqlalchemy import update
+            await db.execute(
+                update(QuizParticipant)
+                .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == bot_user_id)
+                .values(status="COMPLETED")
+            )
+            await db.commit()
+
+            # Check if Battle results can be calculated
+            from services.quiz_orchestrator import orchestrator
+            asyncio.create_task(orchestrator.process_battle_results(quiz_id))
+
         logger.info(f"Bot {bot_user_id} finished battle {battle_id}")
 
 bot_manager = BotManager()

@@ -180,6 +180,105 @@ class QuizOrchestrator:
             self.active_quizzes.remove(quiz_id)
             db.close()
 
+    async def process_battle_results(self, quiz_id: int):
+        """
+        Specialized result calculation for 1v1 Battles. 
+        Calculates winner based on Score -> then Response Time.
+        Distributes prizes immediately.
+        """
+        db = SyncSessionLocal()
+        try:
+            quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+            if not quiz or quiz.match_type != "BATTLE" or quiz.status == "COMPLETED": 
+                return
+
+            from models.quiz import QuizResponse, QuizParticipant
+            from sqlalchemy import func
+
+            # Get scores and times for both participants
+            results = (
+                db.query(
+                    QuizResponse.user_id,
+                    func.count(QuizResponse.id).filter(QuizResponse.is_correct == True).label("score"),
+                    func.sum(QuizResponse.response_time_ms).label("total_time")
+                )
+                .filter(QuizResponse.quiz_id == quiz_id)
+                .group_by(QuizResponse.user_id)
+                .all()
+            )
+
+            participants = db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).all()
+            if len(participants) < 2: return # Wait for both
+            
+            # If we don't have results for someone yet (they finished but zero answers? or bot didn't finish?)
+            # Actually, this is called when both are supposed to be done.
+            
+            # Map results
+            user_data = {r.user_id: {"score": int(r.score), "time": int(r.total_time or 0)} for r in results}
+            
+            # Ensure everyone is in the map even if 0 score
+            for p in participants:
+                if p.user_id not in user_data:
+                    user_data[p.user_id] = {"score": 0, "time": 0}
+
+            u1_id = participants[0].user_id
+            u2_id = participants[1].user_id
+            
+            s1, t1 = user_data[u1_id]["score"], user_data[u1_id]["time"]
+            s2, t2 = user_data[u2_id]["score"], user_data[u2_id]["time"]
+
+            winner_id = None
+            if s1 > s2: winner_id = u1_id
+            elif s2 > s1: winner_id = u2_id
+            else:
+                # TIE BREAKER: Fastest overall response time
+                if t1 < t2: winner_id = u1_id
+                elif t2 < t1: winner_id = u2_id
+                else: winner_id = None # PURE DRAW
+
+            # Distribute Prizes
+            prize_pool = to_money(quiz.prize_pool)
+            if winner_id:
+                winner_user = db.query(User).filter(User.id == winner_id).first()
+                if winner_user:
+                    credit_wallet(winner_user, prize_pool, WALLET_BUCKET_WINNING)
+                    db.add(WalletTransaction(
+                        user_id=winner_id, amount=prize_pool, transaction_type="QUIZ_WIN",
+                        status="SUCCESS", reference_id=f"BATTLE-WIN-{quiz_id}"
+                    ))
+            else:
+                # DRAW: Return entry fee to both
+                draw_refund = to_money(quiz.entry_fee)
+                for p in participants:
+                    u = db.query(User).filter(User.id == p.user_id).first()
+                    if u: credit_wallet(u, draw_refund, WALLET_BUCKET_WINNING)
+
+            # Mark Completed
+            quiz.status = "COMPLETED"
+            for p in participants: p.status = "COMPLETED"
+            db.commit()
+
+            # Notify Both with custom payload
+            async def notify_player(uid, status, u_score, o_score, u_time, o_time, winnings):
+                await ws_manager.send_personal_message({
+                    "type": "quiz_result",
+                    "quiz_id": quiz_id,
+                    "status": status,
+                    "user_score": u_score,
+                    "opponent_score": o_score,
+                    "user_time_ms": u_time,
+                    "opponent_time_ms": o_time,
+                    "winnings": float(winnings)
+                }, uid)
+
+            await notify_player(u1_id, "WON" if winner_id == u1_id else ("DRAW" if not winner_id else "LOST"), s1, s2, t1, t2, prize_pool if winner_id == u1_id else (to_money(quiz.entry_fee) if not winner_id else 0))
+            await notify_player(u2_id, "WON" if winner_id == u2_id else ("DRAW" if not winner_id else "LOST"), s2, s1, t2, t1, prize_pool if winner_id == u2_id else (to_money(quiz.entry_fee) if not winner_id else 0))
+
+        except Exception as e:
+            logger.error(f"Error in process_battle_results for quiz {quiz_id}: {e}")
+        finally:
+            db.close()
+
     async def process_results(self, quiz_id: int):
         db = SyncSessionLocal()
         try:
