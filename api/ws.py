@@ -119,22 +119,22 @@ def _extract_ws_token_and_protocol(websocket: WebSocket) -> tuple[str | None, st
     return None, selected_protocol
 
 
-async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None, int | None]:
-    """Decode JWT and return (user_id, is_admin, username, mmr)."""
+async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None, int | None, str | None]:
+    """Decode JWT and return (user_id, is_admin, username, mmr, bio)."""
     if not token or token in ("null", "undefined", ""):
         logger.warning("WS Auth: Token is empty or null")
-        return None, False, None, None
+        return None, False, None, None, None
 
     try:
         payload = decode_access_token(token)
     except Exception as e:
         logger.warning(f"WS Auth Token Decode Error: {e}")
-        return None, False, None, None
+        return None, False, None, None, None
 
     user_id = payload.get("sub")
     if user_id is None:
         logger.warning("WS Auth: No 'sub' in token payload")
-        return None, False, None, None
+        return None, False, None, None, None
 
     uid = int(user_id)
 
@@ -150,6 +150,7 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None,
                         User.is_active,
                         User.token_version,
                         User.mmr,
+                        User.bio,
                     ).where(User.id == uid)
                 ),
                 timeout=5,
@@ -158,28 +159,29 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None,
 
         if not row:
             logger.warning(f"WS Auth: user_id={uid} not found in DB")
-            return None, False, None, None
+            return None, False, None, None, None
 
         token_version = payload.get("tv", 0)
         db_token_version = row.token_version or 0
         if not row.is_active:
             logger.warning(f"WS Auth: user_id={uid} is banned")
-            return None, False, None, None
+            return None, False, None, None, None
 
         if int(token_version) != int(db_token_version):
             logger.warning(f"WS Auth: user_id={uid} token version mismatch")
-            return None, False, None, None
+            return None, False, None, None, None
 
         is_admin = (row.role == "ADMIN")
         username = row.username
         mmr = row.mmr or 1200
-        return uid, is_admin, username, mmr
+        bio = row.bio or "Ready for the battle!"
+        return uid, is_admin, username, mmr, bio
     except asyncio.TimeoutError:
         logger.warning("WS Auth DB timeout while checking token")
-        return None, False, None, None
+        return None, False, None, None, None
     except Exception as e:
         logger.error(f"WS Auth DB Error: {e}")
-        return None, False, None, None
+        return None, False, None, None, None
 
 
 @router.websocket("/ws")
@@ -199,7 +201,7 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WS Accept Failed: {str(e)}")
         return
 
-    user_id, is_admin, username, mmr = await get_user_from_token(token)
+    user_id, is_admin, username, mmr, bio = await get_user_from_token(token)
     if not user_id:
         logger.warning("WS rejected: Invalid/Missing token")
         try:
@@ -254,7 +256,7 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "join_battle":
                 entry_fee = int(msg.get("entry_fee", 0))
                 from services.quiz_matchmaker import matchmaker
-                await matchmaker.add_to_pool(user_id, username, mmr, entry_fee)
+                await matchmaker.add_to_pool(user_id, username, mmr, entry_fee, bio=bio)
                 continue
 
             if msg_type == "battle_taunt":

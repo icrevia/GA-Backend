@@ -37,11 +37,12 @@ class QuizMatchmaker:
                 for entry_fee in list(self.match_pools.keys()):
                     await self.find_match(entry_fee)
 
-    async def add_to_pool(self, user_id: int, username: str, mmr: int, entry_fee: int):
+    async def add_to_pool(self, user_id: int, username: str, mmr: int, entry_fee: int, bio: str = ""):
         user_data = {
             "user_id": user_id,
             "username": username,
             "mmr": mmr,
+            "bio": bio,
             "entry_fee": entry_fee,
             "joined_at": asyncio.get_event_loop().time()
         }
@@ -180,6 +181,7 @@ class QuizMatchmaker:
                 "user_id": u2["user_id"],
                 "username": u2["username"],
                 "mmr": u2["mmr"],
+                "bio": u2.get("bio", "I'm a bot!"),
                 "is_bot": is_bot
             }
         }
@@ -191,6 +193,7 @@ class QuizMatchmaker:
                 "user_id": u1["user_id"],
                 "username": u1["username"],
                 "mmr": u1["mmr"],
+                "bio": u1.get("bio", ""),
                 "is_bot": False
             }
             await ws_manager.send_personal_message(payload, u2["user_id"])
