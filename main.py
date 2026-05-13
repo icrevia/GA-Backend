@@ -161,6 +161,7 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS banner_url VARCHAR(500)",
                 
                 # Quiz Questions category and sequence
+                "ALTER TABLE quiz_questions ALTER COLUMN quiz_id DROP NOT NULL",
                 "ALTER TABLE quiz_questions ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'ARENA'",
                 "CREATE INDEX IF NOT EXISTS ix_quiz_questions_category ON quiz_questions (category)",
                 "ALTER TABLE quiz_questions ADD COLUMN IF NOT EXISTS time_limit INTEGER DEFAULT 15",
