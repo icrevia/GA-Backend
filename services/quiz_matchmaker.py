@@ -116,9 +116,8 @@ class QuizMatchmaker:
         
         # 1. Create a VIRTUAL QuizMatch for this 1v1 Battle
         quiz_id = 0
-        async with SessionLocal() as db:
-            from models.quiz import QuizMatch, QuizQuestion
-            from sqlalchemy import func
+            from datetime import datetime, timedelta, timezone
+            start_delay = datetime.now(timezone.utc) + timedelta(seconds=6)
             
             new_quiz = QuizMatch(
                 title=f"1v1 Battle: {u1['username']} vs {u2['username']}",
@@ -126,7 +125,7 @@ class QuizMatchmaker:
                 prize_pool=entry_fee * 1.8, # 10% platform fee
                 status="LIVE",
                 match_type="BATTLE",
-                start_time=func.now(),
+                start_time=start_delay,
                 questions_per_quiz=10,
                 time_per_question=10
             )
