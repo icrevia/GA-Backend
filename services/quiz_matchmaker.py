@@ -83,25 +83,23 @@ class QuizMatchmaker:
 
             now = asyncio.get_event_loop().time()
             
-            # 1. Try to find a human match first
+            # 1. Try to find a human match first (Prioritize any human pair)
             if len(pool) >= 2:
-                pool.sort(key=lambda x: x["mmr"])
-                for i in range(len(pool) - 1):
-                    u1 = pool[i]
-                    u2 = pool[i+1]
-                    mmr_diff = abs(u1["mmr"] - u2["mmr"])
-                    wait_time = now - min(u1["joined_at"], u2["joined_at"])
-                    
-                    if mmr_diff < 200 or wait_time > 15:
-                        self.match_pools[entry_fee].remove(u1)
-                        self.match_pools[entry_fee].remove(u2)
-                        await self.create_battle(u1, u2, entry_fee)
-                        return
-
-            # 2. If no human match, check for BOT trigger (wait > 8s)
-            for user in pool[:]:
+                # Sort by joined_at to match the longest waiters
+                pool.sort(key=lambda x: x["joined_at"])
+                u1 = pool[0]
+                u2 = pool[1]
+                
+                self.match_pools[entry_fee].remove(u1)
+                self.match_pools[entry_fee].remove(u2)
+                await self.create_battle(u1, u2, entry_fee)
+                return
+            
+            # 2. If only one human, check for BOT trigger (wait > 10s)
+            if len(pool) == 1:
+                user = pool[0]
                 wait_time = now - user["joined_at"]
-                if wait_time > 8:
+                if wait_time > 10:
                     logger.info(f"Matchmaking Timeout for {user['username']} (waited {wait_time:.1f}s). Spawning BOT.")
                     self.match_pools[entry_fee].remove(user)
                     
