@@ -261,6 +261,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 await matchmaker.add_to_pool(user_id, username, mmr, entry_fee, bio=bio, profile_pic=profile_pic)
                 continue
 
+            if msg_type == "cancel_matchmaking":
+                from services.quiz_matchmaker import matchmaker
+                await matchmaker.cancel_user_matchmaking(user_id)
+                continue
+
             if msg_type == "battle_taunt":
                 opponent_id = int(msg.get("opponent_id", 0))
                 taunt_id = msg.get("taunt_id", "")

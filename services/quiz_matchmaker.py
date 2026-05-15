@@ -13,7 +13,8 @@ from services.wallet_balances import (
     WALLET_BUCKET_DEPOSIT, 
     WALLET_BUCKET_WINNING,
     to_money,
-    InsufficientWalletBalanceError
+    InsufficientWalletBalanceError,
+    credit_wallet
 )
 from models.user import User
 from models.wallet import WalletTransaction
@@ -47,6 +48,38 @@ class QuizMatchmaker:
                     await self.find_match(entry_fee)
 
     async def add_to_pool(self, user_id: int, username: str, mmr: int, entry_fee: int, bio: str = "", profile_pic: str = ""):
+        # 0. Deduct entry fee immediately
+        async with SessionLocal() as db:
+            user = await db.get(User, user_id)
+            if not user:
+                logger.error(f"User {user_id} not found for pool entry")
+                return
+            
+            try:
+                # Deduct immediately upon searching
+                deductions = debit_wallet(
+                    user, 
+                    entry_fee, 
+                    spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING)
+                )
+                db.add(WalletTransaction(
+                    user_id=user.id,
+                    amount=-to_money(entry_fee),
+                    transaction_type="QUIZ_ENTRY",
+                    status="SUCCESS",
+                    reference_id=f"MM-ENTRY-{uuid.uuid4().hex[:8]}",
+                    remark=f"1v1 Matchmaking Search Fee (Dep: {deductions[WALLET_BUCKET_DEPOSIT]}, Win: {deductions[WALLET_BUCKET_WINNING]})"
+                ))
+                await db.commit()
+            except InsufficientWalletBalanceError:
+                logger.warning(f"User {username} attempted matchmaking without sufficient balance")
+                from core.websockets import manager as ws_manager
+                await ws_manager.send_personal_message({
+                    "type": "error",
+                    "message": "Insufficient balance to start matchmaking."
+                }, user_id)
+                return
+
         user_data = {
             "user_id": user_id,
             "username": username,
@@ -71,6 +104,62 @@ class QuizMatchmaker:
         
         # Trigger matchmaking check
         asyncio.create_task(self.find_match(entry_fee))
+
+    async def cancel_user_matchmaking(self, user_id: int):
+        """
+        Handle user-initiated cancellation from the searching screen.
+        Refund 90% if < 5 mins, 100% if >= 5 mins.
+        """
+        user_entry = None
+        entry_fee_found = 0
+        
+        # Find user in memory pools
+        for entry_fee, pool in self.match_pools.items():
+            for u in pool:
+                if u["user_id"] == user_id:
+                    user_entry = u
+                    entry_fee_found = entry_fee
+                    break
+            if user_entry: break
+            
+        if not user_entry:
+            logger.warning(f"Cancellation requested for user {user_id} but not found in any pool.")
+            return
+
+        # 1. Calculate Refund
+        now = asyncio.get_event_loop().time()
+        wait_time = now - user_entry["joined_at"]
+        
+        # Policy: 5 mins = 300 seconds
+        is_early = wait_time < 300
+        refund_multiplier = 0.9 if is_early else 1.0
+        refund_amount = to_money(entry_fee_found * refund_multiplier)
+        deduction_msg = "(10% Platform Fee deducted for early exit)" if is_early else "(Full Refund - 5 min wait exceeded)"
+
+        async with SessionLocal() as db:
+            user = await db.get(User, user_id)
+            if user:
+                credit_wallet(user, refund_amount, WALLET_BUCKET_WINNING)
+                db.add(WalletTransaction(
+                    user_id=user.id,
+                    amount=refund_amount,
+                    transaction_type="QUIZ_REFUND",
+                    status="SUCCESS",
+                    reference_id=f"MM-REFUND-{uuid.uuid4().hex[:8]}",
+                    remark=f"Matchmaking Refund ₹{refund_amount} for ₹{entry_fee_found} entry. {deduction_msg}"
+                ))
+                await db.commit()
+                
+                from core.websockets import manager as ws_manager
+                await ws_manager.send_personal_message({
+                    "type": "matchmaking_refunded",
+                    "amount": float(refund_amount),
+                    "message": f"Refunded ₹{refund_amount}. {deduction_msg}"
+                }, user_id)
+
+        # 2. Remove from pool
+        self.match_pools[entry_fee_found] = [u for u in self.match_pools[entry_fee_found] if u["user_id"] != user_id]
+        logger.info(f"User {user_id} cancelled matchmaking. Refunded: {refund_amount} (Wait: {wait_time:.1f}s)")
 
     async def remove_from_pool(self, user_id: int, entry_fee: int):
         if self.is_redis_active:
@@ -123,43 +212,8 @@ class QuizMatchmaker:
         battle_id = f"battle_{uuid.uuid4().hex[:8]}"
         logger.info(f"BATTLE CREATED: {battle_id} | {u1['username']} vs {u2['username']} {'(BOT)' if is_bot else ''}")
         
-        # 0. Deduct entry fee from human players
-        async with SessionLocal() as db:
-            for u_data in [u1, u2]:
-                # In bot games, u2 is a synthetic dict without a real user_id that exists in DB usually, 
-                # but bot_manager handles bot users. If it's a bot, we don't deduct.
-                if u_data.get("is_bot"):
-                    continue
-                
-                user = await db.get(User, u_data["user_id"])
-                if not user:
-                    logger.error(f"User {u_data['user_id']} not found during battle deduction!")
-                    continue
-                
-                try:
-                    # PRIORITY: Deposit > Winning
-                    deductions = debit_wallet(
-                        user, 
-                        entry_fee, 
-                        spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING)
-                    )
-                    
-                    # Record the transaction
-                    db.add(WalletTransaction(
-                        user_id=user.id,
-                        amount=-to_money(entry_fee),
-                        transaction_type="QUIZ_ENTRY",
-                        status="SUCCESS",
-                        reference_id=f"BATTLE-ENTRY-{battle_id}",
-                        remark=f"1v1 Battle Entry Fee (Dep: {deductions[WALLET_BUCKET_DEPOSIT]}, Win: {deductions[WALLET_BUCKET_WINNING]})"
-                    ))
-                except InsufficientWalletBalanceError:
-                    logger.error(f"User {user.username} had insufficient balance at match creation!")
-                    # In a production app, we'd notify the user and cancel the match here.
-                    # For now, we'll log it and proceed (the confirmation sheet should prevent this).
-                    pass
-            
-            await db.commit()
+        # Money was already deducted at add_to_pool.
+        # No extra deduction needed here.
         
         # 1. Create a VIRTUAL QuizMatch for this 1v1 Battle
         quiz_id = 0
