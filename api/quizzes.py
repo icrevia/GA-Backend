@@ -365,6 +365,15 @@ def submit_answer(
         participant.score += score_delta
     participant.total_time_taken += int(delta)
     
+    # Mark as COMPLETED if all questions answered
+    responses_count = db.query(QuizResponse).filter(
+        QuizResponse.quiz_id == req.quiz_id,
+        QuizResponse.user_id == current_user.id
+    ).count()
+    
+    if responses_count >= (quiz.questions_per_quiz or 10):
+        participant.status = "COMPLETED"
+        
     db.commit()
     
     return {
