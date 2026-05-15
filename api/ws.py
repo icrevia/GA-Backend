@@ -261,6 +261,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 await matchmaker.add_to_pool(user_id, username, mmr, entry_fee, bio=bio, profile_pic=profile_pic)
                 continue
 
+            # Bug #6 fix: cancel_matchmaking had no handler — user stayed in pool forever
+            if msg_type == "cancel_matchmaking":
+                entry_fee = int(msg.get("entry_fee", 0))
+                from services.quiz_matchmaker import matchmaker
+                await matchmaker.remove_from_pool(user_id, entry_fee)
+                logger.info(f"User {user_id} cancelled matchmaking (fee={entry_fee})")
+                continue
+
             if msg_type == "battle_taunt":
                 opponent_id = int(msg.get("opponent_id", 0))
                 taunt_id = msg.get("taunt_id", "")
@@ -348,17 +356,27 @@ async def websocket_endpoint(websocket: WebSocket):
                             .values(status="COMPLETED")
                         )
                         await db.commit()
-                        
+
                         # Check if everyone is done for BATTLE
                         quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id))
                         quiz = quiz_res.scalar_one_or_none()
-                        
-                        if quiz and quiz.match_type == "BATTLE":
+
+                        if quiz and quiz.match_type == "BATTLE" and quiz.status != "COMPLETED":
                             part_res = await db.execute(select(QuizParticipant).where(QuizParticipant.quiz_id == quiz_id))
                             all_parts = part_res.scalars().all()
-                            if all(p.status == "COMPLETED" for p in all_parts):
-                                from services.quiz_orchestrator import orchestrator
-                                asyncio.create_task(orchestrator.process_battle_results(quiz_id))
+                            if all(p.status in ("COMPLETED", "SURRENDERED") for p in all_parts):
+                                # Bug #10 fix: Atomic guard — claim processing right now with a status update.
+                                # Only the task that successfully updates status → PROCESSING gets to run results.
+                                claim = await db.execute(
+                                    update(QuizMatch)
+                                    .where(QuizMatch.id == quiz_id, QuizMatch.status == "LIVE")
+                                    .values(status="PROCESSING")
+                                    .returning(QuizMatch.id)
+                                )
+                                await db.commit()
+                                if claim.scalar_one_or_none() is not None:
+                                    from services.quiz_orchestrator import orchestrator
+                                    asyncio.create_task(orchestrator.process_battle_results(quiz_id))
 
                         # Signal client to refresh lobby
                         await manager.send_personal_message({"type": "lobby_refresh"}, user_id)
@@ -373,27 +391,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         await manager.send_personal_message(payload, user_id)
                 continue
 
-            if msg_type in ["quiz_surrender", "leave_quiz"]:
-                quiz_id = int(msg.get("quiz_id", 0))
-                if quiz_id:
-                    async with SessionLocal() as db:
-                        # Check if this is a LIVE BATTLE
-                        quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id, QuizMatch.status == "LIVE", QuizMatch.match_type == "BATTLE"))
-                        quiz = quiz_res.scalar_one_or_none()
-                        if quiz:
-                            logger.info(f"User {user_id} surrendering/leaving active BATTLE {quiz_id}.")
-                            await db.execute(
-                                update(QuizParticipant)
-                                .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == user_id)
-                                .values(status="SURRENDERED")
-                            )
-                            await db.commit()
-                            from services.quiz_orchestrator import orchestrator
-                            asyncio.create_task(orchestrator.process_battle_results(quiz_id, surrendered_user_id=user_id))
-                        else:
-                            # Just leave the room if not a live battle
-                            manager.leave_quiz_room(quiz_id, user_id)
-                continue
+            # (Duplicate quiz_surrender/leave_quiz block removed — Bug #1 fix.
+            # quiz_surrender is fully handled above at line 281.
+            # leave_quiz is handled at line 275.)
 
             if msg_type not in ALLOWED_WS_EVENTS:
                 logger.debug(f"WS Signal: Unknown type={msg_type} from user_id={user_id}")

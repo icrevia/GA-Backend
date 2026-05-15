@@ -65,11 +65,18 @@ class QuizMatchmaker:
 
     async def remove_from_pool(self, user_id: int, entry_fee: int):
         if self.is_redis_active:
+            # Bug #5 fix: was a no-op (pass). Now actually removes from Redis Set.
             key = f"match_pool:{entry_fee}"
-            # This is tricky with JSON in Sets. We'd usually use a Hash or ZSet for better indexing.
-            # For simplicity in this demo, we'll iterate or use a mapping.
-            # In a real big app, we'd use a different Redis structure.
-            pass
+            try:
+                members = await self.redis.smembers(key)
+                for m in members:
+                    data = json.loads(m)
+                    if data.get("user_id") == user_id:
+                        await self.redis.srem(key, m)
+                        logger.info(f"Removed user {user_id} from Redis pool for fee={entry_fee}")
+                        break
+            except Exception as e:
+                logger.error(f"Redis remove_from_pool error: {e}")
         else:
             if entry_fee in self.match_pools:
                 self.match_pools[entry_fee] = [u for u in self.match_pools[entry_fee] if u["user_id"] != user_id]
