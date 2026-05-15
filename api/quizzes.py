@@ -129,12 +129,10 @@ def get_quiz_questions(
         
         # Shuffle options within each question using a deterministic seed for that specific question
         for q in final_pool:
-            seed = current_user.id + quiz_id + q["id"]
+            seed = f"shuff:{current_user.id}:{quiz_id}:{q['id']}"
             q_rng = random.Random(seed)
             logger.info(f"FETCH: User {current_user.id}, Quiz {quiz_id}, Question {q['id']}, Seed {seed}")
-            logger.info(f"FETCH: Options before shuffle: {[o['text'] for o in q['options']]}")
             q_rng.shuffle(q["options"])
-            logger.info(f"FETCH: Options after shuffle: {[o['text'] for o in q['options']]}")
     else:
         # Limit questions to the requested amount (don't shuffle here to keep it stable per user request)
         final_pool = question_pool[:questions_per_quiz]
@@ -309,15 +307,12 @@ def submit_answer(
     
     if quiz and quiz.match_type == "SURVIVOR":
         # Reconstruct the shuffled options to find the correct index using the question-specific seed
-        seed = current_user.id + req.quiz_id + req.question_id
+        seed = f"shuff:{current_user.id}:{req.quiz_id}:{req.question_id}"
         q_rng = random.Random(seed)
         
         original_options = list(question.options or [])
         shuffled_indices = [i for i in range(len(original_options))]
-        logger.info(f"SUBMIT: User {current_user.id}, Quiz {req.quiz_id}, Question {req.question_id}, Seed {seed}")
-        logger.info(f"SUBMIT: Indices before shuffle: {shuffled_indices}, Correct Index: {correct_idx}")
         q_rng.shuffle(shuffled_indices)
-        logger.info(f"SUBMIT: Indices after shuffle: {shuffled_indices}")
         
         # The user sent 'req.option_index', which is an index in the SHUFFLED list.
         # So we need to check if shuffled_indices[req.option_index] == original_correct_idx
