@@ -957,6 +957,14 @@ def create_quiz(
     if questions_per_quiz > question_pool_size:
         raise HTTPException(status_code=400, detail="Questions per quiz cannot exceed pool size")
 
+    # Parse end_time if provided
+    end_dt = None
+    if data.end_time:
+        try:
+            end_dt = datetime.fromisoformat(data.end_time.replace('Z', '+00:00'))
+        except Exception:
+            pass
+
     db_obj = QuizMatch(
         title=data.title,
         description=data.description,
@@ -964,6 +972,7 @@ def create_quiz(
         entry_fee=data.entry_fee,
         prize_pool=data.prize_pool,
         start_time=dt,
+        end_time=end_dt,
         max_participants=data.max_participants or 100,
         questions_per_quiz=questions_per_quiz,
         question_pool_size=question_pool_size,
@@ -995,6 +1004,12 @@ def update_quiz(
             update_data["start_time"] = datetime.fromisoformat(update_data["start_time"].replace('Z', '+00:00'))
         except Exception:
             del update_data["start_time"]
+
+    if "end_time" in update_data and update_data["end_time"]:
+        try:
+            update_data["end_time"] = datetime.fromisoformat(update_data["end_time"].replace('Z', '+00:00'))
+        except Exception:
+            del update_data["end_time"]
 
     if "questions_per_quiz" in update_data or "question_pool_size" in update_data:
         new_questions_per_quiz = update_data.get("questions_per_quiz", db_obj.questions_per_quiz)
