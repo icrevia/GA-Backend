@@ -16,7 +16,6 @@ class QuizMatchmaker:
         self.redis: Optional[aioredis.Redis] = None
         self.match_pools: Dict[int, List[Dict]] = {} # entry_fee -> list of users (in-memory fallback)
         self.is_redis_active = False
-        self._match_lock = asyncio.Lock()
 
     async def initialize(self):
         try:
@@ -66,58 +65,50 @@ class QuizMatchmaker:
 
     async def remove_from_pool(self, user_id: int, entry_fee: int):
         if self.is_redis_active:
-            # Bug #5 fix: was a no-op (pass). Now actually removes from Redis Set.
             key = f"match_pool:{entry_fee}"
-            try:
-                members = await self.redis.smembers(key)
-                for m in members:
-                    data = json.loads(m)
-                    if data.get("user_id") == user_id:
-                        await self.redis.srem(key, m)
-                        logger.info(f"Removed user {user_id} from Redis pool for fee={entry_fee}")
-                        break
-            except Exception as e:
-                logger.error(f"Redis remove_from_pool error: {e}")
+            # This is tricky with JSON in Sets. We'd usually use a Hash or ZSet for better indexing.
+            # For simplicity in this demo, we'll iterate or use a mapping.
+            # In a real big app, we'd use a different Redis structure.
+            pass
         else:
             if entry_fee in self.match_pools:
                 self.match_pools[entry_fee] = [u for u in self.match_pools[entry_fee] if u["user_id"] != user_id]
 
     async def find_match(self, entry_fee: int):
-        async with self._match_lock:
-            if self.is_redis_active:
-                # Redis logic for ELO matchmaking...
-                pass
-            else:
-                pool = self.match_pools.get(entry_fee, [])
-                if not pool:
-                    return
+        if self.is_redis_active:
+            # Redis logic for ELO matchmaking...
+            pass
+        else:
+            pool = self.match_pools.get(entry_fee, [])
+            if not pool:
+                return
 
-                now = asyncio.get_event_loop().time()
+            now = asyncio.get_event_loop().time()
+            
+            # 1. Try to find a human match first (Prioritize any human pair)
+            if len(pool) >= 2:
+                # Sort by joined_at to match the longest waiters
+                pool.sort(key=lambda x: x["joined_at"])
+                u1 = pool[0]
+                u2 = pool[1]
                 
-                # 1. Try to find a human match first (Prioritize any human pair)
-                if len(pool) >= 2:
-                    # Sort by joined_at to match the longest waiters
-                    pool.sort(key=lambda x: x["joined_at"])
-                    u1 = pool[0]
-                    u2 = pool[1]
+                self.match_pools[entry_fee].remove(u1)
+                self.match_pools[entry_fee].remove(u2)
+                await self.create_battle(u1, u2, entry_fee)
+                return
+            
+            # 2. If only one human, check for BOT trigger (wait > 10s)
+            if len(pool) == 1:
+                user = pool[0]
+                wait_time = now - user["joined_at"]
+                if wait_time > 10:
+                    logger.info(f"Matchmaking Timeout for {user['username']} (waited {wait_time:.1f}s). Spawning BOT.")
+                    self.match_pools[entry_fee].remove(user)
                     
-                    self.match_pools[entry_fee].remove(u1)
-                    self.match_pools[entry_fee].remove(u2)
-                    await self.create_battle(u1, u2, entry_fee)
+                    from services.bot_manager import bot_manager
+                    bot = bot_manager.get_random_bot()
+                    await self.create_battle(user, bot, entry_fee, is_bot=True)
                     return
-                
-                # 2. If only one human, check for BOT trigger (wait > 10s)
-                if len(pool) == 1:
-                    user = pool[0]
-                    wait_time = now - user["joined_at"]
-                    if wait_time > 10:
-                        logger.info(f"Matchmaking Timeout for {user['username']} (waited {wait_time:.1f}s). Spawning BOT.")
-                        self.match_pools[entry_fee].remove(user)
-                        
-                        from services.bot_manager import bot_manager
-                        bot = bot_manager.get_random_bot()
-                        await self.create_battle(user, bot, entry_fee, is_bot=True)
-                        return
 
     async def create_battle(self, u1: Dict, u2: Dict, entry_fee: int, is_bot: bool = False):
         battle_id = f"battle_{uuid.uuid4().hex[:8]}"
@@ -134,8 +125,8 @@ class QuizMatchmaker:
             new_quiz = QuizMatch(
                 title=f"1v1 Battle: {u1['username']} vs {u2['username']}",
                 entry_fee=entry_fee,
-                prize_pool=entry_fee * 1.8 if not is_bot else entry_fee, # 10% platform fee, bot match returns fee only
-                status="UPCOMING",
+                prize_pool=entry_fee * 1.8, # 10% platform fee
+                status="LIVE",
                 match_type="BATTLE",
                 start_time=start_delay,
                 questions_per_quiz=10,
@@ -199,7 +190,7 @@ class QuizMatchmaker:
                 "username": u2["username"],
                 "mmr": u2["mmr"],
                 "bio": u2.get("bio", "I'm a bot!"),
-                "profile_pic": u2.get("profile_pic") or f"{settings.APP_URL}/static/avatars/avatar{((u2['user_id'] % 5) + 1) if not is_bot else 1}.png",
+                "profile_pic": u2.get("profile_pic") or f"{settings.APP_URL}/static/avatars/avatar{(u2['user_id'] % 5) + 1}.png",
                 "is_bot": is_bot
             }
         }

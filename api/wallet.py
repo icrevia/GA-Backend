@@ -87,24 +87,17 @@ def _common_spin_prize_amount() -> Decimal:
 def _planned_prize_for_spin(spin_number: int) -> Decimal:
     if spin_number <= 0:
         return Decimal("0.00")
-    
-    # Weighted random prizes
-    r = random.random()
-    if r < 0.001:
+    if spin_number == 1:
+        return Decimal(str(random.choice([1, 2, 5])))
+    if spin_number % 100 == 0:
         return Decimal("100.00")
-    if r < 0.005:
+    if spin_number % 30 == 0:
         return Decimal("50.00")
-    if r < 0.02:
+    if spin_number % 15 == 0:
         return Decimal("20.00")
-    if r < 0.05:
+    if spin_number % 5 == 0:
         return Decimal("10.00")
-    if r < 0.10:
-        return Decimal("5.00")
-    if r < 0.20:
-        return Decimal("2.00")
-    if r < 0.50:
-        return Decimal("1.00")
-    return Decimal("0.00")
+    return _common_spin_prize_amount()
 
 
 def _current_daily_cycle_ist(reset_minute_ist: int) -> tuple[str, datetime, datetime]:
@@ -356,10 +349,10 @@ def get_balance(
 def get_transactions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_wallet),
-    limit: int = 50,
+    limit: int = 200,
     offset: int = 0,
 ):
-    safe_limit = max(1, min(limit, 100))
+    safe_limit = max(1, min(limit, 500))
     safe_offset = max(0, offset)
     return (
         db.query(WalletTransaction)
