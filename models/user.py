@@ -24,6 +24,7 @@ class User(Base):
 
     # Game IDs
     freefire_id     = Column(String, nullable=True)
+    upi_id          = Column(String(100), nullable=True)
 
     # Numeric(12,2): exact decimal arithmetic — no floating-point rounding errors
     wallet_balance  = Column(Numeric(precision=12, scale=2), default=0.00)

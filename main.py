@@ -102,6 +102,8 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token VARCHAR(512)",
                 # Sub-admin custom permissions
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_permissions VARCHAR(512)",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS upi_id VARCHAR(100)",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS freefire_id VARCHAR(50)",
 
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_order_id VARCHAR(255)",
                 "ALTER TABLE wallet_transactions ADD COLUMN IF NOT EXISTS gateway_payment_id VARCHAR(255)",
@@ -210,7 +212,6 @@ async def lifespan(app: FastAPI):
             cleanup_queries = [
                 "DROP INDEX IF EXISTS ix_users_firebase_uid",
                 "ALTER TABLE users DROP COLUMN IF EXISTS firebase_uid",
-                "ALTER TABLE users DROP COLUMN IF EXISTS upi_id",
                 "ALTER TABLE users DROP COLUMN IF EXISTS bgmi_id",
                 "ALTER TABLE users DROP COLUMN IF EXISTS valorant_id",
             ]
