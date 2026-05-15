@@ -131,8 +131,16 @@ def get_quiz_questions(
         for q in final_pool:
             seed = f"shuff:{current_user.id}:{quiz_id}:{q['id']}"
             q_rng = random.Random(seed)
-            logger.info(f"FETCH: User {current_user.id}, Quiz {quiz_id}, Question {q['id']}, Seed {seed}")
-            q_rng.shuffle(q["options"])
+            
+            # Use index-based shuffling to match submitQuizAnswer logic exactly
+            indices = list(range(len(q["options"])))
+            q_rng.shuffle(indices)
+            
+            # Reorder options based on shuffled indices
+            original_options = list(q["options"])
+            q["options"] = [original_options[i] for i in indices]
+            
+            logger.info(f"FETCH: User {current_user.id}, Quiz {quiz_id}, Question {q['id']}, Seed {seed}, Order {indices}")
     else:
         # Limit questions to the requested amount (don't shuffle here to keep it stable per user request)
         final_pool = question_pool[:questions_per_quiz]
