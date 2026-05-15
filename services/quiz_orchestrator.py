@@ -180,7 +180,7 @@ class QuizOrchestrator:
             self.active_quizzes.remove(quiz_id)
             db.close()
 
-    async def process_battle_results(self, quiz_id: int):
+    async def process_battle_results(self, quiz_id: int, surrendered_user_id: int | None = None):
         """
         Specialized result calculation for 1v1 Battles. 
         Calculates winner based on Score -> then Response Time.
@@ -210,9 +210,6 @@ class QuizOrchestrator:
             participants = db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).all()
             if len(participants) < 2: return # Wait for both
             
-            # If we don't have results for someone yet (they finished but zero answers? or bot didn't finish?)
-            # Actually, this is called when both are supposed to be done.
-            
             # Map results
             user_data = {r.user_id: {"score": int(r.score), "time": int(r.total_time or 0)} for r in results}
             
@@ -228,13 +225,17 @@ class QuizOrchestrator:
             s2, t2 = user_data[u2_id]["score"], user_data[u2_id]["time"]
 
             winner_id = None
-            if s1 > s2: winner_id = u1_id
-            elif s2 > s1: winner_id = u2_id
+            if surrendered_user_id:
+                # If someone surrendered, the OTHER one wins
+                winner_id = u2_id if surrendered_user_id == u1_id else u1_id
             else:
-                # TIE BREAKER: Fastest overall response time
-                if t1 < t2: winner_id = u1_id
-                elif t2 < t1: winner_id = u2_id
-                else: winner_id = None # PURE DRAW
+                if s1 > s2: winner_id = u1_id
+                elif s2 > s1: winner_id = u2_id
+                else:
+                    # TIE BREAKER: Fastest overall response time
+                    if t1 < t2: winner_id = u1_id
+                    elif t2 < t1: winner_id = u2_id
+                    else: winner_id = None # PURE DRAW
 
             # Distribute Prizes
             prize_pool = to_money(quiz.prize_pool)
@@ -259,20 +260,30 @@ class QuizOrchestrator:
             db.commit()
 
             # Notify Both with custom payload
-            async def notify_player(uid, status, u_score, o_score, u_time, o_time, winnings):
-                await ws_manager.send_personal_message({
-                    "type": "quiz_result",
-                    "quiz_id": quiz_id,
-                    "status": status,
-                    "user_score": u_score,
-                    "opponent_score": o_score,
-                    "user_time_ms": u_time,
-                    "opponent_time_ms": o_time,
-                    "winnings": float(winnings)
-                }, uid)
+            status_u1 = "WON" if winner_id == u1_id else ("DRAW" if not winner_id else "LOST")
+            status_u2 = "WON" if winner_id == u2_id else ("DRAW" if not winner_id else "LOST")
 
-            await notify_player(u1_id, "WON" if winner_id == u1_id else ("DRAW" if not winner_id else "LOST"), s1, s2, t1, t2, prize_pool if winner_id == u1_id else (to_money(quiz.entry_fee) if not winner_id else 0))
-            await notify_player(u2_id, "WON" if winner_id == u2_id else ("DRAW" if not winner_id else "LOST"), s2, s1, t2, t1, prize_pool if winner_id == u2_id else (to_money(quiz.entry_fee) if not winner_id else 0))
+            await ws_manager.send_personal_message({
+                "type": "quiz_result",
+                "quiz_id": quiz_id,
+                "status": status_u1,
+                "user_score": s1,
+                "opponent_score": s2,
+                "user_time_ms": t1,
+                "opponent_time_ms": t2,
+                "winnings": float(prize_pool if winner_id == u1_id else (to_money(quiz.entry_fee) if not winner_id else 0))
+            }, u1_id)
+
+            await ws_manager.send_personal_message({
+                "type": "quiz_result",
+                "quiz_id": quiz_id,
+                "status": status_u2,
+                "user_score": s2,
+                "opponent_score": s1,
+                "user_time_ms": t2,
+                "opponent_time_ms": t1,
+                "winnings": float(prize_pool if winner_id == u2_id else (to_money(quiz.entry_fee) if not winner_id else 0))
+            }, u2_id)
 
         except Exception as e:
             logger.error(f"Error in process_battle_results for quiz {quiz_id}: {e}")
@@ -306,51 +317,68 @@ class QuizOrchestrator:
                 logger.warning(f"No responses recorded for quiz_id={quiz_id}")
                 return
 
-            # 2. Determine winners and distribute prizes
-            # For now, let's give the full pool to the top scorer. 
-            # In future, use quiz.prize_distribution JSON.
+            # 2. Determine winners and distribute prizes based on prize_distribution
+            prize_dist = quiz.prize_distribution or [{"rank": "1", "prize": float(quiz.prize_pool)}]
             
-            top_winner_id, top_score, top_time = results[0]
+            # results is ordered by score DESC, total_time ASC
+            # Assign ranks (handling ties)
+            ranked_results = []
+            curr_rank = 0
+            prev_score = -1
+            prev_time = -1
             
-            # If multiple people have the same score and time (unlikely), they share.
-            winners = [r for r in results if r.score == top_score and r.total_time == top_time]
-            prize_per_winner = to_money(quiz.prize_pool) / Decimal(len(winners))
+            for i, (u_id, score, t_time) in enumerate(results):
+                if score != prev_score or t_time != prev_time:
+                    curr_rank = i + 1
+                ranked_results.append({
+                    "user_id": u_id,
+                    "score": score,
+                    "time": t_time,
+                    "rank": curr_rank
+                })
+                prev_score = score
+                prev_time = t_time
 
-            for w_id, score, time in winners:
-                user = db.query(User).filter(User.id == w_id).first()
-                if user:
-                    credit_wallet(user, prize_per_winner, WALLET_BUCKET_WINNING)
-                    
-                    tx = WalletTransaction(
-                        user_id=user.id,
-                        amount=prize_per_winner,
-                        transaction_type="QUIZ_WIN",
-                        status="SUCCESS",
-                        reference_id=f"WIN-QZ-{quiz_id}-{user.id}"
-                    )
-                    db.add(tx)
-                    
-                    add_user_notification(
-                        db, user.id,
-                        "🏆 CHAMPION! 🏆",
-                        f"You won ₹{prize_per_winner} in '{quiz.title}'! Score: {score} Correct.",
-                        "APP"
-                    )
+            def parse_rank_range(rank_str):
+                try:
+                    if '-' in str(rank_str):
+                        start, end = str(rank_str).split('-')
+                        return range(int(start), int(end) + 1)
+                    return [int(rank_str)]
+                except: return []
+
+            distributed_users = []
+            for dist in prize_dist:
+                target_ranks = parse_rank_range(dist.get("rank", "0"))
+                prize_amount = to_money(dist.get("prize", 0))
+                
+                if prize_amount <= 0: continue
+                
+                for res in ranked_results:
+                    if res["rank"] in target_ranks:
+                        user = db.query(User).filter(User.id == res["user_id"]).first()
+                        if user:
+                            credit_wallet(user, prize_amount, WALLET_BUCKET_WINNING)
+                            db.add(WalletTransaction(
+                                user_id=user.id, amount=prize_amount, transaction_type="QUIZ_WIN",
+                                status="SUCCESS", reference_id=f"WIN-QZ-{quiz_id}-{user.id}"
+                            ))
+                            distributed_users.append(user.username or f"User {user.id}")
+                            
+                            add_user_notification(
+                                db, user.id, "🏆 CHAMPION! 🏆",
+                                f"You won ₹{prize_amount} in '{quiz.title}'!", "APP"
+                            )
             
             db.commit()
             
             # 3. Notify the room
-            winner_names = []
-            for w_id, _, _ in winners:
-                u = db.query(User).filter(User.id == w_id).first()
-                if u: winner_names.append(u.username or f"User {u.id}")
-            
-            msg = f"Quiz Finished! Winner(s): {', '.join(winner_names)} with {top_score} correct answers!"
+            msg = f"Quiz Finished! Distributed prizes to {len(distributed_users)} winner(s)!"
             await ws_manager.broadcast_to_quiz(quiz_id, {
                 "type": "quiz_result", 
                 "message": msg,
-                "winners": winner_names,
-                "score": int(top_score)
+                "winners": distributed_users[:5], # Only show top 5 names
+                "is_tournament": True
             })
             
             # Refresh lobby for everyone

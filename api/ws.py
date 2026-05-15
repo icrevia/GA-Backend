@@ -278,6 +278,26 @@ async def websocket_endpoint(websocket: WebSocket):
                     await manager.leave_quiz_room(user_id, quiz_id)
                 continue
 
+            if msg_type == "quiz_surrender":
+                quiz_id = int(msg.get("quiz_id", 0))
+                if quiz_id:
+                    async with SessionLocal() as db:
+                        # Mark the user as surrendered
+                        await db.execute(
+                            update(QuizParticipant)
+                            .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == user_id)
+                            .values(status="SURRENDERED")
+                        )
+                        await db.commit()
+                        
+                        # Immediately process results if it's a battle
+                        quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id))
+                        quiz = quiz_res.scalar_one_or_none()
+                        if quiz and quiz.match_type == "BATTLE":
+                            from services.quiz_orchestrator import orchestrator
+                            asyncio.create_task(orchestrator.process_battle_results(quiz_id, surrendered_user_id=user_id))
+                continue
+
             if msg_type == "quiz_answer":
                 quiz_id = int(msg.get("quiz_id", 0))
                 question_id = int(msg.get("question_id", 0))
@@ -382,6 +402,25 @@ async def websocket_endpoint(websocket: WebSocket):
                 await manager.broadcast_to_admins(msg)
 
     except WebSocketDisconnect:
+        # Check if user was in an active BATTLE before disconnecting
+        async with SessionLocal() as db:
+            # Find all quiz rooms user was in
+            for q_id in list(manager.quiz_rooms.keys()):
+                if user_id in manager.quiz_rooms[q_id]:
+                    # Check if this quiz is a LIVE BATTLE
+                    quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == q_id, QuizMatch.status == "LIVE", QuizMatch.match_type == "BATTLE"))
+                    quiz = quiz_res.scalar_one_or_none()
+                    if quiz:
+                        logger.info(f"User {user_id} disconnected during active BATTLE {q_id}. Auto-surrendering.")
+                        await db.execute(
+                            update(QuizParticipant)
+                            .where(QuizParticipant.quiz_id == q_id, QuizParticipant.user_id == user_id)
+                            .values(status="SURRENDERED")
+                        )
+                        await db.commit()
+                        from services.quiz_orchestrator import orchestrator
+                        asyncio.create_task(orchestrator.process_battle_results(q_id, surrendered_user_id=user_id))
+        
         manager.disconnect(user_id, websocket)
     except Exception as e:
         logger.warning(f"WS runtime error for user_id={user_id}: {e}")
