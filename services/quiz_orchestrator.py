@@ -178,7 +178,7 @@ class QuizOrchestrator:
             # 4. Calculate results
             logger.info(f"Quiz {quiz_id} time up. Processing results...")
             if match_type_snapshot == "BATTLE":
-                await self.process_battle_results(quiz_id)
+                await self.process_battle_results(quiz_id, force=True)
             else:
                 await self.process_results(quiz_id)
 
@@ -190,7 +190,7 @@ class QuizOrchestrator:
             if db is not None:
                 db.close()
 
-    async def process_battle_results(self, quiz_id: int, surrendered_user_id: int | None = None):
+    async def process_battle_results(self, quiz_id: int, surrendered_user_id: int | None = None, force: bool = False):
         """
         Specialized result calculation for 1v1 Battles. 
         Calculates winner based on Score -> then Response Time.
@@ -219,6 +219,12 @@ class QuizOrchestrator:
 
             participants = db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).all()
             if len(participants) < 2: return # Wait for both
+            
+            # CRITICAL: Only proceed if everyone is finished, OR if it's a forced completion (timer/surrender)
+            if not force and not surrendered_user_id:
+                if not all(p.status == "COMPLETED" for p in participants):
+                    logger.info(f"Battle {quiz_id}: Waiting for all participants to complete.")
+                    return
             
             # Map results
             user_data = {r.user_id: {"score": int(r.score), "time": int(r.total_time or 0)} for r in results}
