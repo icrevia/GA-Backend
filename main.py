@@ -113,6 +113,16 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE home_banners ADD COLUMN IF NOT EXISTS page_key VARCHAR(50) DEFAULT 'HOME'",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS requires_admin BOOLEAN DEFAULT FALSE",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_by_admin_id INTEGER",
+                
+                # Survival Mode Quizzes
+                "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS end_time TIMESTAMP",
+                "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(20) DEFAULT 'PENDING'",
+                "ALTER TABLE quiz_matches ADD COLUMN IF NOT EXISTS prize_distribution JSON",
+                "ALTER TABLE quiz_participants ADD COLUMN IF NOT EXISTS user_start_time TIMESTAMP",
+                "ALTER TABLE quiz_participants ADD COLUMN IF NOT EXISTS score INTEGER DEFAULT 0",
+                "ALTER TABLE quiz_participants ADD COLUMN IF NOT EXISTS total_time_taken NUMERIC(12,2) DEFAULT 0",
+                "ALTER TABLE quiz_participants ADD COLUMN IF NOT EXISTS rank INTEGER",
+                "ALTER TABLE quiz_participants ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'JOINED'",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS attended_at TIMESTAMP",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS blocked_by_admin_id INTEGER",
                 "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS blocked_at TIMESTAMP",
