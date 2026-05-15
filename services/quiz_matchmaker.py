@@ -26,15 +26,18 @@ class QuizMatchmaker:
         self.match_pools: Dict[int, List[Dict]] = {} # entry_fee -> list of users (in-memory fallback)
         self.is_redis_active = False
 
-    async def _get_battle_config(self, db) -> tuple[int, float]:
-        """Fetch current entry fee and prize pool from DB with fallbacks."""
+    async def _get_battle_config(self, db) -> tuple[int, float, bool, int]:
+        """Fetch current entry fee, prize pool, and bot settings from DB with fallbacks."""
         from models.config import SystemConfig
-        configs = await db.execute(select(SystemConfig).where(SystemConfig.config_key.in_(["battle_entry_fee", "battle_prize_amount"])))
+        configs = await db.execute(select(SystemConfig).where(SystemConfig.config_key.in_(["battle_entry_fee", "battle_prize_amount", "bot_enabled", "bot_join_delay"])))
         config_map = {c.config_key: c.config_value for c in configs.scalars().all()}
         
         entry_fee = int(config_map.get("battle_entry_fee", 36))
         prize_pool = float(config_map.get("battle_prize_amount", entry_fee * 1.8))
-        return entry_fee, prize_pool
+        bot_enabled = config_map.get("bot_enabled", "True") == "True"
+        bot_join_delay = int(config_map.get("bot_join_delay", 10))
+        
+        return entry_fee, prize_pool, bot_enabled, bot_join_delay
 
     async def initialize(self):
         try:
@@ -65,7 +68,7 @@ class QuizMatchmaker:
                 return
             
             # Use configured entry fee if available, otherwise fallback to what client sent (for safety)
-            current_entry_fee, _ = await self._get_battle_config(db)
+            current_entry_fee, _, _, _ = await self._get_battle_config(db)
             # Use the most restrictive one or just the server one
             fee_to_deduct = current_entry_fee 
             
@@ -209,11 +212,15 @@ class QuizMatchmaker:
                 await self.create_battle(u1, u2, entry_fee)
                 return
             
-            # 2. If only one human, check for BOT trigger (wait > 10s)
+            # 2. If only one human, check for BOT trigger
             if len(pool) == 1:
                 user = pool[0]
                 wait_time = now - user["joined_at"]
-                if wait_time > 10:
+                
+                async with SessionLocal() as db:
+                    _, _, bot_enabled, bot_join_delay = await self._get_battle_config(db)
+                
+                if bot_enabled and wait_time > bot_join_delay:
                     logger.info(f"Matchmaking Timeout for {user['username']} (waited {wait_time:.1f}s). Spawning BOT.")
                     self.match_pools[entry_fee].remove(user)
                     
@@ -238,7 +245,7 @@ class QuizMatchmaker:
             start_delay = datetime.now(timezone.utc) + timedelta(seconds=8)
             
             # Fetch current configured prize pool
-            _, prize_pool = await self._get_battle_config(db)
+            _, prize_pool, _, _ = await self._get_battle_config(db)
             
             new_quiz = QuizMatch(
                 title=f"1v1 Battle: {u1['username']} vs {u2['username']}",
