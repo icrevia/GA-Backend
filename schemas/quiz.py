@@ -21,7 +21,9 @@ class QuizMatchResponse(BaseModel):
     entry_fee: Decimal
     prize_pool: Decimal
     start_time: datetime
+    end_time: Optional[datetime] = None
     status: str
+    evaluation_status: str = "PENDING"
     max_participants: int = 100
     questions_per_quiz: int = 10
     question_pool_size: int = 30
@@ -39,3 +41,15 @@ class QuizJoinResponse(BaseModel):
     new_wallet_balance: float
     quiz_id: int
     deduction_breakdown: Optional[dict] = None
+
+class QuizSubmissionRequest(BaseModel):
+    quiz_id: int
+    question_id: int
+    option_index: int
+
+class QuizSubmissionResponse(BaseModel):
+    success: bool
+    message: str
+    is_correct: bool
+    correct_option_index: int
+    score_delta: int

@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
     logger.info("GamerzAdda API starting up (Lifespan)...")
     support_media_cleanup_task: asyncio.Task | None = None
     bonus_expiry_task: asyncio.Task | None = None
+    evaluator_task: asyncio.Task | None = None
 
     async with engine.begin() as conn:
         # Create all tables asynchronously
@@ -323,6 +324,10 @@ async def lifespan(app: FastAPI):
     from services.quiz_orchestrator import orchestrator as quiz_orchestrator
     quiz_task = asyncio.create_task(quiz_orchestrator.start())
     logger.info("Quiz Arena Orchestrator started")
+    # ── Survival Evaluator Daemon ────────────────────────────────
+    from tasks.evaluator_daemon import start_evaluator_daemon
+    evaluator_task = asyncio.create_task(start_evaluator_daemon())
+    logger.info("Survival Evaluator Daemon started")
     # ─────────────────────────────────────────────────────────────
 
     try:
@@ -340,6 +345,10 @@ async def lifespan(app: FastAPI):
             bonus_expiry_task.cancel()
             with suppress(asyncio.CancelledError):
                 await bonus_expiry_task
+        if evaluator_task is not None:
+            evaluator_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await evaluator_task
         # SHUTDOWN
         logger.info("GamerzAdda API shutting down...")
 

@@ -22,6 +22,8 @@ class QuizMatch(Base):
     question_pool_size = Column(Integer, default=30)
     time_per_question = Column(Integer, default=5)
     duration_seconds = Column(Integer, nullable=True)
+    end_time = Column(DateTime(timezone=True), nullable=True, index=True)
+    evaluation_status = Column(String, default="PENDING") # PENDING, COMPLETED
     
     # JSON list of prize distribution e.g. [{"rank": 1, "prize": 50}]
     prize_distribution = Column(JSON, nullable=True)
@@ -62,6 +64,7 @@ class QuizParticipant(Base):
     
     score = Column(Integer, default=0)
     total_time_taken = Column(Numeric(precision=12, scale=3), default=0.000) # milliseconds precision
+    rank = Column(Integer, nullable=True)
     
     status = Column(String, default="JOINED") # JOINED, COMPLETED
     
@@ -70,6 +73,7 @@ class QuizParticipant(Base):
     mmr_delta = Column(Integer, default=0) # Change in ELO rating (+/-)
     
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
+    user_start_time = Column(DateTime(timezone=True), nullable=True)
 
     quiz = relationship("QuizMatch", back_populates="participants")
     user = relationship("User")

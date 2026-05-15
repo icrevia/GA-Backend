@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List
+from typing import List, Dict, Any
 from decimal import Decimal
+from datetime import datetime, timedelta
+import random
 import uuid
 import logging
 
@@ -116,10 +118,20 @@ def get_quiz_questions(
 
     # Determine actual counts and timers from Admin Settings
     questions_per_quiz = quiz.questions_per_quiz if (quiz.questions_per_quiz and quiz.questions_per_quiz > 0) else 10
-    time_per_question = quiz.time_per_question if (quiz.time_per_question and quiz.time_per_question > 0) else 5
     
-    # Limit questions to the requested amount (don't shuffle here to keep it stable per user request)
-    final_pool = question_pool[:questions_per_quiz]
+    if quiz.match_type == "SURVIVOR":
+        # Use a stable seed per user/quiz for consistent randomization in a single session
+        # but unique across different users
+        rng = random.Random(current_user.id + quiz_id)
+        
+        # Randomize subset for survivor mode
+        final_pool = rng.sample(question_pool, min(len(question_pool), questions_per_quiz))
+        # Shuffle options within each question
+        for q in final_pool:
+            rng.shuffle(q["options"])
+    else:
+        # Limit questions to the requested amount (don't shuffle here to keep it stable per user request)
+        final_pool = question_pool[:questions_per_quiz]
     
     # Use stored duration if available, else calculate
     session_duration = quiz.duration_seconds or max(60, (len(final_pool) * time_per_question) + 30)
@@ -143,7 +155,10 @@ def join_quiz(
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz not found")
     
-    if quiz.status != "UPCOMING":
+    if quiz.match_type == "SURVIVOR":
+        if quiz.end_time and datetime.now() > (quiz.end_time - timedelta(minutes=5)):
+            raise HTTPException(status_code=400, detail="Result Preparing: No more joins allowed.")
+    elif quiz.status != "UPCOMING":
         logger.warning(f"Join failed: quiz {quiz_id} status is {quiz.status}")
         raise HTTPException(status_code=400, detail="Quiz has already started or completed")
     
@@ -173,7 +188,8 @@ def join_quiz(
         
         participant = QuizParticipant(
             quiz_id=quiz_id,
-            user_id=current_user.id
+            user_id=current_user.id,
+            user_start_time=datetime.now()
         )
         db.add(participant)
         
@@ -221,3 +237,134 @@ def get_online_count():
     actual_connections = len(manager.active_connections)
     jitter = random.randint(-5, 8) 
     return {"count": 1240 + actual_connections + jitter}
+
+@router.get("/{quiz_id}/leaderboard")
+def get_quiz_leaderboard(
+    quiz_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns the leaderboard for a specific quiz match.
+    """
+    participants = (
+        db.query(QuizParticipant)
+        .filter(QuizParticipant.quiz_id == quiz_id)
+        .order_by(QuizParticipant.rank.asc())
+        .all()
+    )
+    
+    leaderboard = []
+    for p in participants:
+        leaderboard.append({
+            "user_id": p.user_id,
+            "username": p.user.username,
+            "profile_pic": p.user.profile_pic,
+            "score": p.score,
+            "total_time_taken": float(p.total_time_taken),
+            "rank": p.rank
+        })
+        
+    return leaderboard
+
+@router.post("/submit-answer", response_model=QuizSubmissionResponse)
+def submit_answer(
+    req: QuizSubmissionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    REST Submission for Survival Mode (Async). 
+    Records response time and score server-side.
+    """
+    participant = db.query(QuizParticipant).filter(
+        QuizParticipant.quiz_id == req.quiz_id,
+        QuizParticipant.user_id == current_user.id
+    ).with_for_update().first()
+    
+    if not participant:
+        raise HTTPException(status_code=403, detail="You are not a participant in this quiz")
+    
+    if participant.status == "COMPLETED":
+        raise HTTPException(status_code=400, detail="You have already finished this quiz")
+
+    question = db.query(QuizQuestion).filter(QuizQuestion.id == req.question_id).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    # For SURVIVOR, we need to account for option shuffling done in get_quiz_questions
+    quiz = db.query(QuizMatch).filter(QuizMatch.id == req.quiz_id).first()
+    correct_idx = question.correct_option_index
+    
+    if quiz and quiz.match_type == "SURVIVOR":
+        # Reconstruct the shuffled options to find the correct index
+        rng = random.Random(current_user.id + req.quiz_id)
+        
+        # Note: we need to find the same options list that was returned to the user
+        original_options = list(question.options or [])
+        indexed_options = list(enumerate(original_options)) # [(0, "A"), (1, "B"), ...]
+        
+        # We need the same shuffle order as get_quiz_questions
+        # Wait, get_quiz_questions shuffles the options_payload which contains text and image_url
+        # Let's simplify: we only care about the index.
+        
+        shuffled_indices = [i for i in range(len(original_options))]
+        rng.shuffle(shuffled_indices)
+        
+        # The user sent 'req.option_index', which is an index in the SHUFFLED list.
+        # So we need to check if shuffled_indices[req.option_index] == original_correct_idx
+        is_correct = (shuffled_indices[req.option_index] == correct_idx)
+        
+        # Correct index in the shuffled list for the response
+        correct_option_index_in_shuffled = shuffled_indices.index(correct_idx)
+    else:
+        is_correct = (req.option_index == correct_idx)
+        correct_option_index_in_shuffled = correct_idx
+
+    # Check if answer already submitted for this question
+    existing = db.query(QuizResponse).filter(
+        QuizResponse.quiz_id == req.quiz_id,
+        QuizResponse.user_id == current_user.id,
+        QuizResponse.question_id == req.question_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Answer already submitted for this question")
+
+    # Timing Logic
+    now = datetime.now()
+    last_response = db.query(QuizResponse).filter(
+        QuizResponse.quiz_id == req.quiz_id,
+        QuizResponse.user_id == current_user.id
+    ).order_by(QuizResponse.created_at.desc()).first()
+
+    if last_response:
+        delta = (now - last_response.created_at).total_seconds() * 1000
+    else:
+        # First question
+        start_time = participant.user_start_time or participant.joined_at
+        delta = (now - start_time).total_seconds() * 1000
+
+    score_delta = 10 if is_correct else 0
+    
+    response = QuizResponse(
+        quiz_id=req.quiz_id,
+        question_id=req.question_id,
+        user_id=current_user.id,
+        option_index=req.option_index,
+        is_correct=is_correct,
+        response_time_ms=int(delta)
+    )
+    db.add(response)
+    
+    if is_correct:
+        participant.score += score_delta
+    participant.total_time_taken += int(delta)
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Answer recorded",
+        "is_correct": is_correct,
+        "correct_option_index": correct_option_index_in_shuffled,
+        "score_delta": score_delta
+    }
