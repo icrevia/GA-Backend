@@ -43,19 +43,22 @@ def get_upcoming_quizzes(
         .subquery()
     )
 
-    rows = (
-        db.query(QuizMatch, func.coalesce(joined_subq.c.j_count, 0))
-        .outerjoin(joined_subq, QuizMatch.id == joined_subq.c.quiz_id)
-        .filter(QuizMatch.status.in_(["UPCOMING", "LIVE"]))
-        .order_by(QuizMatch.start_time.asc())
-        .all()
-    )
-
     user_participation = {
         qid: status for (qid, status) in db.query(QuizParticipant.quiz_id, QuizParticipant.status)
         .filter(QuizParticipant.user_id == current_user.id)
         .all()
     }
+
+    rows = (
+        db.query(QuizMatch, func.coalesce(joined_subq.c.j_count, 0))
+        .outerjoin(joined_subq, QuizMatch.id == joined_subq.c.quiz_id)
+        .filter(
+            (QuizMatch.status.in_(["UPCOMING", "LIVE"])) |
+            ((QuizMatch.status == "COMPLETED") & (QuizMatch.id.in_(list(user_participation.keys()))))
+        )
+        .order_by(QuizMatch.start_time.desc())
+        .all()
+    )
 
     result = []
     for q, count in rows:
