@@ -125,7 +125,7 @@ class QuizOrchestrator:
             time_per_question = quiz.time_per_question if (quiz.time_per_question and quiz.time_per_question > 0) else 5
             
             import random
-            final_pool = question_pool
+            final_pool = list(question_pool)
             random.shuffle(final_pool)
             final_pool = final_pool[:questions_per_quiz]
 
@@ -137,14 +137,19 @@ class QuizOrchestrator:
             db.add(quiz)
             db.commit()
 
-            # 3. Enter real-time sync loop
-            # This loop sends updates every second to keep all players perfectly synced
-            logger.info(f"Quiz {quiz_id} real-time sync loop started. Duration: {session_duration}s")
-            
+            # ── CRITICAL: Release DB connection BEFORE entering the sync loop ─
+            # Each match holds the loop for up to 110 seconds. Keeping the DB
+            # connection open exhausts the pool (max 15) when concurrent matches run.
+            match_type_snapshot = quiz.match_type
             start_time_dt = quiz.start_time
+            if start_time_dt.tzinfo is None:
+                start_time_dt = start_time_dt.replace(tzinfo=timezone.utc)
+            db.close()
+            db = None  # Prevent the finally block from double-closing
+
             end_time = start_time_dt + timedelta(seconds=session_duration)
-            
-            # Initial payload
+
+            # Static payload — questions don't change mid-match
             sync_payload = {
                 "type": "quiz_sync",
                 "quiz_id": quiz_id,
@@ -155,15 +160,17 @@ class QuizOrchestrator:
                 "question_pool": final_pool
             }
 
+            # 3. Enter real-time sync loop
+            # This loop sends updates every second to keep all players perfectly synced
+            logger.info(f"Quiz {quiz_id} sync loop started. Duration: {session_duration}s")
+            
             while datetime.now(timezone.utc) < end_time:
-                # Re-fetch match to check for early termination (e.g. both users quit)
-                # Note: For performance, we skip DB check every second, just use end_time
                 await ws_manager.broadcast_to_quiz(quiz_id, sync_payload)
                 await asyncio.sleep(1)
             
             # 4. Calculate results
             logger.info(f"Quiz {quiz_id} time up. Processing results...")
-            if quiz.match_type == "BATTLE":
+            if match_type_snapshot == "BATTLE":
                 await self.process_battle_results(quiz_id)
             else:
                 await self.process_results(quiz_id)
