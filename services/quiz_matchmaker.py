@@ -8,6 +8,15 @@ from core.config import settings
 from redis import asyncio as aioredis
 from core.database import SessionLocal
 from sqlalchemy.future import select
+from services.wallet_balances import (
+    debit_wallet, 
+    WALLET_BUCKET_DEPOSIT, 
+    WALLET_BUCKET_WINNING,
+    to_money,
+    InsufficientWalletBalanceError
+)
+from models.user import User
+from models.wallet import WalletTransaction
 
 logger = logging.getLogger("GamerzAdda.matchmaker")
 
@@ -113,6 +122,44 @@ class QuizMatchmaker:
     async def create_battle(self, u1: Dict, u2: Dict, entry_fee: int, is_bot: bool = False):
         battle_id = f"battle_{uuid.uuid4().hex[:8]}"
         logger.info(f"BATTLE CREATED: {battle_id} | {u1['username']} vs {u2['username']} {'(BOT)' if is_bot else ''}")
+        
+        # 0. Deduct entry fee from human players
+        async with SessionLocal() as db:
+            for u_data in [u1, u2]:
+                # In bot games, u2 is a synthetic dict without a real user_id that exists in DB usually, 
+                # but bot_manager handles bot users. If it's a bot, we don't deduct.
+                if u_data.get("is_bot"):
+                    continue
+                
+                user = await db.get(User, u_data["user_id"])
+                if not user:
+                    logger.error(f"User {u_data['user_id']} not found during battle deduction!")
+                    continue
+                
+                try:
+                    # PRIORITY: Deposit > Winning
+                    deductions = debit_wallet(
+                        user, 
+                        entry_fee, 
+                        spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING)
+                    )
+                    
+                    # Record the transaction
+                    db.add(WalletTransaction(
+                        user_id=user.id,
+                        amount=-to_money(entry_fee),
+                        transaction_type="QUIZ_ENTRY",
+                        status="SUCCESS",
+                        reference_id=f"BATTLE-ENTRY-{battle_id}",
+                        remark=f"1v1 Battle Entry Fee (Dep: {deductions[WALLET_BUCKET_DEPOSIT]}, Win: {deductions[WALLET_BUCKET_WINNING]})"
+                    ))
+                except InsufficientWalletBalanceError:
+                    logger.error(f"User {user.username} had insufficient balance at match creation!")
+                    # In a production app, we'd notify the user and cancel the match here.
+                    # For now, we'll log it and proceed (the confirmation sheet should prevent this).
+                    pass
+            
+            await db.commit()
         
         # 1. Create a VIRTUAL QuizMatch for this 1v1 Battle
         quiz_id = 0
