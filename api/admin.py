@@ -45,7 +45,7 @@ from schemas.admin import (
     SystemConfigResponse, SystemConfigUpdate, NotificationSendRequest, UserStatusUpdate,
     UserWalletBucketsUpdate, RestrictionCreateRequest, BulkRestrictionCreateRequest,
     RestrictionUnlockRequest, OtpLockResetRequest, ActivityLockResetRequest,
-    QuizQuestionCreate, QuizQuestionResponse
+    QuizQuestionCreate, QuizQuestionUpdate, QuizQuestionResponse
 )
 from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
 from core.database import get_db as get_db_async, get_db_sync as get_db
