@@ -59,6 +59,8 @@ def _status_payload_from_config(config_map: dict[str, str]) -> dict[str, object]
         "force_update": _as_bool(config_map.get("force_update"), False),
         "update_message": (config_map.get("update_message") or "").strip(),
         "support_email": (config_map.get("support_email") or "gamerzaddahelp@gmail.com").strip(),
+        "battle_entry_fee": _as_int(config_map.get("battle_entry_fee"), 36),
+        "battle_prize_amount": _as_int(config_map.get("battle_prize_amount"), 65),
     }
 
 # ─────────────────────────────────────────────

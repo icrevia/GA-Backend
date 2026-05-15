@@ -23,9 +23,18 @@ logger = logging.getLogger("GamerzAdda.matchmaker")
 
 class QuizMatchmaker:
     def __init__(self):
-        self.redis: Optional[aioredis.Redis] = None
         self.match_pools: Dict[int, List[Dict]] = {} # entry_fee -> list of users (in-memory fallback)
         self.is_redis_active = False
+
+    async def _get_battle_config(self, db) -> tuple[int, float]:
+        """Fetch current entry fee and prize pool from DB with fallbacks."""
+        from models.config import SystemConfig
+        configs = await db.execute(select(SystemConfig).where(SystemConfig.config_key.in_(["battle_entry_fee", "battle_prize_amount"])))
+        config_map = {c.config_key: c.config_value for c in configs.scalars().all()}
+        
+        entry_fee = int(config_map.get("battle_entry_fee", 36))
+        prize_pool = float(config_map.get("battle_prize_amount", entry_fee * 1.8))
+        return entry_fee, prize_pool
 
     async def initialize(self):
         try:
@@ -55,11 +64,16 @@ class QuizMatchmaker:
                 logger.error(f"User {user_id} not found for pool entry")
                 return
             
+            # Use configured entry fee if available, otherwise fallback to what client sent (for safety)
+            current_entry_fee, _ = await self._get_battle_config(db)
+            # Use the most restrictive one or just the server one
+            fee_to_deduct = current_entry_fee 
+            
             try:
                 # Deduct immediately upon searching
                 deductions = debit_wallet(
                     user, 
-                    entry_fee, 
+                    fee_to_deduct, 
                     spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING)
                 )
                 db.add(WalletTransaction(
@@ -223,10 +237,13 @@ class QuizMatchmaker:
             from datetime import datetime, timedelta, timezone
             start_delay = datetime.now(timezone.utc) + timedelta(seconds=8)
             
+            # Fetch current configured prize pool
+            _, prize_pool = await self._get_battle_config(db)
+            
             new_quiz = QuizMatch(
                 title=f"1v1 Battle: {u1['username']} vs {u2['username']}",
                 entry_fee=entry_fee,
-                prize_pool=entry_fee * 1.8, # 10% platform fee
+                prize_pool=prize_pool, 
                 status="LIVE",
                 match_type="BATTLE",
                 start_time=start_delay,
