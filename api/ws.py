@@ -2,13 +2,13 @@ import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import json
 import logging
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from core.websockets import manager, ALLOWED_WS_EVENTS
 from core.security import decode_access_token
 from core.database import SessionLocal
 from models.user import User
-from models.quiz import QuizMatch, QuizResponse, QuizQuestion
+from models.quiz import QuizMatch, QuizResponse, QuizQuestion, QuizParticipant
 
 logger = logging.getLogger("GamerzAdda.ws")
 router = APIRouter()
@@ -322,8 +322,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 quiz_id = int(msg.get("quiz_id", 0))
                 if quiz_id:
                     async with SessionLocal() as db:
-                        from sqlalchemy import update, select
-                        from models.quiz import QuizParticipant, QuizMatch
                         await db.execute(
                             update(QuizParticipant)
                             .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == user_id)
