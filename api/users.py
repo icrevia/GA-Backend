@@ -136,6 +136,7 @@ def upload_profile_pic(
         "bonus_balance": float(wallet_breakdown["bonus_balance"]),
         "profile_pic": current_user.profile_pic,
         "bio": current_user.bio,
+        "upi_id": current_user.upi_id,
         "freefire_id": current_user.freefire_id,
         "is_active": bool(current_user.is_active),
         "admin_permissions": getattr(current_user, "admin_permissions", None),
@@ -270,6 +271,7 @@ def read_user_me(
         "bonus_balance": float(wallet_breakdown["bonus_balance"]),
         "profile_pic": current_user.profile_pic,
         "bio": current_user.bio,
+        "upi_id": current_user.upi_id,
         "freefire_id": current_user.freefire_id,
         "is_active": bool(current_user.is_active),
         "admin_permissions": getattr(current_user, "admin_permissions", None),
@@ -316,6 +318,7 @@ def read_user_profile_full(
             "bonus_balance": float(wallet_breakdown["bonus_balance"]),
             "profile_pic": current_user.profile_pic,
             "bio": current_user.bio,
+            "upi_id": current_user.upi_id,
             "freefire_id": current_user.freefire_id,
             "is_active": bool(current_user.is_active),
             "face_image_path": getattr(current_user, "face_image_path", None),
@@ -349,6 +352,8 @@ def update_user_me(
     if user_update.bio is not None:
         cleaned_bio = user_update.bio.strip()
         current_user.bio = cleaned_bio or None
+    if user_update.upi_id is not None:
+        current_user.upi_id = user_update.upi_id
     if user_update.freefire_id is not None:
         current_user.freefire_id = user_update.freefire_id
 
@@ -369,6 +374,7 @@ def update_user_me(
         "bonus_balance": float(wallet_breakdown["bonus_balance"]),
         "profile_pic": current_user.profile_pic,
         "bio": current_user.bio,
+        "upi_id": current_user.upi_id,
         "freefire_id": current_user.freefire_id,
         "is_active": bool(current_user.is_active),
         "face_image_path": getattr(current_user, "face_image_path", None),
@@ -437,7 +443,7 @@ def get_leaderboard(
     current_user: User = Depends(get_current_user_profile),
     category: str = Query(default="free_fire"),
     time_range: str = Query(default="lifetime"),
-    limit: int = Query(default=50, ge=1, le=100),
+    limit: int = Query(default=200, ge=1, le=200),
 ):
 
     normalized_category = normalize_leaderboard_category(category)

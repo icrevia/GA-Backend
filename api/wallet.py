@@ -72,7 +72,7 @@ SPIN_COST = Decimal("10.00")
 DAILY_SPIN_LIMIT = 1
 SPIN_DAILY_RESET_MINUTE_IST = 1
 WITHDRAWAL_DAILY_RESET_MINUTE_IST = 1
-WITHDRAWAL_SAME_DAY_FEE = Decimal("5.00")
+WITHDRAWAL_SAME_DAY_FEE = Decimal("10.00")
 IST = timezone(timedelta(hours=5, minutes=30))
 MIN_DEPOSIT_CONFIG_KEY = "minimum_deposit_amount"
 MIN_WITHDRAWAL_CONFIG_KEY = "minimum_withdrawal_amount"

@@ -60,6 +60,7 @@ class UserResponse(BaseModel):
     bonus_balance: float = 0.0
     profile_pic: Optional[str] = None
     bio: Optional[str] = None
+    upi_id: Optional[str] = None
     freefire_id: Optional[str] = None
     is_active: bool = True
     admin_permissions: Optional[str] = None
@@ -83,6 +84,7 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, pattern=r"^\+?[0-9]{10,15}$")
     bio: Optional[str] = Field(None, max_length=30)
+    upi_id: Optional[str] = Field(None, max_length=100)
     freefire_id: Optional[str] = Field(None, max_length=50)
 
 

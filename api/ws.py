@@ -373,6 +373,28 @@ async def websocket_endpoint(websocket: WebSocket):
                         await manager.send_personal_message(payload, user_id)
                 continue
 
+            if msg_type in ["quiz_surrender", "leave_quiz"]:
+                quiz_id = int(msg.get("quiz_id", 0))
+                if quiz_id:
+                    async with SessionLocal() as db:
+                        # Check if this is a LIVE BATTLE
+                        quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id, QuizMatch.status == "LIVE", QuizMatch.match_type == "BATTLE"))
+                        quiz = quiz_res.scalar_one_or_none()
+                        if quiz:
+                            logger.info(f"User {user_id} surrendering/leaving active BATTLE {quiz_id}.")
+                            await db.execute(
+                                update(QuizParticipant)
+                                .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == user_id)
+                                .values(status="SURRENDERED")
+                            )
+                            await db.commit()
+                            from services.quiz_orchestrator import orchestrator
+                            asyncio.create_task(orchestrator.process_battle_results(quiz_id, surrendered_user_id=user_id))
+                        else:
+                            # Just leave the room if not a live battle
+                            manager.leave_quiz_room(quiz_id, user_id)
+                continue
+
             if msg_type not in ALLOWED_WS_EVENTS:
                 logger.debug(f"WS Signal: Unknown type={msg_type} from user_id={user_id}")
                 continue
