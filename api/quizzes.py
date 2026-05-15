@@ -49,13 +49,20 @@ def get_upcoming_quizzes(
         .all()
     }
 
+    user_quiz_ids = list(user_participation.keys())
+    
+    if not user_quiz_ids:
+        status_filter = (QuizMatch.status.in_(["UPCOMING", "LIVE"])) & (QuizMatch.match_type != "BATTLE")
+    else:
+        status_filter = (
+            ((QuizMatch.status.in_(["UPCOMING", "LIVE"])) & (QuizMatch.match_type != "BATTLE")) |
+            ((QuizMatch.status.in_(["UPCOMING", "LIVE", "COMPLETED"])) & (QuizMatch.id.in_(user_quiz_ids)))
+        )
+
     rows = (
         db.query(QuizMatch, func.coalesce(joined_subq.c.j_count, 0))
         .outerjoin(joined_subq, QuizMatch.id == joined_subq.c.quiz_id)
-        .filter(
-            (QuizMatch.status.in_(["UPCOMING", "LIVE"])) |
-            ((QuizMatch.status == "COMPLETED") & (QuizMatch.id.in_(list(user_participation.keys()))))
-        )
+        .filter(status_filter)
         .order_by(QuizMatch.start_time.desc())
         .all()
     )
