@@ -247,7 +247,7 @@ class QuizMatchmaker:
                 status="LIVE",
                 match_type="BATTLE",
                 start_time=start_delay,
-                questions_per_quiz=10,
+                questions_per_quiz=5,
                 time_per_question=10
             )
             db.add(new_quiz)
@@ -264,7 +264,7 @@ class QuizMatchmaker:
                 select(QuizQuestion)
                 .where(QuizQuestion.category == "BATTLE_1V1")
                 .order_by(func.random())
-                .limit(10)
+                .limit(5)
             )
             master_questions = q_res.scalars().all()
             
@@ -275,7 +275,7 @@ class QuizMatchmaker:
                     select(QuizQuestion)
                     .where(QuizQuestion.category == "ARENA")
                     .order_by(func.random())
-                    .limit(10)
+                    .limit(5)
                 )
                 master_questions = q_res.scalars().all()
 
