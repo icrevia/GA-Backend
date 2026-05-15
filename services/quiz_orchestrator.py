@@ -124,8 +124,6 @@ class QuizOrchestrator:
             questions_per_quiz = quiz.questions_per_quiz if (quiz.questions_per_quiz and quiz.questions_per_quiz > 0) else 10
             time_per_question = quiz.time_per_question if (quiz.time_per_question and quiz.time_per_question > 0) else 5
             
-            # Limit the questions we actually send to the pool size requested
-            # We shuffle here to give everyone the same set but a random subset of the total pool if needed
             import random
             final_pool = question_pool
             random.shuffle(final_pool)
@@ -134,7 +132,20 @@ class QuizOrchestrator:
             # Minimum duration is questions * time + buffer
             session_duration = max(60, (len(final_pool) * time_per_question) + 30)
             
-            payload = {
+            # Save the duration to the quiz object so the REST API also knows it
+            quiz.duration_seconds = session_duration
+            db.add(quiz)
+            db.commit()
+
+            # 3. Enter real-time sync loop
+            # This loop sends updates every second to keep all players perfectly synced
+            logger.info(f"Quiz {quiz_id} real-time sync loop started. Duration: {session_duration}s")
+            
+            start_time_dt = quiz.start_time
+            end_time = start_time_dt + timedelta(seconds=session_duration)
+            
+            # Initial payload
+            sync_payload = {
                 "type": "quiz_sync",
                 "quiz_id": quiz_id,
                 "questions_per_quiz": len(final_pool),
@@ -143,26 +154,27 @@ class QuizOrchestrator:
                 "duration_seconds": session_duration,
                 "question_pool": final_pool
             }
+
+            while datetime.now(timezone.utc) < end_time:
+                # Re-fetch match to check for early termination (e.g. both users quit)
+                # Note: For performance, we skip DB check every second, just use end_time
+                await ws_manager.broadcast_to_quiz(quiz_id, sync_payload)
+                await asyncio.sleep(1)
             
-            # Save the duration to the quiz object so the REST API also knows it
-            quiz.duration_seconds = session_duration
-            db.add(quiz)
-            db.commit()
-
-            logger.info(f"Broadcasting quiz_sync for quiz {quiz_id}. Duration: {session_duration}s")
-            await ws_manager.broadcast_to_quiz(quiz_id, payload)
-
-            # Wait for the quiz duration + extra grace period
-            logger.info(f"Quiz {quiz_id} session sleeping for {session_duration}s")
-            await asyncio.sleep(session_duration)
-
             # 4. Calculate results
             logger.info(f"Quiz {quiz_id} time up. Processing results...")
-            await self.process_results(quiz_id)
+            if quiz.match_type == "BATTLE":
+                await self.process_battle_results(quiz_id)
+            else:
+                await self.process_results(quiz_id)
 
-            # 5. Update status to COMPLETED
-            quiz.status = "COMPLETED"
-            db.commit()
+            # 5. Final update
+            db = SyncSessionLocal()
+            quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+            if quiz:
+                quiz.status = "COMPLETED"
+                db.commit()
+            db.close()
 
             # Mark all participants as COMPLETED
             from sqlalchemy import update
