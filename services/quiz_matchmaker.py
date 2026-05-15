@@ -120,7 +120,7 @@ class QuizMatchmaker:
             from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
             from sqlalchemy import func
             from datetime import datetime, timedelta, timezone
-            start_delay = datetime.now(timezone.utc) + timedelta(seconds=6)
+            start_delay = datetime.now(timezone.utc) + timedelta(seconds=8)
             
             new_quiz = QuizMatch(
                 title=f"1v1 Battle: {u1['username']} vs {u2['username']}",
