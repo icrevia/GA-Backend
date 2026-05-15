@@ -1,133 +1,161 @@
 import asyncio
 import random
 import logging
+import uuid
 from datetime import datetime
-from sqlalchemy import select
+from sqlalchemy import select, func, update
 from models.quiz import QuizQuestion, QuizResponse, QuizMatch, QuizParticipant
 from models.user import User
 from core.database import SessionLocal
 from core.websockets import manager as ws_manager
-from sqlalchemy import update
+from core.config import settings
 
 logger = logging.getLogger("GamerzAdda.bot_manager")
 
 class BotManager:
     def __init__(self):
-        self.bot_names = [
-            "Rahul_Pro", "Aman_Gamer", "Priya_Quiz", "Sandeep_77", "Vikram_Adda",
-            "Sonia_Play", "Deepak_King", "Anjali_Win", "Rohan_Master", "Karan_99",
-            "Ishita_Pro", "Sameer_Adda", "Pooja_X", "Manish_Boss", "Neha_Gamer"
+        # Indian First Names (Diverse)
+        self.first_names = [
+            "Aryan", "Vihaan", "Sia", "Ananya", "Kabir", "Ishaan", "Advait", "Myra", "Kyra", "Zoya",
+            "Arjun", "Rohan", "Aditya", "Sameer", "Rahul", "Amit", "Sandeep", "Priya", "Neha", "Anjali",
+            "Sonia", "Deepak", "Vikram", "Karan", "Manish", "Pooja", "Siddharth", "Varun", "Kartik", "Rishabh",
+            "Akshay", "Abhinav", "Tushar", "Mayank", "Ayush", "Shubham", "Vivek", "Sourabh", "Sumit", "Pranjal",
+            "Aarav", "Ishani", "Kavya", "Reyansh", "Atharva", "Dia", "Ishita", "Yuvraj", "Tanmay", "Ritika",
+            "Harsh", "Prateek", "Gaurav", "Yash", "Sneha", "Kriti", "Bhavya", "Divya", "Ankit", "Rohit"
+        ]
+        
+        # Gaming Suffixes
+        self.suffixes = [
+            "Pro", "Gaming", "God", "Adda", "King", "Winner", "Master", "77", "99", "YT",
+            "Official", "Gamer", "Killer", "Legend", "Squad", "Sniper", "Striker", "Hunter", "Warrior", "Champion",
+            "X", "Zero", "Bolt", "Dash", "Flash", "Shadow", "Ghost", "Phantm", "Elite", "Prime"
         ]
 
+        # Gaming Bios
+        self.bios = [
+            "Always ready for a challenge! 🎮", "Born to play, forced to work. 😎", "Eat, Sleep, Game, Repeat. 🔥",
+            "Losing is not an option. 🏆", "Gaming is my therapy. 🧘", "Let the games begin! 🚀",
+            "Chasing the top rank. 📈", "Gaming is life. 🕹️", "Professional Noob. 😂", "Just here to win. 💰",
+            "Fast fingers, fast mind. ⚡", "Quiz master in the making. 🧠", "1v1 me if you dare! ⚔️",
+            "Gaming since 2015. 👴", "Mobile gaming legend. 📱", "Leveling up everyday. ⭐",
+            "No lag, only skill. 🦾", "Future Esports Champ. 🎖️", "Strategist & Gamer. ♟️", "Peace out! ✌️"
+        ]
+
+    def _generate_username(self):
+        fn = random.choice(self.first_names)
+        sx = random.choice(self.suffixes)
+        sep = random.choice(["", "_", " "])
+        return f"{fn}{sep}{sx}"
+
     def get_random_bot(self):
+        """Returns a bot structure with all necessary fields."""
+        bot_id = random.randint(99000, 99999)
+        username = self._generate_username()
+        avatar_idx = (bot_id % 50) + 1 # Assuming 50 avatars available
+        
         return {
-            "user_id": random.randint(99000, 99999), # Special range for bots
-            "username": random.choice(self.bot_names),
-            "mmr": random.randint(1100, 1400)
+            "user_id": bot_id,
+            "username": username,
+            "mmr": random.randint(1100, 1450),
+            "bio": random.choice(self.bios),
+            "profile_pic": f"{settings.APP_URL}/static/avatars/avatar{avatar_idx}.png"
         }
 
     async def ensure_bot_users(self):
-        """Pre-populates the database with bot users in the 99000-99999 range."""
-        logger.info("Bot Manager: Ensuring bot users exist (range 99000-99999)...")
+        """Pre-populates the database with 1000 smart bot users."""
+        logger.info("Bot Manager: Ensuring 1000 smart bot users exist (range 99000-99999)...")
         async with SessionLocal() as db:
-            # We don't want to check 1000 IDs one by one if possible, 
-            # but for a one-time startup task, a batch check is fine.
             res = await db.execute(select(User.id).where(User.id >= 99000, User.id <= 99999))
             existing_ids = set(res.scalars().all())
             
             to_add = []
             for bot_id in range(99000, 100000):
                 if bot_id not in existing_ids:
-                    # Pick a base name and add suffix for uniqueness
-                    base_name = random.choice(self.bot_names)
+                    username = self._generate_username()
+                    # Ensure username uniqueness (basic check)
+                    if any(u.username == username for u in to_add):
+                        username = f"{username}_{bot_id}"
+                        
+                    avatar_idx = (bot_id % 50) + 1
+                    
                     to_add.append(User(
                         id=bot_id,
-                        username=f"{base_name}_{bot_id}",
+                        username=username,
                         email=f"bot_{bot_id}@gamerzadda.in",
                         mmr=random.randint(1100, 1500),
+                        bio=random.choice(self.bios),
+                        profile_pic=f"{settings.APP_URL}/static/avatars/avatar{avatar_idx}.png",
                         is_active=True,
                         role="USER"
                     ))
             
             if to_add:
-                logger.info(f"Bot Manager: Creating {len(to_add)} bot users...")
-                db.add_all(to_add)
+                logger.info(f"Bot Manager: Creating {len(to_add)} smart bot users...")
+                # Batch add in chunks to avoid memory/lock issues
+                chunk_size = 200
+                for i in range(0, len(to_add), chunk_size):
+                    chunk = to_add[i:i + chunk_size]
+                    db.add_all(chunk)
+                    await db.flush()
+                
                 try:
                     await db.commit()
-                    logger.info("Bot Manager: Bot users created successfully ✅")
+                    logger.info("Bot Manager: 1000 smart bots created successfully ✅")
                 except Exception as e:
                     await db.rollback()
                     logger.error(f"Bot Manager: Failed to create bot users: {e}")
             else:
-                logger.info("Bot Manager: All bot users already exist ✅")
+                logger.info("Bot Manager: 1000 smart bots already exist ✅")
 
     async def simulate_bot_game(self, battle_id: str, bot_user_id: int, quiz_id: int):
-        """
-        Simulates a bot playing a 1v1 battle. 
-        Rigged: Bot always answers correctly and fast (0.8s - 1.8s).
-        """
+        """Simulates a bot playing a 1v1 battle."""
         logger.info(f"Bot {bot_user_id} starting simulation for battle {battle_id} (Quiz {quiz_id})")
-        
-        # Wait a bit for the match to start on client side
         await asyncio.sleep(2)
 
         async with SessionLocal() as db:
-            # 1. Fetch questions for this quiz
             q_res = await db.execute(
                 select(QuizQuestion)
-                .where(QuizQuestion.quiz_id == quiz_id)
+                .where(QuizQuestion.category == "BATTLE_1V1")
+                .order_by(func.random()) # Pick random questions for the bot too
+                .limit(5)
+            )
+            # Actually, the quiz questions are already fixed in create_battle.
+            # We should fetch questions LINKED to this quiz_id.
+            q_res = await db.execute(
+                select(QuizQuestion)
+                .join(QuizMatch.questions)
+                .where(QuizMatch.id == quiz_id)
                 .order_by(QuizQuestion.id.asc())
             )
             questions = q_res.scalars().all()
             
-            # 2. Fetch quiz config for timing
-            quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id))
-            quiz = quiz_res.scalar_one_or_none()
-            time_per_q = quiz.time_per_question if (quiz and quiz.time_per_question) else 5
-
             if not questions:
-                logger.error(f"Bot Manager: No questions found for quiz {quiz_id}")
-                return
+                # Fallback to general questions if link is missing
+                q_res = await db.execute(select(QuizQuestion).limit(5))
+                questions = q_res.scalars().all()
 
             for q in questions:
-                # Bot 'thinks' and 'responds'
-                # Rigged for speed: 0.8s to 1.8s
-                response_time = random.uniform(800, 1800)
+                # Smart Bot Timing: 1.2s to 2.5s (more realistic than 0.8s)
+                response_time = random.uniform(1200, 2500)
                 await asyncio.sleep(response_time / 1000.0)
 
-                # Record correct response in DB
                 try:
-                    # Ensure participant exists (failsafe)
-                    p_res = await db.execute(
-                        select(QuizParticipant).where(
-                            QuizParticipant.quiz_id == quiz_id,
-                            QuizParticipant.user_id == bot_user_id
-                        )
-                    )
-                    if not p_res.scalar_one_or_none():
-                        db.add(QuizParticipant(quiz_id=quiz_id, user_id=bot_user_id))
-                        await db.flush()
-
                     bot_ans = QuizResponse(
                         quiz_id=quiz_id,
                         question_id=q.id,
                         user_id=bot_user_id,
-                        option_index=q.correct_option_index,
+                        option_index=q.correct_option_index, # Bot is smart but we can add 'miss' chance later
                         is_correct=True,
                         response_time_ms=int(response_time)
                     )
                     db.add(bot_ans)
                     await db.commit()
                 except Exception as e:
-                    await db.rollback() # CRITICAL: Reset session state after error
-                    logger.error(f"Bot Manager Error recording answer: {e}")
-                    # Continue loop, next iteration will have a fresh transaction state
+                    await db.rollback()
+                    logger.error(f"Bot Manager Answer Error: {e}")
                 
-                # Wait for next question interval
-                wait_next = max(0.1, time_per_q - (response_time / 1000.0))
-                await asyncio.sleep(wait_next)
+                await asyncio.sleep(0.5)
 
-            # Mark BOT as completed
             try:
                 await db.execute(
                     update(QuizParticipant)
@@ -137,12 +165,10 @@ class BotManager:
                 await db.commit()
             except Exception as e:
                 await db.rollback()
-                logger.error(f"Bot Manager Error marking completed: {e}")
 
-            # Check if Battle results can be calculated
             from services.quiz_orchestrator import orchestrator
             asyncio.create_task(orchestrator.process_battle_results(quiz_id))
 
-        logger.info(f"Bot {bot_user_id} finished battle {battle_id}")
+        logger.info(f"Bot {bot_user_id} finished battle")
 
 bot_manager = BotManager()
