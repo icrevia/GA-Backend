@@ -51,7 +51,7 @@ class BotManager:
         """Returns a bot structure with all necessary fields."""
         bot_id = random.randint(99000, 99999)
         username = self._generate_username()
-        avatar_idx = (bot_id % 50) + 1 # Assuming 50 avatars available
+        avatar_idx = (bot_id % 5) + 1 # Assuming 5 avatars available
         
         return {
             "user_id": bot_id,
@@ -76,7 +76,7 @@ class BotManager:
                     if any(u.username == username for u in to_add):
                         username = f"{username}_{bot_id}"
                         
-                    avatar_idx = (bot_id % 50) + 1
+                    avatar_idx = (bot_id % 5) + 1
                     
                     to_add.append(User(
                         id=bot_id,
