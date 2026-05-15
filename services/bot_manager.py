@@ -3,9 +3,11 @@ import random
 import logging
 from datetime import datetime
 from sqlalchemy import select
-from models.quiz import QuizQuestion, QuizResponse, QuizMatch
+from models.quiz import QuizQuestion, QuizResponse, QuizMatch, QuizParticipant
+from models.user import User
 from core.database import SessionLocal
 from core.websockets import manager as ws_manager
+from sqlalchemy import update
 
 logger = logging.getLogger("GamerzAdda.bot_manager")
 
@@ -23,6 +25,41 @@ class BotManager:
             "username": random.choice(self.bot_names),
             "mmr": random.randint(1100, 1400)
         }
+
+    async def ensure_bot_users(self):
+        """Pre-populates the database with bot users in the 99000-99999 range."""
+        logger.info("Bot Manager: Ensuring bot users exist (range 99000-99999)...")
+        async with SessionLocal() as db:
+            # We don't want to check 1000 IDs one by one if possible, 
+            # but for a one-time startup task, a batch check is fine.
+            res = await db.execute(select(User.id).where(User.id >= 99000, User.id <= 99999))
+            existing_ids = set(res.scalars().all())
+            
+            to_add = []
+            for bot_id in range(99000, 100000):
+                if bot_id not in existing_ids:
+                    # Pick a base name and add suffix for uniqueness
+                    base_name = random.choice(self.bot_names)
+                    to_add.append(User(
+                        id=bot_id,
+                        username=f"{base_name}_{bot_id}",
+                        email=f"bot_{bot_id}@gamerzadda.in",
+                        mmr=random.randint(1100, 1500),
+                        is_active=True,
+                        role="USER"
+                    ))
+            
+            if to_add:
+                logger.info(f"Bot Manager: Creating {len(to_add)} bot users...")
+                db.add_all(to_add)
+                try:
+                    await db.commit()
+                    logger.info("Bot Manager: Bot users created successfully ✅")
+                except Exception as e:
+                    await db.rollback()
+                    logger.error(f"Bot Manager: Failed to create bot users: {e}")
+            else:
+                logger.info("Bot Manager: All bot users already exist ✅")
 
     async def simulate_bot_game(self, battle_id: str, bot_user_id: int, quiz_id: int):
         """
@@ -60,6 +97,17 @@ class BotManager:
 
                 # Record correct response in DB
                 try:
+                    # Ensure participant exists (failsafe)
+                    p_res = await db.execute(
+                        select(QuizParticipant).where(
+                            QuizParticipant.quiz_id == quiz_id,
+                            QuizParticipant.user_id == bot_user_id
+                        )
+                    )
+                    if not p_res.scalar_one_or_none():
+                        db.add(QuizParticipant(quiz_id=quiz_id, user_id=bot_user_id))
+                        await db.flush()
+
                     bot_ans = QuizResponse(
                         quiz_id=quiz_id,
                         question_id=q.id,
@@ -70,26 +118,26 @@ class BotManager:
                     )
                     db.add(bot_ans)
                     await db.commit()
-                    
-                    # Optional: Broadcast bot progress to the real user to make it look 'live'
-                    # But since 1v1 might just show scores at end, or live dots.
-                    # If we have live dots, we'd emit an event here.
                 except Exception as e:
+                    await db.rollback() # CRITICAL: Reset session state after error
                     logger.error(f"Bot Manager Error recording answer: {e}")
+                    # Continue loop, next iteration will have a fresh transaction state
                 
                 # Wait for next question interval
                 wait_next = max(0.1, time_per_q - (response_time / 1000.0))
                 await asyncio.sleep(wait_next)
 
             # Mark BOT as completed
-            from models.quiz import QuizParticipant
-            from sqlalchemy import update
-            await db.execute(
-                update(QuizParticipant)
-                .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == bot_user_id)
-                .values(status="COMPLETED")
-            )
-            await db.commit()
+            try:
+                await db.execute(
+                    update(QuizParticipant)
+                    .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == bot_user_id)
+                    .values(status="COMPLETED")
+                )
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.error(f"Bot Manager Error marking completed: {e}")
 
             # Check if Battle results can be calculated
             from services.quiz_orchestrator import orchestrator

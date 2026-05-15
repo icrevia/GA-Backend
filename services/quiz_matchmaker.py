@@ -117,7 +117,7 @@ class QuizMatchmaker:
         # 1. Create a VIRTUAL QuizMatch for this 1v1 Battle
         quiz_id = 0
         async with SessionLocal() as db:
-            from models.quiz import QuizMatch, QuizQuestion
+            from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
             from sqlalchemy import func
             from datetime import datetime, timedelta, timezone
             start_delay = datetime.now(timezone.utc) + timedelta(seconds=6)
@@ -135,6 +135,11 @@ class QuizMatchmaker:
             db.add(new_quiz)
             await db.flush() # Get ID
             quiz_id = new_quiz.id
+
+            # Create Participants
+            p1 = QuizParticipant(quiz_id=quiz_id, user_id=u1["user_id"])
+            p2 = QuizParticipant(quiz_id=quiz_id, user_id=u2["user_id"])
+            db.add_all([p1, p2])
 
             # 2. Pick 10 random questions from BATTLE_1V1 pool
             q_res = await db.execute(
