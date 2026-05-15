@@ -53,8 +53,10 @@ def get_upcoming_quizzes(
         db.query(QuizMatch, func.coalesce(joined_subq.c.j_count, 0))
         .outerjoin(joined_subq, QuizMatch.id == joined_subq.c.quiz_id)
         .filter(
-            (QuizMatch.status.in_(["UPCOMING", "LIVE"])) |
-            ((QuizMatch.status == "COMPLETED") & (QuizMatch.id.in_(list(user_participation.keys()))))
+            # 1. Show all public matches (SURVIVOR) that are not completed
+            ((QuizMatch.match_type == "SURVIVOR") & (QuizMatch.status.in_(["UPCOMING", "LIVE"]))) |
+            # 2. Show ANY match the user has already joined (including private 1v1 Battles)
+            (QuizMatch.id.in_(list(user_participation.keys())))
         )
         .order_by(QuizMatch.start_time.desc())
         .all()
