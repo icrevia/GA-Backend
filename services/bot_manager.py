@@ -47,19 +47,36 @@ class BotManager:
         sep = random.choice(["", "_", " "])
         return f"{fn}{sep}{sx}"
 
-    def get_random_bot(self):
-        """Returns a bot structure with all necessary fields."""
-        bot_id = random.randint(99000, 99999)
-        username = self._generate_username()
-        avatar_idx = (bot_id % 5) + 1 # Assuming 5 avatars available
-        
-        return {
-            "user_id": bot_id,
-            "username": username,
-            "mmr": random.randint(1100, 1450),
-            "bio": random.choice(self.bios),
-            "profile_pic": f"{settings.APP_URL}/static/avatars/avatar{avatar_idx}.png"
-        }
+    async def get_random_bot(self):
+        """Returns a real bot from DB with all necessary fields."""
+        async with SessionLocal() as db:
+            # Pick a random bot that actually exists in our reserved range
+            res = await db.execute(
+                select(User)
+                .where(User.id >= 99000, User.id <= 99999)
+                .order_by(func.random())
+                .limit(1)
+            )
+            bot_user = res.scalar_one_or_none()
+            
+            if not bot_user:
+                # Fallback if DB is empty (shouldn't happen with ensure_bot_users)
+                bot_id = random.randint(99000, 99999)
+                return {
+                    "user_id": bot_id,
+                    "username": f"Bot_{bot_id}",
+                    "mmr": 1200,
+                    "bio": "Just a kid, earning pocket money",
+                    "profile_pic": ""
+                }
+
+            return {
+                "user_id": bot_user.id,
+                "username": bot_user.username,
+                "mmr": bot_user.mmr or 1200,
+                "bio": bot_user.bio or "Always ready!",
+                "profile_pic": bot_user.profile_pic
+            }
 
     async def ensure_bot_users(self):
         """Pre-populates the database with 1000 smart bot users."""

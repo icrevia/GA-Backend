@@ -225,7 +225,7 @@ class QuizMatchmaker:
                     self.match_pools[entry_fee].remove(user)
                     
                     from services.bot_manager import bot_manager
-                    bot = bot_manager.get_random_bot()
+                    bot = await bot_manager.get_random_bot()
                     await self.create_battle(user, bot, entry_fee, is_bot=True)
                     return
 
