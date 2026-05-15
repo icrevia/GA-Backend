@@ -92,6 +92,9 @@ def get_quiz_questions(
     
     if not participant:
         raise HTTPException(status_code=403, detail="You have not joined this quiz")
+    
+    if participant.status == "COMPLETED":
+        raise HTTPException(status_code=400, detail="You have already completed this match.")
 
     questions = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.id.asc()).all()
     if quiz.question_pool_size:
@@ -120,15 +123,14 @@ def get_quiz_questions(
     questions_per_quiz = quiz.questions_per_quiz if (quiz.questions_per_quiz and quiz.questions_per_quiz > 0) else 10
     
     if quiz.match_type == "SURVIVOR":
-        # Use a stable seed per user/quiz for consistent randomization in a single session
-        # but unique across different users
+        # Randomize subset for survivor mode using a user-specific seed
         rng = random.Random(current_user.id + quiz_id)
-        
-        # Randomize subset for survivor mode
         final_pool = rng.sample(question_pool, min(len(question_pool), questions_per_quiz))
-        # Shuffle options within each question
+        
+        # Shuffle options within each question using a deterministic seed for that specific question
         for q in final_pool:
-            rng.shuffle(q["options"])
+            q_rng = random.Random(current_user.id + quiz_id + q["id"])
+            q_rng.shuffle(q["options"])
     else:
         # Limit questions to the requested amount (don't shuffle here to keep it stable per user request)
         final_pool = question_pool[:questions_per_quiz]
@@ -302,19 +304,12 @@ def submit_answer(
     correct_idx = question.correct_option_index
     
     if quiz and quiz.match_type == "SURVIVOR":
-        # Reconstruct the shuffled options to find the correct index
-        rng = random.Random(current_user.id + req.quiz_id)
+        # Reconstruct the shuffled options to find the correct index using the question-specific seed
+        q_rng = random.Random(current_user.id + req.quiz_id + req.question_id)
         
-        # Note: we need to find the same options list that was returned to the user
         original_options = list(question.options or [])
-        indexed_options = list(enumerate(original_options)) # [(0, "A"), (1, "B"), ...]
-        
-        # We need the same shuffle order as get_quiz_questions
-        # Wait, get_quiz_questions shuffles the options_payload which contains text and image_url
-        # Let's simplify: we only care about the index.
-        
         shuffled_indices = [i for i in range(len(original_options))]
-        rng.shuffle(shuffled_indices)
+        q_rng.shuffle(shuffled_indices)
         
         # The user sent 'req.option_index', which is an index in the SHUFFLED list.
         # So we need to check if shuffled_indices[req.option_index] == original_correct_idx

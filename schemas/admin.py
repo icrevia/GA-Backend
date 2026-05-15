@@ -173,6 +173,14 @@ class QuizQuestionCreate(BaseModel):
     correct_option_index: int
     time_limit: int = 5
 
+class QuizQuestionUpdate(BaseModel):
+    question_text: Optional[str] = None
+    question_image_url: Optional[str] = None
+    options: Optional[list[str]] = None
+    option_images: Optional[list[Optional[str]]] = None
+    correct_option_index: Optional[int] = None
+    time_limit: Optional[int] = None
+
 class QuizQuestionResponse(QuizQuestionCreate):
     id: int
     quiz_id: Optional[int] = None

@@ -1071,6 +1071,7 @@ def add_quiz_question(
         elif len(option_images) > len(options):
             option_images = option_images[:len(options)]
 
+    logger.info(f"Adding question to quiz {quiz_id}: text={data.question_text[:20]}..., correct_idx={data.correct_option_index}")
     db_obj = QuizQuestion(
         quiz_id=quiz_id,
         question_text=data.question_text,
@@ -1084,6 +1085,27 @@ def add_quiz_question(
     db.commit()
     db.refresh(db_obj)
     return db_obj
+
+@router.put("/quizzes/questions/{question_id}", response_model=QuizQuestionResponse)
+def update_quiz_question(
+    question_id: int,
+    data: QuizQuestionUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    q = db.query(QuizQuestion).filter(QuizQuestion.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    
+    logger.info(f"Updating question {question_id}: data={data.dict(exclude_unset=True)}")
+
+    update_data = data.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(q, key, value)
+    
+    db.commit()
+    db.refresh(q)
+    return q
 
 @router.delete("/quizzes/{quiz_id}/questions/{question_id}")
 def delete_quiz_question(
