@@ -15,7 +15,7 @@ from core.database import get_db_sync as get_db
 from models.user import User
 from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
 from models.wallet import WalletTransaction
-from schemas.quiz import QuizMatchResponse, QuizJoinResponse
+from schemas.quiz import QuizMatchResponse, QuizJoinResponse, QuizSubmissionRequest, QuizSubmissionResponse
 from services.wallet_balances import (
     WALLET_BUCKET_BONUS,
     WALLET_BUCKET_DEPOSIT,
@@ -134,14 +134,20 @@ def get_quiz_questions(
         final_pool = question_pool[:questions_per_quiz]
     
     # Use stored duration if available, else calculate
-    session_duration = quiz.duration_seconds or max(60, (len(final_pool) * time_per_question) + 30)
+    tpq = quiz.time_per_question or 10
+    session_duration = quiz.duration_seconds or max(60, (len(final_pool) * tpq) + 30)
+    
+    elapsed_seconds = 0
+    if participant.user_start_time:
+        elapsed_seconds = int((datetime.now() - participant.user_start_time).total_seconds())
 
     return {
         "quiz_id": quiz_id,
         "questions_per_quiz": len(final_pool),
         "question_pool_size": len(final_pool),
-        "time_per_question": time_per_question,
+        "time_per_question": tpq,
         "duration_seconds": session_duration,
+        "elapsed_seconds": elapsed_seconds,
         "question_pool": final_pool,
     }
 
