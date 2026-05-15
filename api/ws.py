@@ -2,7 +2,7 @@ import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import json
 import logging
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 
 from core.websockets import manager, ALLOWED_WS_EVENTS
 from core.security import decode_access_token
@@ -341,6 +341,34 @@ async def websocket_endpoint(websocket: WebSocket):
                             )
                             db.add(ans)
                             await db.commit()
+
+                            # Auto-complete for BATTLE if all questions answered
+                            quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id))
+                            quiz = quiz_res.scalar_one_or_none()
+                            if quiz and quiz.match_type == "BATTLE":
+                                # Count responses for this user
+                                resp_count_res = await db.execute(
+                                    select(func.count(QuizResponse.id))
+                                    .where(QuizResponse.quiz_id == quiz_id, QuizResponse.user_id == user_id)
+                                )
+                                resp_count = resp_count_res.scalar()
+                                
+                                # Use questions_per_quiz or pool size
+                                target_count = quiz.questions_per_quiz or 5
+                                if resp_count >= target_count:
+                                    await db.execute(
+                                        update(QuizParticipant)
+                                        .where(QuizParticipant.quiz_id == quiz_id, QuizParticipant.user_id == user_id)
+                                        .values(status="COMPLETED")
+                                    )
+                                    await db.commit()
+                                    
+                                    # Check if both done
+                                    part_res = await db.execute(select(QuizParticipant).where(QuizParticipant.quiz_id == quiz_id))
+                                    all_parts = part_res.scalars().all()
+                                    if all(p.status == "COMPLETED" for p in all_parts):
+                                        from services.quiz_orchestrator import orchestrator
+                                        asyncio.create_task(orchestrator.process_battle_results(quiz_id))
                 continue
 
             if msg_type == "quiz_complete":

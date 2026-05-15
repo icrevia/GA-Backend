@@ -169,6 +169,19 @@ class QuizOrchestrator:
                 now_utc = datetime.now(timezone.utc)
                 if now_utc >= end_time:
                     break
+                
+                # Check if quiz was completed early (e.g. BATTLE finished by all players)
+                # We do this every 2 seconds to save DB calls, or use a cached status if available
+                # For now, let's just check every second since it's critical for UX
+                db_check = SyncSessionLocal()
+                try:
+                    q_status = db_check.query(QuizMatch.status).filter(QuizMatch.id == quiz_id).scalar()
+                    if q_status == "COMPLETED":
+                        logger.info(f"Quiz {quiz_id} completed early. Breaking sync loop.")
+                        break
+                finally:
+                    db_check.close()
+
                 # Compute elapsed so Android timer moves correctly every second
                 elapsed_secs = int((now_utc - start_time_dt).total_seconds())
                 sync_payload["elapsed_seconds"] = elapsed_secs
