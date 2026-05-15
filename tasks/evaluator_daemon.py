@@ -10,11 +10,10 @@ async def start_evaluator_daemon():
     logger.info("Starting Survivor Evaluator Daemon...")
     while True:
         try:
-            db = SessionLocal()
-            count = evaluate_survivor_matches(db)
-            if count > 0:
-                logger.info(f"Evaluated {count} matches.")
-            db.close()
+            async with SessionLocal() as db:
+                count = await evaluate_survivor_matches(db)
+                if count > 0:
+                    logger.info(f"Evaluated {count} matches.")
         except Exception as e:
             logger.error(f"Error in evaluator daemon: {str(e)}")
         

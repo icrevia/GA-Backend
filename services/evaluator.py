@@ -1,5 +1,6 @@
 import logging
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
 from datetime import datetime
 from models.quiz import QuizMatch, QuizParticipant
 from models.user import User
@@ -9,7 +10,7 @@ import uuid
 
 logger = logging.getLogger("GamerzAdda.evaluator")
 
-def evaluate_survivor_matches(db: Session):
+async def evaluate_survivor_matches(db: AsyncSession):
     """
     Finds all SURVIVOR matches that have ended and computes rankings.
     Distributes prizes to winners.
@@ -17,13 +18,13 @@ def evaluate_survivor_matches(db: Session):
     now = datetime.now()
     
     # 1. Find PENDING survivor matches that have passed their end_time
-    matches = (
-        db.query(QuizMatch)
-        .filter(QuizMatch.match_type == "SURVIVOR")
-        .filter(QuizMatch.end_time <= now)
-        .filter(QuizMatch.evaluation_status == "PENDING")
-        .all()
+    stmt = select(QuizMatch).filter(
+        QuizMatch.match_type == "SURVIVOR",
+        QuizMatch.end_time <= now,
+        QuizMatch.evaluation_status == "PENDING"
     )
+    result = await db.execute(stmt)
+    matches = result.scalars().all()
     
     if not matches:
         return 0
@@ -31,29 +32,31 @@ def evaluate_survivor_matches(db: Session):
     evaluated_count = 0
     for match in matches:
         try:
-            evaluate_single_match(db, match)
+            await evaluate_single_match(db, match)
             evaluated_count += 1
         except Exception as e:
             logger.error(f"Failed to evaluate match {match.id}: {str(e)}")
-            db.rollback()
+            await db.rollback()
             
     return evaluated_count
 
-def evaluate_single_match(db: Session, match: QuizMatch):
+async def evaluate_single_match(db: AsyncSession, match: QuizMatch):
     logger.info(f"Evaluating Match {match.id}: {match.title}")
     
     # 1. Get all participants
-    participants = (
-        db.query(QuizParticipant)
-        .filter(QuizParticipant.quiz_id == match.id)
-        .order_by(QuizParticipant.score.desc(), QuizParticipant.total_time_taken.asc())
-        .all()
+    stmt = select(QuizParticipant).filter(
+        QuizParticipant.quiz_id == match.id
+    ).order_by(
+        QuizParticipant.score.desc(), 
+        QuizParticipant.total_time_taken.asc()
     )
+    result = await db.execute(stmt)
+    participants = result.scalars().all()
     
     if not participants:
         match.evaluation_status = "COMPLETED"
         match.status = "COMPLETED"
-        db.commit()
+        await db.commit()
         return
 
     # 2. Assign Ranks
@@ -76,17 +79,21 @@ def evaluate_single_match(db: Session, match: QuizMatch):
         prize_amount = prize_map.get(rank, 0)
         
         if prize_amount > 0:
-            credit_winning(db, p.user_id, prize_amount, match.id, rank)
+            await credit_winning(db, p.user_id, prize_amount, match.id, rank)
             logger.info(f"User {p.user_id} won ₹{prize_amount} (Rank {rank}) in Match {match.id}")
 
     # 4. Finalize Match
     match.evaluation_status = "COMPLETED"
     match.status = "COMPLETED"
-    db.commit()
+    await db.commit()
     logger.info(f"Match {match.id} evaluation completed.")
 
-def credit_winning(db: Session, user_id: int, amount: float, match_id: int, rank: int):
-    user = db.query(User).filter(User.id == user_id).with_for_update().first()
+async def credit_winning(db: AsyncSession, user_id: int, amount: float, match_id: int, rank: int):
+    # Select user with row-level locking
+    stmt = select(User).filter(User.id == user_id).with_for_update()
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    
     if not user:
         return
 
@@ -102,4 +109,3 @@ def credit_winning(db: Session, user_id: int, amount: float, match_id: int, rank
         failure_reason=f"MATCH:{match_id}|RANK:{rank}"
     )
     db.add(transaction)
-    # We don't commit here, the caller (evaluate_single_match) will commit.
