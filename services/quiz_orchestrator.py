@@ -303,8 +303,16 @@ class QuizOrchestrator:
 
         except Exception as e:
             logger.error(f"Error in process_battle_results for quiz {quiz_id}: {e}")
+            try:
+                if 'quiz' in locals() and quiz:
+                    quiz.status = "COMPLETED"
+                    db.commit()
+            except Exception:
+                pass
         finally:
             db.close()
+            from core.websockets import manager
+            manager.quiz_rooms.pop(quiz_id, None)
 
     async def process_results(self, quiz_id: int):
         db = SyncSessionLocal()
@@ -414,8 +422,16 @@ class QuizOrchestrator:
             await ws_manager.broadcast({"type": "lobby_refresh"})
 
         except Exception as e:
-            logger.error(f"Error processing results for quiz {quiz_id}: {e}")
+            logger.error(f"Error in process_results for quiz {quiz_id}: {e}")
+            try:
+                if 'quiz' in locals() and quiz:
+                    quiz.status = "COMPLETED"
+                    db.commit()
+            except Exception:
+                pass
         finally:
             db.close()
+            from core.websockets import manager
+            manager.quiz_rooms.pop(quiz_id, None)
 
 orchestrator = QuizOrchestrator()

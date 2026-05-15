@@ -56,8 +56,7 @@ async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
             "question_text": q.question_text,
             "question_image_url": q.question_image_url,
             "options": options_payload,
-            "time_limit": time_per_question,
-            "correct_index": q.correct_option_index,  # Sent for client-side feedback
+            "time_limit": time_per_question
         })
 
     session_duration = quiz.duration_seconds or max(60, (len(question_pool) * time_per_question) + 30)

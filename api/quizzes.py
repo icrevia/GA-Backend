@@ -64,7 +64,7 @@ def get_upcoming_quizzes(
     for q, count in rows:
         q.joined_count = count
         q.is_joined = q.id in user_participation
-        q.is_played = user_participation.get(q.id) == "COMPLETED"
+        q.is_played = user_participation.get(q.id) in ("COMPLETED", "SURRENDERED")
         result.append(q)
     
     return result
@@ -267,10 +267,12 @@ def get_quiz_leaderboard(
     """
     Returns the leaderboard for a specific quiz match.
     """
+    from sqlalchemy.orm import joinedload
     participants = (
         db.query(QuizParticipant)
+        .options(joinedload(QuizParticipant.user))
         .filter(QuizParticipant.quiz_id == quiz_id)
-        .order_by(QuizParticipant.rank.asc())
+        .order_by(QuizParticipant.rank.asc().nullslast())
         .all()
     )
     
@@ -278,8 +280,8 @@ def get_quiz_leaderboard(
     for p in participants:
         leaderboard.append({
             "user_id": p.user_id,
-            "username": p.user.username,
-            "profile_pic": p.user.profile_pic,
+            "username": p.user.username if p.user else "Unknown Player",
+            "profile_pic": p.user.profile_pic if p.user else "",
             "score": p.score,
             "total_time_taken": float(p.total_time_taken),
             "rank": p.rank
@@ -346,18 +348,18 @@ def submit_answer(
         raise HTTPException(status_code=400, detail="Answer already submitted for this question")
 
     # Timing Logic
-    now = datetime.now()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     last_response = db.query(QuizResponse).filter(
         QuizResponse.quiz_id == req.quiz_id,
         QuizResponse.user_id == current_user.id
     ).order_by(QuizResponse.created_at.desc()).first()
 
     if last_response:
-        delta = (now - last_response.created_at).total_seconds() * 1000
+        delta = (now - last_response.created_at.replace(tzinfo=None)).total_seconds() * 1000
     else:
         # First question
         start_time = participant.user_start_time or participant.joined_at
-        delta = (now - start_time).total_seconds() * 1000
+        delta = (now - start_time.replace(tzinfo=None)).total_seconds() * 1000
 
     score_delta = 10 if is_correct else 0
     

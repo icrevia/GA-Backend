@@ -42,12 +42,10 @@ class ConnectionManager:
 
             if self.pending_admin_support_events:
                 replayed = 0
-                while self.pending_admin_support_events:
-                    queued_event = self.pending_admin_support_events[0]
+                for queued_event in list(self.pending_admin_support_events):
                     try:
                         await websocket.send_text(json.dumps(queued_event))
                         replayed += 1
-                        self.pending_admin_support_events.popleft()
                     except Exception as e:
                         logger.warning(f"WS admin replay failed for user_id={user_id}: {e}")
                         break
@@ -168,12 +166,23 @@ class ConnectionManager:
 
     async def broadcast(self, message: dict):
         """Broadcast to ALL connected users (admin + regular)."""
+        dead_users = set()
         for user_id, connections in list(self.active_connections.items()):
+            dead_sockets = []
             for connection in list(connections):
                 try:
                     await connection.send_text(json.dumps(message))
                 except Exception:
+                    dead_sockets.append(connection)
+            for d in dead_sockets:
+                try:
+                    self.active_connections[user_id].remove(d)
+                except ValueError:
                     pass
+            if not self.active_connections[user_id]:
+                dead_users.add(user_id)
+        for u in dead_users:
+            self.active_connections.pop(u, None)
 
     async def force_logout_user(self, user_id: int, reason: str = "Session revoked"):
         """Close all sockets for a user with policy-violation code to trigger client logout."""
