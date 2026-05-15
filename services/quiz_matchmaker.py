@@ -207,7 +207,12 @@ class QuizMatchmaker:
                 "is_bot": False
             }
             await ws_manager.send_personal_message(payload, u2["user_id"])
-        else:
+        
+        # Trigger immediate start via orchestrator instead of waiting for loop
+        from services.quiz_orchestrator import orchestrator
+        asyncio.create_task(orchestrator.run_quiz_session(quiz_id))
+
+        if is_bot:
             # Start Bot Simulation
             from services.bot_manager import bot_manager
             asyncio.create_task(bot_manager.simulate_bot_game(battle_id, u2["user_id"], quiz_id))

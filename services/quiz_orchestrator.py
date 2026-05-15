@@ -271,7 +271,8 @@ class QuizOrchestrator:
                 "opponent_score": s2,
                 "user_time_ms": t1,
                 "opponent_time_ms": t2,
-                "winnings": float(prize_pool if winner_id == u1_id else (to_money(quiz.entry_fee) if not winner_id else 0))
+                "winnings": float(prize_pool if winner_id == u1_id else (to_money(quiz.entry_fee) if not winner_id else 0)),
+                "surrendered_user_id": surrendered_user_id
             }, u1_id)
 
             await ws_manager.send_personal_message({
@@ -282,7 +283,8 @@ class QuizOrchestrator:
                 "opponent_score": s1,
                 "user_time_ms": t2,
                 "opponent_time_ms": t1,
-                "winnings": float(prize_pool if winner_id == u2_id else (to_money(quiz.entry_fee) if not winner_id else 0))
+                "winnings": float(prize_pool if winner_id == u2_id else (to_money(quiz.entry_fee) if not winner_id else 0)),
+                "surrendered_user_id": surrendered_user_id
             }, u2_id)
 
         except Exception as e:
