@@ -30,11 +30,12 @@ class QuizOrchestrator:
         db = SyncSessionLocal()
         try:
             now = datetime.now(timezone.utc)
-            # Find UPCOMING quizzes that should start within the next minute, 
-            # OR quizzes that are already LIVE but not in our active tracker (recovery)
+            # ONLY pick UPCOMING quizzes about to start — never LIVE ones.
+            # LIVE quizzes are already handled by run_quiz_session (started by matchmaker).
+            # Picking LIVE ones here was causing double sessions.
             to_process = db.query(QuizMatch).filter(
-                (QuizMatch.status == "LIVE") | 
-                ((QuizMatch.status == "UPCOMING") & (QuizMatch.start_time <= now + timedelta(seconds=60)))
+                (QuizMatch.status == "UPCOMING") & 
+                (QuizMatch.start_time <= now + timedelta(seconds=60))
             ).all()
 
             for quiz in to_process:
@@ -164,7 +165,13 @@ class QuizOrchestrator:
             # This loop sends updates every second to keep all players perfectly synced
             logger.info(f"Quiz {quiz_id} sync loop started. Duration: {session_duration}s")
             
-            while datetime.now(timezone.utc) < end_time:
+            while True:
+                now_utc = datetime.now(timezone.utc)
+                if now_utc >= end_time:
+                    break
+                # Compute elapsed so Android timer moves correctly every second
+                elapsed_secs = int((now_utc - start_time_dt).total_seconds())
+                sync_payload["elapsed_seconds"] = elapsed_secs
                 await ws_manager.broadcast_to_quiz(quiz_id, sync_payload)
                 await asyncio.sleep(1)
             
@@ -175,29 +182,13 @@ class QuizOrchestrator:
             else:
                 await self.process_results(quiz_id)
 
-            # 5. Final update
-            db = SyncSessionLocal()
-            quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
-            if quiz:
-                quiz.status = "COMPLETED"
-                db.commit()
-            db.close()
-
-            # Mark all participants as COMPLETED
-            from sqlalchemy import update
-            db.execute(
-                update(QuizParticipant)
-                .where(QuizParticipant.quiz_id == quiz_id)
-                .values(status="COMPLETED")
-            )
-            db.commit()
-            
             logger.info(f"Quiz session finished for quiz_id={quiz_id}")
         except Exception as e:
-            logger.error(f"Error running quiz session {quiz_id}: {e}")
+            logger.error(f"Error running quiz session {quiz_id}: {e}", exc_info=True)
         finally:
-            self.active_quizzes.remove(quiz_id)
-            db.close()
+            self.active_quizzes.discard(quiz_id)  # discard is safe even if not in set
+            if db is not None:
+                db.close()
 
     async def process_battle_results(self, quiz_id: int, surrendered_user_id: int | None = None):
         """
