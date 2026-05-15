@@ -254,9 +254,13 @@ class QuizOrchestrator:
                     u = db.query(User).filter(User.id == p.user_id).first()
                     if u: credit_wallet(u, draw_refund, WALLET_BUCKET_WINNING)
 
-            # Mark Completed
+            # Mark Completed and store stats for leaderboard
             quiz.status = "COMPLETED"
-            for p in participants: p.status = "COMPLETED"
+            for p in participants: 
+                p.status = "COMPLETED"
+                p.score = user_data.get(p.user_id, {}).get("score", 0)
+                p.total_time_taken = user_data.get(p.user_id, {}).get("time", 0)
+                p.rank = 1 if p.user_id == winner_id else (2 if winner_id else 1) # 1 if win, 2 if loss, 1 if draw
             db.commit()
 
             # Notify Both with custom payload
@@ -372,6 +376,19 @@ class QuizOrchestrator:
                                 f"You won ₹{prize_amount} in '{quiz.title}'!", "APP"
                             )
             
+            # 3. Update Participant table for leaderboard
+            for res in ranked_results:
+                p = db.query(QuizParticipant).filter(
+                    QuizParticipant.quiz_id == quiz_id,
+                    QuizParticipant.user_id == res["user_id"]
+                ).first()
+                if p:
+                    p.status = "COMPLETED"
+                    p.score = res["score"]
+                    p.total_time_taken = res["time"]
+                    p.rank = res["rank"]
+
+            quiz.status = "COMPLETED"
             db.commit()
             
             # 3. Notify the room
