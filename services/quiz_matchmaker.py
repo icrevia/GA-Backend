@@ -143,15 +143,11 @@ class QuizMatchmaker:
             logger.warning(f"Cancellation requested for user {user_id} but not found in any pool.")
             return
 
-        # 1. Calculate Refund
+        # 1. Calculate Refund (100% full refund at all times)
         now = asyncio.get_event_loop().time()
         wait_time = now - user_entry["joined_at"]
-        
-        # Policy: 5 mins = 300 seconds
-        is_early = wait_time < 300
-        refund_multiplier = 0.9 if is_early else 1.0
-        refund_amount = to_money(entry_fee_found * refund_multiplier)
-        deduction_msg = "(10% Platform Fee deducted for early exit)" if is_early else "(Full Refund - 5 min wait exceeded)"
+        refund_amount = to_money(entry_fee_found * 1.0)
+        deduction_msg = "(100% Full Instant Refund)"
 
         async with SessionLocal() as db:
             user = await db.get(User, user_id)
@@ -171,7 +167,7 @@ class QuizMatchmaker:
                 await ws_manager.send_personal_message({
                     "type": "matchmaking_refunded",
                     "amount": float(refund_amount),
-                    "message": f"Refunded ₹{refund_amount}. {deduction_msg}"
+                    "message": f"Refunded ₹{refund_amount} instantly. {deduction_msg}"
                 }, user_id)
 
         # 2. Remove from pool
