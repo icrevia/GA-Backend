@@ -71,6 +71,41 @@ def get_upcoming_quizzes(
     
     return result
 
+@router.get("/pre-fetch-images", response_model=dict)
+def get_pre_fetch_images(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns a list of all unique question and option image URLs 
+    that are part of the active BATTLE_1V1 and ARENA question pools, 
+    plus any active upcoming scheduled quiz questions.
+    """
+    questions = db.query(QuizQuestion).filter(QuizQuestion.category.in_(["BATTLE_1V1", "ARENA"])).all()
+    
+    urls = set()
+    for q in questions:
+        if q.question_image_url:
+            urls.add(q.question_image_url)
+        if q.option_images:
+            for opt_img in q.option_images:
+                if opt_img:
+                    urls.add(opt_img)
+                    
+    upcoming_quizzes = db.query(QuizMatch).filter(QuizMatch.status.in_(["UPCOMING", "LIVE"])).all()
+    upcoming_ids = [quiz.id for quiz in upcoming_quizzes]
+    if upcoming_ids:
+        upcoming_qs = db.query(QuizQuestion).filter(QuizQuestion.quiz_id.in_(upcoming_ids)).all()
+        for q in upcoming_qs:
+            if q.question_image_url:
+                urls.add(q.question_image_url)
+            if q.option_images:
+                for opt_img in q.option_images:
+                    if opt_img:
+                        urls.add(opt_img)
+                        
+    return {"urls": sorted(list(urls))}
+
 @router.get("/{quiz_id}/questions", response_model=dict)
 def get_quiz_questions(
     quiz_id: int,
