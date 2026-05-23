@@ -8,10 +8,81 @@ from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
 from models.user import User
 from models.wallet import WalletTransaction
 from core.websockets import manager as ws_manager
-from services.wallet_balances import credit_wallet, WALLET_BUCKET_WINNING, to_money
+from services.wallet_balances import (
+    WALLET_BUCKET_BONUS,
+    WALLET_BUCKET_DEPOSIT,
+    WALLET_BUCKET_WINNING,
+    ZERO_MONEY,
+    credit_wallet,
+    to_money,
+)
 from services.notifications import add_user_notification
 
 logger = logging.getLogger("GamerzAdda.quiz")
+
+
+def _parse_deductions_from_reason(raw: str | None) -> dict[str, Decimal]:
+    buckets = {
+        WALLET_BUCKET_BONUS: ZERO_MONEY,
+        WALLET_BUCKET_DEPOSIT: ZERO_MONEY,
+        WALLET_BUCKET_WINNING: ZERO_MONEY,
+    }
+    if not raw:
+        return buckets
+
+    for part in str(raw).split(";"):
+        if ":" not in part:
+            continue
+        key, value = part.split(":", 1)
+        key = key.strip().upper()
+        if key == "DEDUCT_BONUS":
+            buckets[WALLET_BUCKET_BONUS] = to_money(value)
+        elif key == "DEDUCT_DEPOSIT":
+            buckets[WALLET_BUCKET_DEPOSIT] = to_money(value)
+        elif key == "DEDUCT_WINNING":
+            buckets[WALLET_BUCKET_WINNING] = to_money(value)
+    return buckets
+
+
+def _resolve_quiz_entry_refund(
+    db: Session,
+    user_id: int,
+    quiz_id: int,
+    fallback_amount: Decimal,
+) -> tuple[dict[str, Decimal], WalletTransaction | None]:
+    tx = (
+        db.query(WalletTransaction)
+        .filter(
+            WalletTransaction.user_id == user_id,
+            WalletTransaction.transaction_type == "QUIZ_ENTRY",
+            WalletTransaction.status == "SUCCESS",
+            WalletTransaction.failure_reason.contains(f"QUIZ_ID:{quiz_id}"),
+        )
+        .order_by(WalletTransaction.id.desc())
+        .first()
+    )
+    if not tx:
+        tx = (
+            db.query(WalletTransaction)
+            .filter(
+                WalletTransaction.user_id == user_id,
+                WalletTransaction.transaction_type == "QUIZ_ENTRY",
+                WalletTransaction.status == "SUCCESS",
+            )
+            .order_by(WalletTransaction.id.desc())
+            .first()
+        )
+
+    buckets = _parse_deductions_from_reason(tx.failure_reason if tx else None)
+    total = sum(buckets.values(), ZERO_MONEY)
+    if total <= ZERO_MONEY:
+        buckets = {
+            WALLET_BUCKET_BONUS: ZERO_MONEY,
+            WALLET_BUCKET_DEPOSIT: ZERO_MONEY,
+            WALLET_BUCKET_WINNING: to_money(fallback_amount),
+        }
+
+    return buckets, tx
 
 class QuizOrchestrator:
     def __init__(self):
@@ -273,15 +344,68 @@ class QuizOrchestrator:
                 if winner_user:
                     credit_wallet(winner_user, prize_pool, WALLET_BUCKET_WINNING)
                     db.add(WalletTransaction(
-                        user_id=winner_id, amount=prize_pool, transaction_type="QUIZ_WIN",
-                        status="SUCCESS", reference_id=f"BATTLE-WIN-{quiz_id}"
+                        user_id=winner_id,
+                        amount=prize_pool,
+                        transaction_type="QUIZ_WIN",
+                        status="SUCCESS",
+                        reference_id=f"BATTLE-WIN-{quiz_id}",
+                        remark=quiz.title,
+                    ))
+                for p in participants:
+                    if p.user_id == winner_id:
+                        continue
+                    loss_ref = f"BATTLE-LOSS-{quiz_id}-{p.user_id}"
+                    existing_loss = db.query(WalletTransaction.id).filter(
+                        WalletTransaction.reference_id == loss_ref,
+                        WalletTransaction.transaction_type == "QUIZ_WIN",
+                        WalletTransaction.user_id == p.user_id,
+                    ).first()
+                    if existing_loss:
+                        continue
+                    db.add(WalletTransaction(
+                        user_id=p.user_id,
+                        amount=Decimal("0.00"),
+                        transaction_type="QUIZ_WIN",
+                        status="SUCCESS",
+                        reference_id=loss_ref,
+                        remark=quiz.title,
                     ))
             else:
                 # DRAW: Return entry fee to both
                 draw_refund = to_money(quiz.entry_fee)
                 for p in participants:
-                    u = db.query(User).filter(User.id == p.user_id).first()
-                    if u: credit_wallet(u, draw_refund, WALLET_BUCKET_WINNING)
+                    u = db.query(User).filter(User.id == p.user_id).with_for_update().first()
+                    if not u:
+                        continue
+                    refund_buckets, entry_tx = _resolve_quiz_entry_refund(
+                        db, u.id, quiz_id, draw_refund
+                    )
+                    refund_total = sum(refund_buckets.values(), ZERO_MONEY)
+                    for bucket, amount in refund_buckets.items():
+                        if amount > ZERO_MONEY:
+                            credit_wallet(u, amount, bucket)
+
+                    refund_ref = f"BATTLE-DRAW-{quiz_id}-{u.id}"
+                    existing_refund = db.query(WalletTransaction.id).filter(
+                        WalletTransaction.reference_id == refund_ref,
+                        WalletTransaction.transaction_type == "QUIZ_REFUND",
+                        WalletTransaction.user_id == u.id,
+                    ).first()
+                    if not existing_refund:
+                        db.add(WalletTransaction(
+                            user_id=u.id,
+                            amount=refund_total,
+                            transaction_type="QUIZ_REFUND",
+                            status="SUCCESS",
+                            reference_id=refund_ref,
+                            remark=quiz.title,
+                            failure_reason=(
+                                f"QUIZ_DRAW:{quiz_id};ENTRY_TX:{entry_tx.id if entry_tx else 'NONE'};"
+                                f"DEDUCT_BONUS:{refund_buckets[WALLET_BUCKET_BONUS]};"
+                                f"DEDUCT_DEPOSIT:{refund_buckets[WALLET_BUCKET_DEPOSIT]};"
+                                f"DEDUCT_WINNING:{refund_buckets[WALLET_BUCKET_WINNING]}"
+                            ),
+                        ))
 
             # Mark Completed and store stats for leaderboard
             quiz.status = "COMPLETED"
@@ -383,6 +507,7 @@ class QuizOrchestrator:
                 except: return []
 
             distributed_users = []
+            distributed_user_ids = set()
             for dist in prize_dist:
                 target_ranks = parse_rank_range(dist.get("rank", "0"))
                 prize_amount = to_money(dist.get("prize", 0))
@@ -395,10 +520,15 @@ class QuizOrchestrator:
                         if user:
                             credit_wallet(user, prize_amount, WALLET_BUCKET_WINNING)
                             db.add(WalletTransaction(
-                                user_id=user.id, amount=prize_amount, transaction_type="QUIZ_WIN",
-                                status="SUCCESS", reference_id=f"WIN-QZ-{quiz_id}-{user.id}"
+                                user_id=user.id,
+                                amount=prize_amount,
+                                transaction_type="QUIZ_WIN",
+                                status="SUCCESS",
+                                reference_id=f"WIN-QZ-{quiz_id}-{user.id}",
+                                remark=quiz.title,
                             ))
                             distributed_users.append(user.username or f"User {user.id}")
+                            distributed_user_ids.add(user.id)
                             
                             add_user_notification(
                                 db, user.id, "🏆 CHAMPION! 🏆",
@@ -416,6 +546,23 @@ class QuizOrchestrator:
                     p.score = res["score"]
                     p.total_time_taken = res["time"]
                     p.rank = res["rank"]
+
+                if res["user_id"] not in distributed_user_ids:
+                    loss_ref = f"LOSS-QZ-{quiz_id}-{res['user_id']}"
+                    existing_loss = db.query(WalletTransaction.id).filter(
+                        WalletTransaction.reference_id == loss_ref,
+                        WalletTransaction.transaction_type == "QUIZ_WIN",
+                        WalletTransaction.user_id == res["user_id"],
+                    ).first()
+                    if not existing_loss:
+                        db.add(WalletTransaction(
+                            user_id=res["user_id"],
+                            amount=Decimal("0.00"),
+                            transaction_type="QUIZ_WIN",
+                            status="SUCCESS",
+                            reference_id=loss_ref,
+                            remark=quiz.title,
+                        ))
 
             quiz.status = "COMPLETED"
             db.commit()

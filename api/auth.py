@@ -7,6 +7,8 @@ from core.database import get_db
 from core.config import settings
 from core.security import hash_password, verify_password, create_access_token
 from models.user import User
+from models.wallet import WalletTransaction
+from models.config import SystemConfig
 from schemas.user import UserCreate, UserResponse, LoginRequest
 from schemas.token import Token
 from typing import Any
@@ -18,6 +20,7 @@ import logging
 import string
 import random
 import httpx
+import uuid
 from services.login_security import extract_client_ip
 from services.admin_sessions import upsert_admin_access_session_async
 from services.referral_codes import generate_unique_referral_code_async
@@ -33,6 +36,7 @@ from services.activity_limits import (
     ensure_login_session_lock_not_blocking_async,
     register_login_session_success_async,
 )
+from services.wallet_balances import WALLET_BUCKET_DEPOSIT, credit_wallet, to_money
 
 # In-memory store
 _otp_store: dict[str, str] = {}
@@ -43,6 +47,9 @@ logger = logging.getLogger("GamerzAdda.auth")
 limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter()
+
+SIGNUP_BONUS_CONFIG_KEY = "signup_bonus_amount"
+DEFAULT_SIGNUP_BONUS_AMOUNT = Decimal("5.00")
 
 def _normalize_signup_phone(raw_phone: str) -> str:
     phone = (raw_phone or "").strip().replace(" ", "")
@@ -188,6 +195,61 @@ async def _raise_if_phone_otp_locked(db: AsyncSession, phone: str) -> None:
 
 def _clean_env_value(value: str | None) -> str:
     return str(value or "").strip().strip('"\'')
+
+
+async def _read_decimal_config_async(
+    db: AsyncSession,
+    key: str,
+    fallback: Decimal,
+) -> Decimal:
+    result = await db.execute(select(SystemConfig).where(SystemConfig.config_key == key))
+    config = result.scalar_one_or_none()
+    raw_value = str(config.config_value).strip() if config and config.config_value else ""
+
+    if not raw_value:
+        return fallback
+
+    try:
+        value = to_money(raw_value)
+    except Exception:
+        return fallback
+
+    if value < Decimal("0.00"):
+        return Decimal("0.00")
+    return value
+
+
+async def _credit_signup_deposit_bonus(
+    db: AsyncSession,
+    user: User,
+    amount: Decimal,
+) -> Decimal:
+    if amount <= Decimal("0.00"):
+        return Decimal("0.00")
+
+    existing = await db.execute(
+        select(WalletTransaction.id)
+        .where(WalletTransaction.user_id == user.id)
+        .where(WalletTransaction.transaction_type == "SIGNUP_CREDIT")
+        .where(WalletTransaction.status == "SUCCESS")
+        .limit(1)
+    )
+    if existing.scalar_one_or_none():
+        return Decimal("0.00")
+
+    credit_wallet(user, amount, WALLET_BUCKET_DEPOSIT)
+    db.add(WalletTransaction(
+        user_id=user.id,
+        amount=amount,
+        transaction_type="SIGNUP_CREDIT",
+        status="SUCCESS",
+        reference_id=f"SIGNUP-{user.id}-{uuid.uuid4().hex[:6].upper()}",
+        payment_mode="SIGNUP",
+        remark="Signup Bonus",
+    ))
+    await db.commit()
+    await db.refresh(user)
+    return amount
 
 
 def _admin_login_phone_key() -> str:
@@ -612,6 +674,7 @@ async def verify_otp(
 
         _otp_store.pop(normalized_phone, None)
 
+    signup_bonus_total = Decimal("0.00")
     signup_bonus_amount = None
     if is_signup_pending:
         pending_data = _pending_signups.pop(normalized_phone)
@@ -648,6 +711,20 @@ async def verify_otp(
         await db.commit()
         await db.refresh(db_user)
 
+        # ── Credit configurable signup bonus to deposit wallet ────
+        try:
+            bonus_amount = await _read_decimal_config_async(
+                db,
+                SIGNUP_BONUS_CONFIG_KEY,
+                DEFAULT_SIGNUP_BONUS_AMOUNT,
+            )
+            if bonus_amount > Decimal("0.00"):
+                credited = await _credit_signup_deposit_bonus(db, db_user, bonus_amount)
+                if credited > Decimal("0.00"):
+                    signup_bonus_total += credited
+        except Exception as bonus_err:
+            logger.error("Signup deposit bonus credit failed for user %s: %s", db_user.id, bonus_err)
+
         # ── Credit instant signup bonus for referred users ────────
         if db_user.referred_by_id:
             try:
@@ -661,7 +738,7 @@ async def verify_otp(
                         bonus = credit_signup_bonus(sync_db, sync_user)
                         if bonus:
                             sync_db.commit()
-                            signup_bonus_amount = float(bonus)
+                            signup_bonus_total += bonus
                             # Refresh async session to pick up balance updates
                             await db.refresh(db_user)
                 finally:
@@ -669,6 +746,9 @@ async def verify_otp(
             except Exception as bonus_err:
                 logger.error("Signup bonus credit failed for user %s: %s", db_user.id, bonus_err)
         # ──────────────────────────────────────────────────────────
+
+        if signup_bonus_total > Decimal("0.00"):
+            signup_bonus_amount = float(to_money(signup_bonus_total))
 
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -712,6 +792,8 @@ async def verify_otp(
         "role": db_user.role,
         "user": user_payload,
     }
+    if signup_bonus_amount is not None:
+        response["signup_bonus_amount"] = signup_bonus_amount
     return response
 
 @router.post("/login")

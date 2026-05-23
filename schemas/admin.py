@@ -23,6 +23,7 @@ class NotificationSendRequest(BaseModel):
     body: str
     topic: str = "all"
     user_ids: Optional[list[int]] = None
+    image_url: Optional[str] = Field(default=None, max_length=500)
 
 class UserStatusUpdate(BaseModel):
     is_active: bool

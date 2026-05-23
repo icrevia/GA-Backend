@@ -251,13 +251,20 @@ def join_quiz(
         )
         db.add(participant)
         
+        deduction_marker = (
+            f"DEDUCT_BONUS:{to_money(deductions.get(WALLET_BUCKET_BONUS, 0))};"
+            f"DEDUCT_DEPOSIT:{to_money(deductions.get(WALLET_BUCKET_DEPOSIT, 0))};"
+            f"DEDUCT_WINNING:{to_money(deductions.get(WALLET_BUCKET_WINNING, 0))}"
+        )
+
         transaction = WalletTransaction(
             user_id=current_user.id,
             amount=-total_fee,
             transaction_type="JOIN_QUIZ",
             status="SUCCESS",
             reference_id=f"QZ-{uuid.uuid4().hex[:6].upper()}",
-            failure_reason=f"QUIZ:{quiz_id}"
+            remark=quiz.title,
+            failure_reason=f"QUIZ:{quiz_id};{deduction_marker}",
         )
         db.add(transaction)
         

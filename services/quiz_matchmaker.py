@@ -3,23 +3,53 @@ import logging
 import json
 import random
 import uuid
+from decimal import Decimal
 from typing import Dict, List, Optional
 from core.config import settings
 from redis import asyncio as aioredis
 from core.database import SessionLocal
 from sqlalchemy.future import select
 from services.wallet_balances import (
-    debit_wallet, 
-    WALLET_BUCKET_DEPOSIT, 
+    debit_wallet,
+    WALLET_BUCKET_BONUS,
+    WALLET_BUCKET_DEPOSIT,
     WALLET_BUCKET_WINNING,
+    ZERO_MONEY,
     to_money,
     InsufficientWalletBalanceError,
-    credit_wallet
+    credit_wallet,
 )
 from models.user import User
 from models.wallet import WalletTransaction
 
 logger = logging.getLogger("GamerzAdda.matchmaker")
+
+
+def _format_deduction_marker(deductions: dict) -> str:
+    return (
+        f"DEDUCT_BONUS:{to_money(deductions.get(WALLET_BUCKET_BONUS, ZERO_MONEY))};"
+        f"DEDUCT_DEPOSIT:{to_money(deductions.get(WALLET_BUCKET_DEPOSIT, ZERO_MONEY))};"
+        f"DEDUCT_WINNING:{to_money(deductions.get(WALLET_BUCKET_WINNING, ZERO_MONEY))}"
+    )
+
+
+def _parse_deductions_payload(payload: dict | None) -> dict[str, Decimal]:
+    parsed = {
+        WALLET_BUCKET_BONUS: ZERO_MONEY,
+        WALLET_BUCKET_DEPOSIT: ZERO_MONEY,
+        WALLET_BUCKET_WINNING: ZERO_MONEY,
+    }
+    if not payload:
+        return parsed
+    for bucket in parsed.keys():
+        raw = payload.get(bucket)
+        if raw is None:
+            continue
+        try:
+            parsed[bucket] = to_money(raw)
+        except Exception:
+            parsed[bucket] = ZERO_MONEY
+    return parsed
 
 class QuizMatchmaker:
     def __init__(self):
@@ -66,6 +96,12 @@ class QuizMatchmaker:
             if not user:
                 logger.error(f"User {user_id} not found for pool entry")
                 return
+
+            deductions = {
+                WALLET_BUCKET_BONUS: ZERO_MONEY,
+                WALLET_BUCKET_DEPOSIT: ZERO_MONEY,
+                WALLET_BUCKET_WINNING: ZERO_MONEY,
+            }
             
             # Use configured entry fee if available, otherwise fallback to what client sent (for safety)
             current_entry_fee, _, _, _ = await self._get_battle_config(db)
@@ -79,13 +115,18 @@ class QuizMatchmaker:
                     fee_to_deduct, 
                     spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING)
                 )
+                deduction_marker = _format_deduction_marker(deductions)
                 db.add(WalletTransaction(
                     user_id=user.id,
-                    amount=-to_money(entry_fee),
+                    amount=-to_money(fee_to_deduct),
                     transaction_type="QUIZ_ENTRY",
                     status="SUCCESS",
                     reference_id=f"MM-ENTRY-{uuid.uuid4().hex[:8]}",
-                    remark=f"1v1 Matchmaking Search Fee (Dep: {deductions[WALLET_BUCKET_DEPOSIT]}, Win: {deductions[WALLET_BUCKET_WINNING]})"
+                    remark=(
+                        "1v1 Matchmaking Search Fee "
+                        f"(Dep: {deductions[WALLET_BUCKET_DEPOSIT]}, Win: {deductions[WALLET_BUCKET_WINNING]})"
+                    ),
+                    failure_reason=f"MM_ENTRY;{deduction_marker}"
                 ))
                 await db.commit()
             except InsufficientWalletBalanceError:
@@ -104,6 +145,7 @@ class QuizMatchmaker:
             "bio": bio,
             "profile_pic": profile_pic,
             "entry_fee": entry_fee,
+            "deductions": {k: str(to_money(v)) for k, v in deductions.items()},
             "joined_at": asyncio.get_event_loop().time()
         }
 
@@ -146,33 +188,51 @@ class QuizMatchmaker:
         # 1. Calculate Refund (100% full refund at all times)
         now = asyncio.get_event_loop().time()
         wait_time = now - user_entry["joined_at"]
-        refund_amount = to_money(entry_fee_found * 1.0)
-        deduction_msg = "(100% Full Instant Refund)"
+        deductions_payload = user_entry.get("deductions") or {}
+        refund_buckets = _parse_deductions_payload(deductions_payload)
+        refund_total = to_money(sum(refund_buckets.values(), ZERO_MONEY))
+        if refund_total <= ZERO_MONEY:
+            refund_total = to_money(entry_fee_found * 1.0)
+            refund_buckets = {
+                WALLET_BUCKET_BONUS: ZERO_MONEY,
+                WALLET_BUCKET_DEPOSIT: ZERO_MONEY,
+                WALLET_BUCKET_WINNING: refund_total,
+            }
+
+        deduction_msg = (
+            "(100% Full Instant Refund; "
+            f"Dep: {refund_buckets[WALLET_BUCKET_DEPOSIT]}, "
+            f"Win: {refund_buckets[WALLET_BUCKET_WINNING]}, "
+            f"Bonus: {refund_buckets[WALLET_BUCKET_BONUS]})"
+        )
 
         async with SessionLocal() as db:
             user = await db.get(User, user_id)
             if user:
-                credit_wallet(user, refund_amount, WALLET_BUCKET_WINNING)
+                for bucket, amount in refund_buckets.items():
+                    if amount > ZERO_MONEY:
+                        credit_wallet(user, amount, bucket)
                 db.add(WalletTransaction(
                     user_id=user.id,
-                    amount=refund_amount,
+                    amount=refund_total,
                     transaction_type="QUIZ_REFUND",
                     status="SUCCESS",
                     reference_id=f"MM-REFUND-{uuid.uuid4().hex[:8]}",
-                    remark=f"Matchmaking Refund ₹{refund_amount} for ₹{entry_fee_found} entry. {deduction_msg}"
+                    remark=f"Matchmaking Refund ₹{refund_total} for ₹{entry_fee_found} entry. {deduction_msg}",
+                    failure_reason=f"MM_REFUND;{_format_deduction_marker(refund_buckets)}"
                 ))
                 await db.commit()
                 
                 from core.websockets import manager as ws_manager
                 await ws_manager.send_personal_message({
                     "type": "matchmaking_refunded",
-                    "amount": float(refund_amount),
-                    "message": f"Refunded ₹{refund_amount} instantly. {deduction_msg}"
+                    "amount": float(refund_total),
+                    "message": f"Refunded ₹{refund_total} instantly. {deduction_msg}"
                 }, user_id)
 
         # 2. Remove from pool
         self.match_pools[entry_fee_found] = [u for u in self.match_pools[entry_fee_found] if u["user_id"] != user_id]
-        logger.info(f"User {user_id} cancelled matchmaking. Refunded: {refund_amount} (Wait: {wait_time:.1f}s)")
+        logger.info(f"User {user_id} cancelled matchmaking. Refunded: {refund_total} (Wait: {wait_time:.1f}s)")
 
     async def remove_from_pool(self, user_id: int, entry_fee: int):
         if self.is_redis_active:
@@ -296,6 +356,25 @@ class QuizMatchmaker:
                 )
                 db.add(cloned_q)
             
+            await db.commit()
+
+            # Tag the latest matchmaking entry transactions so draw refunds can map to the right quiz.
+            for participant_id in (u1["user_id"], u2["user_id"]):
+                entry_res = await db.execute(
+                    select(WalletTransaction)
+                    .where(WalletTransaction.user_id == participant_id)
+                    .where(WalletTransaction.transaction_type == "QUIZ_ENTRY")
+                    .where(WalletTransaction.status == "SUCCESS")
+                    .order_by(WalletTransaction.id.desc())
+                    .limit(1)
+                )
+                entry_tx = entry_res.scalar_one_or_none()
+                if entry_tx:
+                    marker = entry_tx.failure_reason or ""
+                    if f"QUIZ_ID:{quiz_id}" not in marker:
+                        suffix = f";QUIZ_ID:{quiz_id}"
+                        entry_tx.failure_reason = (marker + suffix).strip(";")
+                        db.add(entry_tx)
             await db.commit()
         
         from core.websockets import manager as ws_manager

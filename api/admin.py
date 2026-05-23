@@ -3969,6 +3969,8 @@ def send_push_notification(
     push_total = len(tokens)
     invalid_tokens_cleared = 0
 
+    image_url = (data.image_url or "").strip() or None
+
     if tokens:
         if target_user_ids:
             # Targeted sends run synchronously so we can capture delivery failures immediately
@@ -3978,6 +3980,7 @@ def send_push_notification(
                 title=display_title,
                 body=display_body,
                 data={"type": "SYSTEM"},
+                image_url=image_url,
             )
             push_sent = int(push_result.get("success_count", 0))
 
@@ -3995,7 +3998,8 @@ def send_push_notification(
                 fcm_tokens=tokens,
                 title=display_title,
                 body=display_body,
-                data={"type": "SYSTEM"}
+                data={"type": "SYSTEM"},
+                image_url=image_url,
             )
 
     target_mode = "targeted" if target_user_ids else "broadcast"
