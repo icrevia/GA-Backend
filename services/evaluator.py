@@ -5,7 +5,7 @@ from datetime import datetime
 from models.quiz import QuizMatch, QuizParticipant
 from models.user import User
 from models.wallet import WalletTransaction
-from services.wallet_balances import get_total_balance, to_money
+from services.wallet_balances import WALLET_BUCKET_WINNING, credit_wallet, to_money
 import uuid
 
 logger = logging.getLogger("GamerzAdda.evaluator")
@@ -98,12 +98,12 @@ async def credit_winning(db: AsyncSession, user_id: int, amount: float, match_id
         return
 
     money_amount = to_money(amount)
-    user.wallet_winning += money_amount
+    credit_wallet(user, money_amount, WALLET_BUCKET_WINNING)
     
     transaction = WalletTransaction(
         user_id=user_id,
         amount=money_amount,
-        transaction_type="QUIZ_WINNING",
+        transaction_type="QUIZ_WIN",
         status="SUCCESS",
         reference_id=f"WIN-{uuid.uuid4().hex[:6].upper()}",
         failure_reason=f"MATCH:{match_id}|RANK:{rank}"

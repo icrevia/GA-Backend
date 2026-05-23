@@ -94,6 +94,7 @@ def send_push(
     title: str,
     body: str,
     data: Optional[dict] = None,
+    image_url: Optional[str] = None,
 ) -> bool:
     """Send a push notification to one device. Returns True on success."""
     app = _get_app()
@@ -103,9 +104,12 @@ def send_push(
         from firebase_admin import messaging
         title = append_firebase_suffix(title)
         body = append_firebase_suffix(body)
+        payload_data = {str(k): str(v) for k, v in (data or {}).items()}
+        if image_url:
+            payload_data.setdefault("image_url", image_url)
         msg = messaging.Message(
-            notification=messaging.Notification(title=title, body=body),
-            data={str(k): str(v) for k, v in (data or {}).items()},
+            notification=messaging.Notification(title=title, body=body, image=image_url or None),
+            data=payload_data,
             token=fcm_token,
             android=messaging.AndroidConfig(priority="high"),
         )
@@ -123,6 +127,7 @@ def send_push_to_many(
     title: str,
     body: str,
     data: Optional[dict] = None,
+    image_url: Optional[str] = None,
 ) -> int:
     """Send to multiple tokens. Returns success count."""
     result = send_push_to_many_detailed(
@@ -130,6 +135,7 @@ def send_push_to_many(
         title=title,
         body=body,
         data=data,
+        image_url=image_url,
     )
     return int(result["success_count"])
 
@@ -139,6 +145,7 @@ def send_push_to_many_detailed(
     title: str,
     body: str,
     data: Optional[dict] = None,
+    image_url: Optional[str] = None,
 ) -> dict:
     """
     Send to multiple tokens and return detailed delivery stats.
@@ -185,6 +192,10 @@ def send_push_to_many_detailed(
                 "invalid_tokens": [],
             }
 
+        payload_data = {str(k): str(v) for k, v in (data or {}).items()}
+        if image_url:
+            payload_data.setdefault("image_url", image_url)
+
         # Limit batch size to 500 (Firebase Admin SDK limit for send_each)
         batch_size = 500
         total_success = 0
@@ -195,8 +206,8 @@ def send_push_to_many_detailed(
             chunk = normalized_tokens[i : i + batch_size]
             messages = [
                 messaging.Message(
-                    notification=messaging.Notification(title=title, body=body),
-                    data={str(k): str(v) for k, v in (data or {}).items()},
+                    notification=messaging.Notification(title=title, body=body, image=image_url or None),
+                    data=payload_data,
                     token=token,
                     android=messaging.AndroidConfig(priority="high"),
                 )
