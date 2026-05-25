@@ -4310,6 +4310,32 @@ def get_daily_today(
 # Finance stats
 # ─────────────────────────────────────────────────────────────────
 
+def _get_today_finance_metrics_sync(db: Session):
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    daily_recharged_today = float(db.query(func.sum(WalletTransaction.amount)).filter(
+        WalletTransaction.transaction_type == "ADD_MONEY",
+        WalletTransaction.status == "SUCCESS",
+        WalletTransaction.created_at >= today_start,
+    ).scalar() or 0.0)
+
+    daily_withdrawal_requested_today = float(db.query(func.sum(func.abs(WalletTransaction.amount))).filter(
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+        WalletTransaction.created_at >= today_start,
+    ).scalar() or 0.0)
+
+    daily_withdrawal_success_today = float(db.query(func.sum(func.abs(WalletTransaction.amount))).filter(
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+        WalletTransaction.status == "SUCCESS",
+        func.coalesce(WalletTransaction.updated_at, WalletTransaction.created_at) >= today_start,
+    ).scalar() or 0.0)
+
+    return {
+        "daily_recharged_today": round(daily_recharged_today, 2),
+        "daily_withdrawal_requested_today": round(daily_withdrawal_requested_today, 2),
+        "daily_withdrawal_success_today": round(daily_withdrawal_success_today, 2),
+    }
+
 @router.get("/finance-stats")
 def get_finance_stats(
     db: Session = Depends(get_db),
@@ -4317,7 +4343,7 @@ def get_finance_stats(
 ):
     from datetime import datetime, timezone
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_finance = _get_today_finance_metrics(db)
+    today_finance = _get_today_finance_metrics_sync(db)
 
     total_recharged_today = float(db.query(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "ADD_MONEY",
