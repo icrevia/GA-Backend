@@ -157,6 +157,7 @@ def get_quiz_questions(
             "question_image_url": q.question_image_url,
             "options": options_payload,
             "time_limit": q.time_limit or quiz.time_per_question or 5,
+            "correct_index": q.correct_option_index
         })
 
     # Determine actual counts and timers from Admin Settings
@@ -164,7 +165,7 @@ def get_quiz_questions(
     
     if quiz.match_type == "SURVIVOR":
         # Randomize subset for survivor mode using a user-specific seed
-        rng = random.Random(current_user.id + quiz_id)
+        rng = random.Random(participant.id)
         final_pool = rng.sample(question_pool, min(len(question_pool), questions_per_quiz))
         
         # Shuffle options within each question using a deterministic seed for that specific question
@@ -179,6 +180,9 @@ def get_quiz_questions(
             # Reorder options based on shuffled indices
             original_options = list(q["options"])
             q["options"] = [original_options[i] for i in indices]
+            
+            # Update correct index to match shuffled options
+            q["correct_index"] = indices.index(q["correct_index"])
             
             logger.info(f"FETCH: User {current_user.id}, Quiz {quiz_id}, Question {q['id']}, Seed {seed}, Order {indices}")
     else:
