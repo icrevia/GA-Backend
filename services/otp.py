@@ -1,9 +1,106 @@
 import logging
 import httpx
 import asyncio
+import time
+import random
+import uuid
+import hashlib
 from core.config import settings
+from core.database import SyncSessionLocal
+from sqlalchemy import text
 
 logger = logging.getLogger("GamerzAdda.otp")
+
+# Updated MC Base URL (CPaas) as per latest docs
+MC_BASE_URL = "https://cpaas.messagecentral.com"
+SM_BASE_URL = "https://api.startmessaging.com"
+
+# Local store for StartMessaging OTPs: verification_id -> {"hash": str, "expires_at": float}
+_sm_otp_store: dict[str, dict] = {}
+
+def _get_active_provider() -> str:
+    try:
+        with SyncSessionLocal() as db:
+            result = db.execute(text("SELECT config_value FROM system_configs WHERE config_key = 'OTP_PROVIDER'"))
+            row = result.fetchone()
+            return str(row[0]).upper().strip() if row else "MESSAGE_CENTRAL"
+    except Exception as e:
+        logger.error(f"Error reading OTP_PROVIDER from DB: {e}")
+        return "MESSAGE_CENTRAL"
+
+def _cleanup_sm_store():
+    now = time.time()
+    expired = [vid for vid, data in _sm_otp_store.items() if data["expires_at"] < now]
+    for vid in expired:
+        _sm_otp_store.pop(vid, None)
+
+async def _send_otp_startmessaging(phone_e164: str) -> dict:
+    phone = phone_e164.lstrip("+")
+    if phone.startswith("91") and len(phone) == 12:
+        mobile = phone
+    else:
+        mobile = f"91{phone}" if len(phone) == 10 else phone
+    
+    api_key = _clean_env_value(settings.SM_API_KEY)
+    if not api_key:
+        raise RuntimeError("StartMessaging API Key is missing. Set SM_API_KEY.")
+    
+    otp_code = str(random.randint(100000, 999999))
+    verification_id = str(uuid.uuid4())
+    
+    _cleanup_sm_store()
+    _sm_otp_store[verification_id] = {
+        "hash": hashlib.sha256(otp_code.encode()).hexdigest(),
+        "expires_at": time.time() + 300  # 5 mins expiry
+    }
+    
+    url = f"{SM_BASE_URL}/otp/send"
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": api_key
+    }
+    payload = {
+        "phoneNumber": f"+{mobile}",
+        "templateId": "0afbdeb0-785d-4dd0-bd48-365a182df276",
+        "variables": {
+            "otp": otp_code
+        }
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            logger.info(f"SM Send -> Mobile: {mobile}")
+            resp = await client.post(url, json=payload, headers=headers, timeout=15.0)
+            data = _safe_json(resp)
+            
+            if resp.status_code != 200:
+                logger.error(f"SM Send HTTP {resp.status_code}. Body={_safe_text_preview(resp.text)}")
+                raise RuntimeError(f"OTP Gateway HTTP {resp.status_code}")
+                
+            logger.info(f"SM OTP SENT: {mobile}, VerId: {verification_id}")
+            # Mock the Message Central response structure
+            return {"data": {"verificationId": verification_id}, "responseCode": "200"}
+        except Exception as e:
+            logger.error(f"SM EXCEPTION: {e}")
+            raise RuntimeError(f"SMS Service Error: {str(e)}")
+
+async def _verify_otp_startmessaging(verification_id: str, otp_code: str) -> bool:
+    _cleanup_sm_store()
+    record = _sm_otp_store.get(verification_id)
+    if not record:
+        logger.warning(f"SM Verify rejected (Not Found/Expired). VerId={verification_id}")
+        return False
+        
+    expected_hash = record["hash"]
+    actual_hash = hashlib.sha256(str(otp_code).encode()).hexdigest()
+    
+    if expected_hash == actual_hash:
+        _sm_otp_store.pop(verification_id, None)
+        logger.info(f"SM Verify success. VerId={verification_id}")
+        return True
+    
+    logger.warning(f"SM Verify rejected (Invalid OTP). VerId={verification_id}")
+    return False
 
 # Updated MC Base URL (CPaas) as per latest docs
 MC_BASE_URL = "https://cpaas.messagecentral.com"
@@ -37,7 +134,7 @@ def _headers() -> dict:
         "Accept": "application/json"
     }
 
-async def send_otp(phone_e164: str) -> dict:
+async def _send_otp_message_central(phone_e164: str) -> dict:
     """Async send OTP using Message Central VerifyNow V3 API."""
     phone = phone_e164.lstrip("+")
     # For India, ensure 91 is extracted correctly
@@ -110,7 +207,13 @@ async def send_otp(phone_e164: str) -> dict:
             logger.error(f"MC EXCEPTION: {e}")
             raise RuntimeError(f"SMS Service Error: {str(e)}")
 
-async def verify_otp(verification_id: str, otp_code: str) -> bool:
+async def send_otp(phone_e164: str) -> dict:
+    provider = _get_active_provider()
+    if provider == "START_MESSAGING":
+        return await _send_otp_startmessaging(phone_e164)
+    return await _send_otp_message_central(phone_e164)
+
+async def _verify_otp_message_central(verification_id: str, otp_code: str) -> bool:
     """Async verify OTP using V3 endpoint"""
     url = f"{MC_BASE_URL}/verification/v3/validateOtp"
     customer_id = _clean_env_value(settings.MC_CUSTOMER_ID)
@@ -258,3 +361,9 @@ async def verify_otp(verification_id: str, otp_code: str) -> bool:
                 raise RuntimeError(f"OTP verification failed: {str(e)}")
 
     raise RuntimeError("OTP verification service unavailable")
+
+async def verify_otp(verification_id: str, otp_code: str) -> bool:
+    provider = _get_active_provider()
+    if provider == "START_MESSAGING":
+        return await _verify_otp_startmessaging(verification_id, otp_code)
+    return await _verify_otp_message_central(verification_id, otp_code)

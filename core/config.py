@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     SECURITY_ALERT_ON_SUCCESS_LOGIN: bool = True
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_ALERT_CHAT_ID: str = ""
-    CHAT_NOTI: str = ""
     SECURITY_ALERT_TIMEOUT_SECONDS: float = 3.0
     ENABLE_IP_GEO_LOOKUP: bool = True
     IP_GEO_LOOKUP_TIMEOUT_SECONDS: float = 2.0
@@ -83,15 +82,15 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT_SECONDS: int = 30
     DB_POOL_RECYCLE_SECONDS: int = 1800
 
-    # ── Redis ─────────────────────────────────────────────────────────────────
-    REDIS_URL: str = "redis://localhost:6379/0"
-
     # ── Pay0.shop ─────────────────────────────────────────────────────────────
     PAY0_MERCHANT_KEY: str = ""
 
     # ── Message Central OTP ───────────────────────────────────────────────────
     MC_CUSTOMER_ID: str = ""
     MC_AUTH_TOKEN:  str = ""
+
+    # ── StartMessaging OTP ────────────────────────────────────────────────────
+    SM_API_KEY: str = ""
 
     # ── Email OTP (login only) ───────────────────────────────────────────────
     EMAIL_OTP_ENABLED: bool = False
