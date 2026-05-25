@@ -38,7 +38,7 @@ def _send_tg_chat_alert_task(msg_data: dict[str, Any], user_id: int) -> None:
     if media_type and media_type != "TEXT":
         content = f"[{media_type}] {content}"
 
-    text = f"📩 *New Support Message*\nUser ID: `{user_id}`\nMessage: {content}"
+    text = f"📩 New Support Message\nUser ID: {user_id}\nMessage: {content}"
     
     chat_ids = [cid.strip() for cid in chat_ids_str.split(",") if cid.strip()]
     for chat_id in chat_ids:
@@ -47,7 +47,6 @@ def _send_tg_chat_alert_task(msg_data: dict[str, Any], user_id: int) -> None:
             payload = {
                 "chat_id": chat_id,
                 "text": text,
-                "parse_mode": "Markdown",
                 "disable_web_page_preview": True,
             }
             req = urllib_request.Request(
