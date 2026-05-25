@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+import json
+from threading import Thread
+from urllib import request as urllib_request
+from core.config import settings
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +25,41 @@ def _compact_preview(content: str | None, fallback: str = "New support message")
     if len(text) > 120:
         return f"{text[:117]}..."
     return text
+
+
+def _send_tg_chat_alert_task(msg_data: dict[str, Any], user_id: int) -> None:
+    bot_token = settings.CHAT_NOTI
+    chat_ids_str = settings.TELEGRAM_ALERT_CHAT_ID
+    if not bot_token or not chat_ids_str:
+        return
+
+    content = _compact_preview(msg_data.get("content"))
+    media_type = msg_data.get("media_type")
+    if media_type and media_type != "TEXT":
+        content = f"[{media_type}] {content}"
+
+    text = f"📩 *New Support Message*\nUser ID: `{user_id}`\nMessage: {content}"
+    
+    chat_ids = [cid.strip() for cid in chat_ids_str.split(",") if cid.strip()]
+    for chat_id in chat_ids:
+        try:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }
+            req = urllib_request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=5.0) as resp:
+                pass
+        except Exception as e:
+            logger.warning(f"Failed to send TG chat alert to {chat_id}: {e}")
 
 
 async def _get_user_fcm_token(db: AsyncSession, user_id: int) -> str | None:
@@ -68,7 +107,9 @@ async def notify_support_message(
         await asyncio.to_thread(send_push, token, title, body, data)
         return
 
-    # User-sent messages should alert admins when nobody is online.
+    # User-sent messages should alert admins
+    Thread(target=_send_tg_chat_alert_task, args=(msg_data, thread_user_id), daemon=True).start()
+
     if manager.is_admin_online():
         return
 

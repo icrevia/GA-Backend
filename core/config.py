@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     SECURITY_ALERT_ON_SUCCESS_LOGIN: bool = True
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_ALERT_CHAT_ID: str = ""
+    CHAT_NOTI: str = ""
     SECURITY_ALERT_TIMEOUT_SECONDS: float = 3.0
     ENABLE_IP_GEO_LOOKUP: bool = True
     IP_GEO_LOOKUP_TIMEOUT_SECONDS: float = 2.0
