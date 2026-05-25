@@ -59,6 +59,12 @@ def _send_tg_chat_alert_task(msg_data: dict[str, Any], user_id: int) -> None:
             )
             with urllib_request.urlopen(req, timeout=5.0) as resp:
                 pass
+        except urllib_request.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                body = ""
+            logger.warning(f"Failed to send TG chat alert to {chat_id}: HTTP {exc.code} - {body}")
         except Exception as e:
             logger.warning(f"Failed to send TG chat alert to {chat_id}: {e}")
 
