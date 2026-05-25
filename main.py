@@ -24,7 +24,7 @@ logger = logging.getLogger("GamerzAdda")
 
 from api.router import api_router
 from core.database import engine, Base
-from models import user, tournament, wallet, support, withdraw_upi_account, promo, banner, restriction, otp_phone_lock, user_activity_lock, admin_access_session, config
+from models import user, tournament, wallet, support, withdraw_upi_account, promo, banner, restriction, otp_phone_lock, user_activity_lock, admin_access_session, config, daily_stats
 
 SYSTEM_STATUS_CACHE_TTL_SECONDS = 15.0
 _system_status_cache: dict[str, object] = {
@@ -254,6 +254,10 @@ async def lifespan(app: FastAPI):
     support_media_cleanup_task = asyncio.create_task(support_media_cleanup_worker())
     logger.info("Support media cleanup worker started")
 
+    from services.daily_stats_worker import daily_stats_scheduler
+    daily_stats_task = asyncio.create_task(daily_stats_scheduler())
+    logger.info("Daily stats scheduler started")
+
     # ── Startup push notification to all users ───────────────────
     async def _send_startup_notification():
         try:
@@ -361,6 +365,10 @@ async def lifespan(app: FastAPI):
             evaluator_task.cancel()
             with suppress(asyncio.CancelledError):
                 await evaluator_task
+        if daily_stats_task is not None:
+            daily_stats_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await daily_stats_task
         # SHUTDOWN
         logger.info("GamerzAdda API shutting down...")
 

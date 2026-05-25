@@ -4229,6 +4229,63 @@ def list_all_transactions(
     return res
 
 
+from datetime import date
+from models.daily_stats import DailyStatsHistory
+from services.daily_stats_worker import generate_daily_snapshot, get_ist_now
+
+@router.get("/stats/daily-history")
+def get_daily_history(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    query = db.query(DailyStatsHistory)
+    if start_date:
+        query = query.filter(DailyStatsHistory.date >= start_date)
+    if end_date:
+        query = query.filter(DailyStatsHistory.date <= end_date)
+    
+    query = query.order_by(DailyStatsHistory.date.desc())
+    records = query.all()
+    
+    return [
+        {
+            "date": str(r.date),
+            "total_deposits": float(r.total_deposits),
+            "total_withdrawals": float(r.total_withdrawals),
+            "ff_joining_fees": float(r.ff_joining_fees),
+            "quiz_joining_fees": float(r.quiz_joining_fees),
+            "ff_prize_distributed": float(r.ff_prize_distributed),
+            "quiz_prize_distributed": float(r.quiz_prize_distributed),
+            "spin_distributed": float(r.spin_distributed),
+            "scratch_distributed": float(r.scratch_distributed),
+            "free_deposit_given": float(r.free_deposit_given),
+        }
+        for r in records
+    ]
+
+@router.get("/stats/daily-today")
+def get_daily_today(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    today = get_ist_now().date()
+    # Calculates dynamically without committing to the DB just for live view
+    snapshot = generate_daily_snapshot(db, today)
+    return {
+        "date": str(snapshot.date),
+        "total_deposits": float(snapshot.total_deposits),
+        "total_withdrawals": float(snapshot.total_withdrawals),
+        "ff_joining_fees": float(snapshot.ff_joining_fees),
+        "quiz_joining_fees": float(snapshot.quiz_joining_fees),
+        "ff_prize_distributed": float(snapshot.ff_prize_distributed),
+        "quiz_prize_distributed": float(snapshot.quiz_prize_distributed),
+        "spin_distributed": float(snapshot.spin_distributed),
+        "scratch_distributed": float(snapshot.scratch_distributed),
+        "free_deposit_given": float(snapshot.free_deposit_given),
+    }
+
 # ─────────────────────────────────────────────────────────────────
 # Finance stats
 # ─────────────────────────────────────────────────────────────────
