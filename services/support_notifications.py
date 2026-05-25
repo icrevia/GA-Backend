@@ -31,6 +31,7 @@ def _send_tg_chat_alert_task(msg_data: dict[str, Any], user_id: int) -> None:
     bot_token = settings.CHAT_NOTI
     chat_ids_str = settings.TELEGRAM_ALERT_CHAT_ID
     if not bot_token or not chat_ids_str:
+        logger.info(f"TG chat alert skipped: CHAT_NOTI={bool(bot_token)} TELEGRAM_ALERT_CHAT_ID={bool(chat_ids_str)}")
         return
 
     content = _compact_preview(msg_data.get("content"))
@@ -41,6 +42,7 @@ def _send_tg_chat_alert_task(msg_data: dict[str, Any], user_id: int) -> None:
     text = f"📩 New Support Message\nUser ID: {user_id}\nMessage: {content}"
     
     chat_ids = [cid.strip() for cid in chat_ids_str.split(",") if cid.strip()]
+    logger.info(f"Sending TG chat alert to {len(chat_ids)} admins for user {user_id}...")
     for chat_id in chat_ids:
         try:
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
