@@ -348,8 +348,8 @@ class QuizOrchestrator:
                         amount=prize_pool,
                         transaction_type="QUIZ_WIN",
                         status="SUCCESS",
-                        reference_id=f"BATTLE-WIN-{quiz_id}",
-                        remark=quiz.title,
+                        reference_id=f"BATTLE-WIN-{quiz_id}-{winner_id}",
+                        remark=f"{quiz.title} (Match #{quiz_id})",
                     ))
                 for p in participants:
                     if p.user_id == winner_id:
@@ -368,7 +368,7 @@ class QuizOrchestrator:
                         transaction_type="QUIZ_WIN",
                         status="SUCCESS",
                         reference_id=loss_ref,
-                        remark=quiz.title,
+                        remark=f"{quiz.title} (Match #{quiz_id})",
                     ))
             else:
                 # DRAW: Return entry fee to both
@@ -398,7 +398,7 @@ class QuizOrchestrator:
                             transaction_type="QUIZ_REFUND",
                             status="SUCCESS",
                             reference_id=refund_ref,
-                            remark=quiz.title,
+                            remark=f"{quiz.title} (Match #{quiz_id})",
                             failure_reason=(
                                 f"QUIZ_DRAW:{quiz_id};ENTRY_TX:{entry_tx.id if entry_tx else 'NONE'};"
                                 f"DEDUCT_BONUS:{refund_buckets[WALLET_BUCKET_BONUS]};"
@@ -525,7 +525,7 @@ class QuizOrchestrator:
                                 transaction_type="QUIZ_WIN",
                                 status="SUCCESS",
                                 reference_id=f"WIN-QZ-{quiz_id}-{user.id}",
-                                remark=quiz.title,
+                                remark=f"{quiz.title} (Match #{quiz_id})",
                             ))
                             distributed_users.append(user.username or f"User {user.id}")
                             distributed_user_ids.add(user.id)
@@ -561,7 +561,7 @@ class QuizOrchestrator:
                             transaction_type="QUIZ_WIN",
                             status="SUCCESS",
                             reference_id=loss_ref,
-                            remark=quiz.title,
+                            remark=f"{quiz.title} (Match #{quiz_id})",
                         ))
 
             quiz.status = "COMPLETED"

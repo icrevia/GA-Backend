@@ -53,6 +53,55 @@ from core.database import get_db as get_db_async, get_db_sync as get_db
 router = APIRouter()
 
 # --- 1v1 Battle Pool Management ---
+@router.get("/quizzes/1v1/history")
+def get_1v1_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+    skip: int = 0,
+    limit: int = 100
+):
+    try:
+        from sqlalchemy.orm import joinedload
+        matches = (
+            db.query(QuizMatch)
+            .filter(QuizMatch.match_type == "BATTLE")
+            .options(joinedload(QuizMatch.participants).joinedload(QuizParticipant.user))
+            .order_by(QuizMatch.id.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        
+        result = []
+        for match in matches:
+            participants_info = []
+            for p in match.participants:
+                participants_info.append({
+                    "user_id": p.user_id,
+                    "username": p.user.username if p.user else "Unknown",
+                    "score": p.score,
+                    "time_taken_ms": float(p.total_time_taken or 0),
+                    "rank": p.rank,
+                    "status": p.status
+                })
+            
+            result.append({
+                "id": match.id,
+                "title": match.title,
+                "status": match.status,
+                "start_time": match.start_time.isoformat() if match.start_time else None,
+                "end_time": match.end_time.isoformat() if match.end_time else None,
+                "entry_fee": float(match.entry_fee or 0),
+                "prize_pool": float(match.prize_pool or 0),
+                "participants": participants_info
+            })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching 1v1 history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/quizzes/1v1/questions", response_model=List[QuizQuestionResponse])
 async def get_1v1_questions(
     db: AsyncSession = Depends(get_db_async),
@@ -1108,6 +1157,8 @@ def update_quiz_question(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
+    from sqlalchemy.orm.attributes import flag_modified
+    
     q = db.query(QuizQuestion).filter(QuizQuestion.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found")
@@ -1117,6 +1168,11 @@ def update_quiz_question(
     update_data = data.dict(exclude_unset=True)
     for key, value in update_data.items():
         setattr(q, key, value)
+    
+    if "options" in update_data:
+        flag_modified(q, "options")
+    if "option_images" in update_data:
+        flag_modified(q, "option_images")
     
     db.commit()
     db.refresh(q)
