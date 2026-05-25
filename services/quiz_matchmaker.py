@@ -185,54 +185,82 @@ class QuizMatchmaker:
             logger.warning(f"Cancellation requested for user {user_id} but not found in any pool.")
             return
 
-        # 1. Calculate Refund (100% full refund at all times)
+        # 1. Calculate Refund (90% if < 5 mins, 100% if >= 5 mins)
         now = asyncio.get_event_loop().time()
         wait_time = now - user_entry["joined_at"]
         deductions_payload = user_entry.get("deductions") or {}
         refund_buckets = _parse_deductions_payload(deductions_payload)
-        refund_total = to_money(sum(refund_buckets.values(), ZERO_MONEY))
-        if refund_total <= ZERO_MONEY:
-            refund_total = to_money(entry_fee_found * 1.0)
-            refund_buckets = {
-                WALLET_BUCKET_BONUS: ZERO_MONEY,
-                WALLET_BUCKET_DEPOSIT: ZERO_MONEY,
-                WALLET_BUCKET_WINNING: refund_total,
-            }
+        
+        is_early = wait_time < 300
+        cancel_fee = to_money(entry_fee_found * 0.1) if is_early else ZERO_MONEY
+        
+        # Calculate actual refund per bucket by deducting the penalty from winning -> deposit -> bonus
+        actual_refund_buckets = {k: v for k, v in refund_buckets.items()}
+        if is_early:
+            fee_left = cancel_fee
+            for bucket in [WALLET_BUCKET_WINNING, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_BONUS]:
+                if fee_left > ZERO_MONEY and actual_refund_buckets[bucket] > ZERO_MONEY:
+                    take = min(actual_refund_buckets[bucket], fee_left)
+                    actual_refund_buckets[bucket] -= take
+                    fee_left -= take
+                    
+        actual_refund_total = to_money(sum(actual_refund_buckets.values(), ZERO_MONEY))
 
         deduction_msg = (
-            "(100% Full Instant Refund; "
-            f"Dep: {refund_buckets[WALLET_BUCKET_DEPOSIT]}, "
-            f"Win: {refund_buckets[WALLET_BUCKET_WINNING]}, "
-            f"Bonus: {refund_buckets[WALLET_BUCKET_BONUS]})"
+            f"({'90% Early Cancel Refund' if is_early else '100% Full Refund'}; "
+            f"Dep: {actual_refund_buckets[WALLET_BUCKET_DEPOSIT]}, "
+            f"Win: {actual_refund_buckets[WALLET_BUCKET_WINNING]}, "
+            f"Bonus: {actual_refund_buckets[WALLET_BUCKET_BONUS]})"
         )
 
         async with SessionLocal() as db:
             user = await db.get(User, user_id)
             if user:
-                for bucket, amount in refund_buckets.items():
+                # 1. Refund the 90% (or 100%) back to wallets
+                for bucket, amount in actual_refund_buckets.items():
                     if amount > ZERO_MONEY:
                         credit_wallet(user, amount, bucket)
+                
                 db.add(WalletTransaction(
                     user_id=user.id,
-                    amount=refund_total,
+                    amount=actual_refund_total,
                     transaction_type="QUIZ_REFUND",
                     status="SUCCESS",
                     reference_id=f"MM-REFUND-{uuid.uuid4().hex[:8]}",
-                    remark=f"Matchmaking Refund ₹{refund_total} for ₹{entry_fee_found} entry. {deduction_msg}",
-                    failure_reason=f"MM_REFUND;{_format_deduction_marker(refund_buckets)}"
+                    remark=f"Matchmaking Refund ₹{actual_refund_total} for ₹{entry_fee_found} entry. {deduction_msg}",
+                    failure_reason=f"MM_REFUND;{_format_deduction_marker(actual_refund_buckets)}"
                 ))
+                
+                # 2. Create a history record for the 10% penalty deduction
+                if is_early:
+                    penalty_buckets = {k: refund_buckets[k] - actual_refund_buckets[k] for k in refund_buckets}
+                    penalty_msg = (
+                        f"(Dep: {penalty_buckets[WALLET_BUCKET_DEPOSIT]}, "
+                        f"Win: {penalty_buckets[WALLET_BUCKET_WINNING]}, "
+                        f"Bonus: {penalty_buckets[WALLET_BUCKET_BONUS]})"
+                    )
+                    db.add(WalletTransaction(
+                        user_id=user.id,
+                        amount=-cancel_fee,
+                        transaction_type="PENALTY",
+                        status="SUCCESS",
+                        reference_id=f"MM-PENALTY-{uuid.uuid4().hex[:8]}",
+                        remark=f"10% Early Cancellation Penalty. {penalty_msg}",
+                        failure_reason=f"MM_PENALTY;{_format_deduction_marker(penalty_buckets)}"
+                    ))
+
                 await db.commit()
                 
                 from core.websockets import manager as ws_manager
                 await ws_manager.send_personal_message({
                     "type": "matchmaking_refunded",
-                    "amount": float(refund_total),
-                    "message": f"Refunded ₹{refund_total} instantly. {deduction_msg}"
+                    "amount": float(actual_refund_total),
+                    "message": f"Refunded ₹{actual_refund_total} instantly. {deduction_msg}"
                 }, user_id)
 
         # 2. Remove from pool
         self.match_pools[entry_fee_found] = [u for u in self.match_pools[entry_fee_found] if u["user_id"] != user_id]
-        logger.info(f"User {user_id} cancelled matchmaking. Refunded: {refund_total} (Wait: {wait_time:.1f}s)")
+        logger.info(f"User {user_id} cancelled matchmaking. Refunded: {actual_refund_total} (Wait: {wait_time:.1f}s)")
 
     async def remove_from_pool(self, user_id: int, entry_fee: int):
         if self.is_redis_active:
