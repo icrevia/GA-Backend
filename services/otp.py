@@ -45,7 +45,7 @@ async def _send_otp_startmessaging(phone_e164: str) -> dict:
     if not api_key:
         raise RuntimeError("StartMessaging API Key is missing. Set SM_API_KEY.")
     
-    otp_code = str(random.randint(100000, 999999))
+    otp_code = str(random.randint(1000, 9999))
     verification_id = str(uuid.uuid4())
     
     _cleanup_sm_store()
@@ -63,7 +63,8 @@ async def _send_otp_startmessaging(phone_e164: str) -> dict:
         "phoneNumber": f"+{mobile}",
         "templateId": "0afbdeb0-785d-4dd0-bd48-365a182df276",
         "variables": {
-            "otp": otp_code
+            "otp": otp_code,
+            "appName": "GamerzAdda"
         }
     }
     
@@ -73,7 +74,7 @@ async def _send_otp_startmessaging(phone_e164: str) -> dict:
             resp = await client.post(url, json=payload, headers=headers, timeout=15.0)
             data = _safe_json(resp)
             
-            if resp.status_code != 200:
+            if resp.status_code not in (200, 201):
                 logger.error(f"SM Send HTTP {resp.status_code}. Body={_safe_text_preview(resp.text)}")
                 raise RuntimeError(f"OTP Gateway HTTP {resp.status_code}")
                 
