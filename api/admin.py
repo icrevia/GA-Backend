@@ -1640,6 +1640,10 @@ def _refund_withdrawal_if_needed(
         if withdrawal_refund_amount > Decimal("0.00"):
             # Withdrawal is debited from winning only, so refund goes back to winning.
             credit_wallet(user, withdrawal_refund_amount, WALLET_BUCKET_WINNING)
+            
+            is_custom_reason = reason not in ("REJECTED_BY_ADMIN", "REJECTED_BY_TELEGRAM_ADMIN")
+            remark_text = f"Decline Reason: {reason}" if is_custom_reason else "Decline Reason: Rejected by Admin"
+            
             refund_tx = WalletTransaction(
                 user_id=tx.user_id,
                 amount=withdrawal_refund_amount,
@@ -1648,6 +1652,7 @@ def _refund_withdrawal_if_needed(
                 reference_id=refund_reference,
                 payment_mode="SYSTEM_REFUND",
                 failure_reason=f"SOURCE_WITHDRAWAL:{tx.id};REASON:{reason};ADMIN:{admin_username}",
+                remark=remark_text,
             )
             db.add(refund_tx)
             total_refund_amount += withdrawal_refund_amount
