@@ -29,6 +29,7 @@ from core.config import settings
 from core.security import hash_password
 from models.user import User
 from models.admin_access_session import AdminAccessSession
+from schemas.wallet import AddMoneyRequest, RejectWithdrawalRequest
 from models.banner import HomeBanner
 from models.promo import PromoCode
 from models.otp_phone_lock import OtpPhoneLock
@@ -1738,6 +1739,13 @@ def process_withdrawal_rejection(
     source: str = "ADMIN_PANEL",
 ) -> Decimal:
     tx.status = "FAILED"
+    
+    is_custom_reason = reason_code not in ("REJECTED_BY_ADMIN", "REJECTED_BY_TELEGRAM_ADMIN")
+    if is_custom_reason:
+        tx.remark = f"Decline Reason: {reason_code}"
+    else:
+        tx.remark = "Decline Reason: Rejected by Admin"
+        
     refunded = _refund_withdrawal_if_needed(
         db,
         tx,
@@ -1749,15 +1757,19 @@ def process_withdrawal_rejection(
     db.commit()
 
     try:
+        notification_msg = (
+            f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. "
+            "The debited amount and any applicable withdrawal fee have been "
+            "refunded to your winning wallet."
+        )
+        if is_custom_reason:
+            notification_msg += f"\n\nReason: {reason_code}"
+            
         add_user_notification(
             db,
             tx.user_id,
             "Withdrawal Rejected ❌",
-            (
-                f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. "
-                "The debited amount and any applicable withdrawal fee have been "
-                "refunded to your winning wallet."
-            ),
+            notification_msg,
             "WALLET",
         )
     except Exception:
@@ -1837,6 +1849,7 @@ def approve_withdrawal(
 @router.post("/withdrawals/{transaction_id}/reject")
 def reject_withdrawal(
     transaction_id: int,
+    payload: RejectWithdrawalRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
@@ -1849,11 +1862,13 @@ def reject_withdrawal(
     if tx.transaction_type != "WITHDRAWAL" or tx.status != "PENDING":
         raise HTTPException(status_code=400, detail="Invalid transaction or already processed")
 
+    reason = payload.reason.strip() if payload.reason and payload.reason.strip() else "REJECTED_BY_ADMIN"
+
     process_withdrawal_rejection(
         db,
         tx,
         actor_label=current_user.username,
-        reason_code="REJECTED_BY_ADMIN",
+        reason_code=reason,
         source="ADMIN_PANEL",
     )
     background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})

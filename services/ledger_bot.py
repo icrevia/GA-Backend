@@ -151,6 +151,20 @@ def edit_message_text(chat_id: str | int, message_id: int, text: str) -> None:
     )
 
 
+def send_message(chat_id: str | int, text: str, reply_to_message_id: int | None = None, force_reply: bool = False) -> None:
+    payload: dict = {
+        "chat_id": str(chat_id),
+        "text": str(text or "").strip()[:4096],
+        "disable_web_page_preview": True,
+    }
+    if reply_to_message_id:
+        payload["reply_to_message_id"] = reply_to_message_id
+    if force_reply:
+        payload["reply_markup"] = {"force_reply": True, "selective": True}
+
+    _telegram_api_request("sendMessage", payload, timeout=8.0)
+
+
 def _format_amount(value: Decimal | float | int) -> str:
     return f"{abs(float(value)):.2f}"
 
@@ -295,7 +309,7 @@ def register_ledger_bot_webhook() -> bool:
     webhook_url = f"{app_url}{settings.API_V1_STR}/ledger-bot/webhook"
     payload: dict[str, object] = {
         "url": webhook_url,
-        "allowed_updates": ["callback_query"],
+        "allowed_updates": ["callback_query", "message"],
     }
 
     webhook_secret = _clean_env_value(settings.LEDGER_WEBHOOK_SECRET)

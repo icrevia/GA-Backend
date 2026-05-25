@@ -14,9 +14,11 @@ from services.ledger_bot import (
     answer_callback_query,
     build_withdrawal_resolution_text,
     edit_message_text,
+    send_message,
     is_ledger_admin_telegram_id,
     parse_withdrawal_callback_data,
 )
+import re
 
 logger = logging.getLogger("GamerzAdda.ledger.webhook")
 router = APIRouter()
@@ -44,6 +46,61 @@ def ledger_bot_webhook(
 
     if not isinstance(payload, dict):
         return {"ok": True}
+
+    message_event = payload.get("message")
+    if isinstance(message_event, dict) and "reply_to_message" in message_event:
+        reply_to_message = message_event["reply_to_message"]
+        original_text = str(reply_to_message.get("text", ""))
+        match = re.search(r"REJECT WITHDRAWAL \[TxID: (\d+)\]", original_text)
+        
+        if match:
+            transaction_id = int(match.group(1))
+            reason_text = str(message_event.get("text", "")).strip()
+            
+            actor = message_event.get("from") if isinstance(message_event.get("from"), dict) else {}
+            actor_chat_id = str(actor.get("id") or "").strip()
+            actor_username = str(actor.get("username") or "").strip()
+            actor_label = f"@{actor_username}" if actor_username else f"tg:{actor_chat_id}"
+
+            if not actor_chat_id or not is_ledger_admin_telegram_id(actor_chat_id):
+                return {"ok": True}
+
+            tx = (
+                db.query(WalletTransaction)
+                .filter(WalletTransaction.id == transaction_id)
+                .with_for_update()
+                .first()
+            )
+
+            if tx and tx.transaction_type == "WITHDRAWAL" and tx.status == "PENDING":
+                try:
+                    refunded_amount = process_withdrawal_rejection(
+                        db,
+                        tx,
+                        actor_label=actor_label,
+                        reason_code=reason_text or "REJECTED_BY_TELEGRAM_ADMIN",
+                        source="TELEGRAM",
+                    )
+                    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+                    
+                    edit_message_text(
+                        reply_to_message.get("chat", {}).get("id"),
+                        reply_to_message.get("message_id"),
+                        build_withdrawal_resolution_text(
+                            transaction_id=tx.id,
+                            user_id=tx.user_id,
+                            amount=tx.amount,
+                            upi_id=tx.payu_txn_id,
+                            status=tx.status,
+                            actor_label=actor_label,
+                            refunded_amount=refunded_amount,
+                        ) + f"\n\nDecline Reason: {reason_text}",
+                    )
+                except Exception as exc:
+                    db.rollback()
+                    logger.exception("Failed to process reply rejection: %s", exc)
+                    
+            return {"ok": True}
 
     callback = payload.get("callback_query")
     if not isinstance(callback, dict):
@@ -119,15 +176,33 @@ def ledger_bot_webhook(
             )
             callback_text = "Withdrawal approved"
             refunded_amount = Decimal("0.00")
+            
+            background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
+            answer_callback_query(callback_query_id, callback_text, show_alert=False)
+
+            if message_chat_id is not None and message_id is not None:
+                edit_message_text(
+                    message_chat_id,
+                    int(message_id),
+                    build_withdrawal_resolution_text(
+                        transaction_id=tx.id,
+                        user_id=tx.user_id,
+                        amount=tx.amount,
+                        upi_id=tx.payu_txn_id,
+                        status=tx.status,
+                        actor_label=actor_label,
+                        refunded_amount=refunded_amount,
+                    ),
+                )
         else:
-            refunded_amount = process_withdrawal_rejection(
-                db,
-                tx,
-                actor_label=actor_label,
-                reason_code="REJECTED_BY_TELEGRAM_ADMIN",
-                source="TELEGRAM",
-            )
-            callback_text = "Withdrawal rejected and refunded"
+            answer_callback_query(callback_query_id, "Please reply with reason", show_alert=False)
+            if message_chat_id is not None:
+                send_message(
+                    message_chat_id,
+                    f"REJECT WITHDRAWAL [TxID: {transaction_id}]\n\nPlease reply to this message with the decline reason to confirm rejection.",
+                    reply_to_message_id=int(message_id) if message_id else None,
+                    force_reply=True
+                )
     except Exception as exc:
         db.rollback()
         logger.exception("Ledger callback action failed for tx=%s error=%s", transaction_id, exc)
@@ -137,23 +212,5 @@ def ledger_bot_webhook(
             show_alert=True,
         )
         return {"ok": True}
-
-    background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
-    answer_callback_query(callback_query_id, callback_text, show_alert=False)
-
-    if message_chat_id is not None and message_id is not None:
-        edit_message_text(
-            message_chat_id,
-            int(message_id),
-            build_withdrawal_resolution_text(
-                transaction_id=tx.id,
-                user_id=tx.user_id,
-                amount=tx.amount,
-                upi_id=tx.payu_txn_id,
-                status=tx.status,
-                actor_label=actor_label,
-                refunded_amount=refunded_amount,
-            ),
-        )
 
     return {"ok": True}

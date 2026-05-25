@@ -52,6 +52,10 @@ class WithdrawalRequest(BaseModel):
     upi_id: str
 
 
+class RejectWithdrawalRequest(BaseModel):
+    reason: Optional[str] = None
+
+
 class PromoRedeemRequest(BaseModel):
     code: str
 
