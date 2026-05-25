@@ -57,7 +57,6 @@ async def _build_quiz_sync_payload(db, quiz_id: int) -> dict | None:
             "question_image_url": q.question_image_url,
             "options": options_payload,
             "time_limit": time_per_question,
-            "correct_index": q.correct_option_index,  # Sent for client-side feedback
         })
 
     session_duration = quiz.duration_seconds or max(60, (len(question_pool) * time_per_question) + 30)
@@ -341,6 +340,15 @@ async def websocket_endpoint(websocket: WebSocket):
                             )
                             db.add(ans)
                             await db.commit()
+
+                            await manager.send_personal_message({
+                                "type": "quiz_answer_result",
+                                "question_id": question_id,
+                                "is_correct": is_correct,
+                                "correct_option_index": question.correct_option_index,
+                                "score_delta": 10 if is_correct else 0
+                            }, user_id)
+
 
                             # Auto-complete for BATTLE if all questions answered
                             quiz_res = await db.execute(select(QuizMatch).where(QuizMatch.id == quiz_id))
