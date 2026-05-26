@@ -164,8 +164,6 @@ def _read_decimal_system_config(db: Session, key: str, fallback: Decimal) -> Dec
 
     if value <= Decimal("0.00"):
         return to_money(fallback)
-    if value < fallback:
-        return to_money(fallback)
     return value
 
 
