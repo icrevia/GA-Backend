@@ -28,10 +28,10 @@ def _compact_preview(content: str | None, fallback: str = "New support message")
 
 
 def _send_tg_chat_alert_task(msg_data: dict[str, Any], user_id: int) -> None:
-    bot_token = settings.CHAT_NOTI
+    bot_token = settings.TELEGRAM_BOT_TOKEN
     chat_ids_str = settings.TELEGRAM_ALERT_CHAT_ID
     if not bot_token or not chat_ids_str:
-        logger.info(f"TG chat alert skipped: CHAT_NOTI={bool(bot_token)} TELEGRAM_ALERT_CHAT_ID={bool(chat_ids_str)}")
+        logger.info(f"TG chat alert skipped: TELEGRAM_BOT_TOKEN={bool(bot_token)} TELEGRAM_ALERT_CHAT_ID={bool(chat_ids_str)}")
         return
 
     content = _compact_preview(msg_data.get("content"))
