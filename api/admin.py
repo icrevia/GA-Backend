@@ -1534,6 +1534,8 @@ async def get_admin_stats(
     current_user: User = Depends(get_current_active_admin)
 ):
     total_users       = (await db.execute(select(func.count(User.id)))).scalar()
+    today_start       = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    new_users_today   = (await db.execute(select(func.count(User.id)).filter(User.created_at >= today_start))).scalar() or 0
     total_tournaments = (await db.execute(select(func.count(Tournament.id)))).scalar()
 
     # Base Metrics
@@ -1593,6 +1595,7 @@ async def get_admin_stats(
 
     return {
         "total_users": total_users,
+        "new_users_today": new_users_today,
         "total_tournaments": total_tournaments,
         "total_revenue_pool": round(float(total_revenue_pool), 2),
         "total_prizes_distributed": round(float(total_prizes), 2),
