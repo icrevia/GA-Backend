@@ -1122,7 +1122,7 @@ def request_withdrawal(
     withdrawal_fee = (
         WITHDRAWAL_SAME_DAY_FEE
         if same_day_withdraw_count >= 1
-        else Decimal("0.00")
+        else Decimal("5.00")
     )
     total_wallet_debit = amount_to_withdraw + withdrawal_fee
 
@@ -1214,14 +1214,15 @@ def request_withdrawal(
     except Exception:
         pass
 
-    if withdrawal_fee > Decimal("0.00"):
+    if same_day_withdraw_count >= 1:
         notification_body = (
             f"Your withdrawal request of ₹{amount_to_withdraw:.2f} has been submitted. "
             f"A processing fee of ₹{withdrawal_fee:.2f} was charged because this is an additional same-day withdrawal."
         )
     else:
         notification_body = (
-            f"Your withdrawal request of ₹{amount_to_withdraw:.2f} has been submitted with no processing fee."
+            f"Your withdrawal request of ₹{amount_to_withdraw:.2f} has been submitted. "
+            f"A processing fee of ₹{withdrawal_fee:.2f} was charged for your first daily withdrawal."
         )
 
     add_user_notification(
@@ -1247,10 +1248,14 @@ def request_withdrawal(
         withdrawal_fee=withdrawal_fee,
     )
 
-    if withdrawal_fee > Decimal("0.00"):
+    if same_day_withdraw_count >= 1:
         return {
             "message": (
                 f"Withdrawal requested successfully. ₹{withdrawal_fee:.2f} fee applied for additional same-day withdrawal."
             )
         }
-    return {"message": "Withdrawal requested successfully. No processing fee applied."}
+    return {
+        "message": (
+            f"Withdrawal requested successfully. ₹{withdrawal_fee:.2f} fee applied for your first daily withdrawal."
+        )
+    }
