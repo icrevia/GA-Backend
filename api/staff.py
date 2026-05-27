@@ -7,9 +7,11 @@ This router handles all operations a staff member needs to manage their assigned
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session, joinedload
-from typing import List, Optional
+from typing import List, Optional, Any
 from pydantic import BaseModel
 from datetime import datetime
+from decimal import Decimal
+import uuid
 
 from core.database import get_db_sync as get_db
 from core.security import decode_access_token
@@ -17,6 +19,10 @@ from models.user import User
 from models.tournament import Tournament
 from models.participant import TournamentParticipant
 from models.notification import Notification
+from models.wallet import WalletTransaction
+from schemas.admin import TournamentConclude
+from services.wallet_balances import WALLET_BUCKET_WINNING, credit_wallet, to_money
+from services.match_stats import classify_game_mode, leaderboard_prize_payment_mode
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
@@ -142,6 +148,8 @@ class TournamentOut(BaseModel):
     participant_count: int
     map_name: Optional[str] = None
     game_image_url: Optional[str] = None
+    per_kill_prize: Optional[float] = 0.0
+    prize_distribution: Optional[List[Any]] = None
 
     class Config:
         from_attributes = True
@@ -232,6 +240,8 @@ def list_staff_tournaments(
                 "participant_count": count,
                 "map_name": t.map_name,
                 "game_image_url": t.game_image_url,
+                "per_kill_prize": float(t.per_kill_prize or 0.0),
+                "prize_distribution": t.prize_distribution,
             })
 
     return filtered
@@ -260,6 +270,8 @@ def get_staff_tournament(
         "match_time": t.match_time, "room_id": t.room_id, "room_password": t.room_password,
         "max_slots": t.max_slots, "participant_count": count, "map_name": t.map_name,
         "game_image_url": t.game_image_url,
+        "per_kill_prize": float(t.per_kill_prize or 0.0),
+        "prize_distribution": t.prize_distribution,
     }
 
 
@@ -391,4 +403,125 @@ def staff_declare_winner(
         "message": f"Winner declared: {winner.username}",
         "winner_id": winner.id,
         "winner_username": winner.username,
+    }
+
+
+@router.post("/tournaments/{tournament_id}/conclude")
+def staff_conclude_tournament(
+    tournament_id: int,
+    data: TournamentConclude,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_staff)
+):
+    perms = _get_staff_permissions(current_user)
+    tournament = db.query(Tournament).filter(
+        Tournament.id == tournament_id
+    ).with_for_update().first()
+    if not tournament:
+        raise HTTPException(status_code=404, detail="Tournament not found")
+    if not _game_matches_permission(tournament.game_name, perms):
+        raise HTTPException(status_code=403, detail="You are not assigned to this game type")
+    if tournament.status == "COMPLETED":
+        raise HTTPException(status_code=400, detail="Tournament already completed")
+
+    per_kill_prize = to_money(getattr(tournament, 'per_kill_prize', 0.0))
+    leaderboard_category = classify_game_mode(getattr(tournament, "game_name", None))
+    payout_payment_mode = leaderboard_prize_payment_mode(leaderboard_category)
+
+    total_paid = Decimal("0.00")
+    winners_set = set()
+
+    # ─── PROCESS MANUAL PRIZES ────────────────────────────────────────
+    if data.manual_prizes:
+        for entry in data.manual_prizes:
+            user_id = entry.user_id
+            amount = to_money(entry.amount)
+
+            # Update stats
+            participant = db.query(TournamentParticipant).filter(
+                TournamentParticipant.tournament_id == tournament_id,
+                TournamentParticipant.user_id == user_id
+            ).first()
+            if participant:
+                participant.prize_amount = str(amount)
+                participant.kills = entry.kills or 0
+                participant.participant_rank = entry.rank
+                db.add(participant)
+
+            member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
+            if not member_user: continue
+
+            if amount > 0:
+                credit_wallet(member_user, amount, WALLET_BUCKET_WINNING)
+                
+            tx = WalletTransaction(
+                user_id=member_user.id,
+                amount=amount,
+                transaction_type="PRIZE_WIN",
+                status="SUCCESS",
+                reference_id=f"MNL-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
+                payment_mode=payout_payment_mode,
+                remark=tournament.title
+            )
+            db.add(tx)
+            total_paid += amount
+            winners_set.add(user_id)
+            
+            if amount > 0:
+                _add_user_notification(
+                    db, member_user.id,
+                    "TOURNAMENT WINNINGS! 🏆",
+                    f"Congratulations! You've been awarded ₹{amount:.2f} for '{tournament.title}'. Check your wallet!",
+                    "APP"
+                )
+    else:
+        # Fallback reward logic
+        for entry in data.kill_rewards:
+            user_id = entry.user_id
+            kills = entry.kills or 0
+                
+            participant = db.query(TournamentParticipant).filter(
+                TournamentParticipant.tournament_id == tournament_id,
+                TournamentParticipant.user_id == user_id
+            ).first()
+            if not participant: continue
+
+            participant.kills = kills
+            db.add(participant)
+
+            member_user = db.query(User).filter(User.id == user_id).with_for_update().first()
+            if not member_user: continue
+
+            member_prize = per_kill_prize * kills
+            if member_prize > 0:
+                credit_wallet(member_user, member_prize, WALLET_BUCKET_WINNING)
+                tx = WalletTransaction(
+                    user_id=member_user.id,
+                    amount=member_prize,
+                    transaction_type="PRIZE_WIN",
+                    status="SUCCESS",
+                    reference_id=f"KLL-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
+                    payment_mode=payout_payment_mode,
+                    remark=tournament.title
+                )
+                db.add(tx)
+                total_paid += member_prize
+                winners_set.add(user_id)
+                _add_user_notification(
+                    db, member_user.id,
+                    "KILL REWARDS! 🎯",
+                    f"You've been credited ₹{member_prize:.2f} for {kills} kills in '{tournament.title}'!",
+                    "APP"
+                )
+
+    if data.winner_id:
+        tournament.winner_id = int(data.winner_id)
+    tournament.status = "COMPLETED"
+    db.add(tournament)
+    db.commit()
+
+    return {
+        "status": "concluded",
+        "total_prizes_distributed": float(total_paid),
+        "winners_count": len(winners_set)
     }
