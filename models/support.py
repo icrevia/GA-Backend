@@ -27,6 +27,7 @@ class ChatSession(Base):
     is_user_blocked = Column(Boolean, default=False, nullable=False)
     status = Column(String, default="ACTIVE", index=True)
     requires_admin = Column(Boolean, default=False, nullable=False)
+    is_pinned = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=_utcnow_naive)
 
     # Explicit FK avoids ambiguity now that chat_sessions also references users via attended_by_admin_id.

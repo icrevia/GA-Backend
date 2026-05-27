@@ -36,6 +36,9 @@ GAME_PERMISSION_MAP = {
     "cs go": "STAFF:CS",
     "cs2": "STAFF:CS",
     "bgmi": "STAFF:CS",     # CS slot used for BGMI/other if no specific slot
+    "clash squad": "STAFF:CS",
+    "clashsquad": "STAFF:CS",
+    "clash_squad": "STAFF:CS",
 }
 
 STAFF_PERMISSION_KEYS = {"STAFF:FF", "STAFF:MAX", "STAFF:CS"}

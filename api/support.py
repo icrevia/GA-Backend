@@ -286,6 +286,7 @@ async def _build_thread_state_payload(
         "is_user_blocked": bool(meta.is_user_blocked),
         "blocked_message": blocked_message,
         "support_whatsapp_url": _support_whatsapp_url(),
+        "is_pinned": bool(meta.is_pinned),
         "is_ended": is_ended,
         "ended_at": _iso(meta.ended_at),
         "ended_by_role": meta.ended_by_role,
@@ -391,6 +392,7 @@ async def get_my_chat(
         "blocked_message": DEFAULT_BLOCKED_MESSAGE if meta.is_user_blocked else None,
         "support_whatsapp_url": _support_whatsapp_url(),
         "attended_by_admin_id": meta.attended_by_admin_id,
+        "is_pinned": bool(meta.is_pinned),
         "messages": [_serialize_msg(m) for m in messages],
     }
 
@@ -754,6 +756,7 @@ async def get_admin_threads(
             latest_session.ended_at.label("ended_at"),
             latest_session.ended_by_role.label("ended_by_role"),
             latest_session.ended_by_user_id.label("ended_by_user_id"),
+            latest_session.is_pinned.label("is_pinned"),
             latest_session.created_at.label("created_at"),
             User.id.label("user_id"),
             User.username.label("username"),
@@ -773,6 +776,7 @@ async def get_admin_threads(
         .outerjoin(last_message_sq, last_message_sq.c.thread_user_id == thread_users_sq.c.user_id)
         .outerjoin(unread_sq, unread_sq.c.thread_user_id == thread_users_sq.c.user_id)
         .order_by(
+            func.coalesce(latest_session.is_pinned, False).desc(),
             func.coalesce(latest_session.requires_admin, False).desc(),
             last_message_sq.c.last_timestamp.desc().nullslast(),
             func.coalesce(latest_session.created_at, last_message_sq.c.last_timestamp).desc().nullslast(),
@@ -813,6 +817,7 @@ async def get_admin_threads(
             "is_attended": row["attended_by_admin_id"] is not None,
             "attended_by_admin_id": row["attended_by_admin_id"],
             "attended_at": _iso(row["attended_at"]),
+            "is_pinned": bool(row["is_pinned"]),
             "is_user_blocked": is_user_blocked,
             "blocked_message": DEFAULT_BLOCKED_MESSAGE if is_user_blocked else None,
             "status": status,
@@ -1118,3 +1123,45 @@ async def admin_unblock(
         notify_user_push=True,
     )
     return {"status": "unblocked"}
+
+
+@router.post("/admin/pin")
+async def admin_pin(
+    req: AdminStatusRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_async),
+):
+    _assert_admin(current_user)
+
+    meta = await _get_or_create_thread_meta(db, req.user_id)
+    meta.is_pinned = True
+    await db.commit()
+
+    await _emit_thread_state(
+        db,
+        thread_user_id=req.user_id,
+        meta=meta,
+        event_type="support_thread_updated",
+    )
+    return {"status": "pinned"}
+
+
+@router.post("/admin/unpin")
+async def admin_unpin(
+    req: AdminStatusRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user_async),
+):
+    _assert_admin(current_user)
+
+    meta = await _get_or_create_thread_meta(db, req.user_id)
+    meta.is_pinned = False
+    await db.commit()
+
+    await _emit_thread_state(
+        db,
+        thread_user_id=req.user_id,
+        meta=meta,
+        event_type="support_thread_updated",
+    )
+    return {"status": "unpinned"}
