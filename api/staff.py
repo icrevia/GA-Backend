@@ -43,7 +43,7 @@ STAFF_PERMISSION_KEYS = {"STAFF:FF", "STAFF:MAX", "STAFF:CS"}
 PERMISSION_LABEL_MAP = {
     "STAFF:FF": "Free Fire",
     "STAFF:MAX": "Free Fire MAX",
-    "STAFF:CS": "CS / BGMI",
+    "STAFF:CS": "CS",
 }
 
 
