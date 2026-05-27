@@ -59,7 +59,8 @@ def _normalize_signup_phone(raw_phone: str) -> str:
 
 
 def _is_admin_web_login_request(request: Request) -> bool:
-    return (request.headers.get("x-login-source") or "").strip().lower() == "admin-web"
+    source = (request.headers.get("x-login-source") or "").strip().lower()
+    return source in ("admin-web", "staff-panel")
 
 
 def _matches_admin_login_identifier(input_identifier: str) -> bool:
