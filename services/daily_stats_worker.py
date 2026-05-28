@@ -48,8 +48,11 @@ def generate_daily_snapshot(db: Session, target_date: date) -> DailyStatsHistory
 
     total_deposits = get_sum("ADD_MONEY")
     total_withdrawals = get_sum("WITHDRAWAL")
-    ff_joining_fees = abs(get_sum("JOIN_TOURNAMENT", status=None))
-    quiz_joining_fees = abs(get_sum("QUIZ_ENTRY", status=None))
+    
+    # Calculate net joining fees (Gross entry - Refunds)
+    ff_joining_fees = abs(get_sum("JOIN_TOURNAMENT", status=None)) - abs(get_sum("TOURNAMENT_CANCEL_REFUND", status=None))
+    quiz_joining_fees = abs(get_sum("QUIZ_ENTRY", status=None)) - abs(get_sum("QUIZ_REFUND", status=None))
+    
     ff_prize_distributed = get_sum("PRIZE_WIN", status=None)
     quiz_prize_distributed = get_sum("QUIZ_WIN", status=None)
     spin_distributed = get_sum("SPIN_REWARD", status=None)
