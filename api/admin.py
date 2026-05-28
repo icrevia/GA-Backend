@@ -1552,7 +1552,7 @@ async def get_admin_stats(
 
     # Subtract refunds from revenue pool to get real estimated revenue
     total_refunds = (await db.execute(select(func.sum(WalletTransaction.amount)).filter(
-        WalletTransaction.transaction_type == "REFUND",
+        WalletTransaction.transaction_type.in_(["REFUND", "TOURNAMENT_CANCEL_REFUND"]),
         WalletTransaction.status == "SUCCESS"
     ))).scalar() or 0.0
 
@@ -1568,11 +1568,18 @@ async def get_admin_stats(
 
     # NEW: Daily Revenue for Chart (Last 7 Days)
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    from sqlalchemy import case
     result = await db.execute(select(
         func.date(WalletTransaction.created_at).label("day_date"),
-        func.sum(func.abs(WalletTransaction.amount)).label("daily_sum")
+        func.sum(
+            case(
+                (WalletTransaction.transaction_type == "JOIN_TOURNAMENT", func.abs(WalletTransaction.amount)),
+                (WalletTransaction.transaction_type == "TOURNAMENT_CANCEL_REFUND", -func.abs(WalletTransaction.amount)),
+                else_=0
+            )
+        ).label("daily_sum")
     ).filter(
-        WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
+        WalletTransaction.transaction_type.in_(["JOIN_TOURNAMENT", "TOURNAMENT_CANCEL_REFUND"]),
         WalletTransaction.status == "SUCCESS",
         WalletTransaction.created_at >= seven_days_ago
     ).group_by("day_date").order_by("day_date"))
