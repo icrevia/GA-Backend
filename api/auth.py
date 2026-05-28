@@ -566,9 +566,9 @@ async def _save_pending_otp_db(
     db: AsyncSession,
     phone: str,
     verification_id: str,
-    username: str,
-    email: str,
-    referral_code: str | None,
+    username: str | None = None,
+    email: str | None = None,
+    referral_code: str | None = None,
 ) -> None:
     """Upsert a pending OTP record into DB."""
     expires_at = datetime.utcnow() + timedelta(minutes=30)
@@ -576,9 +576,12 @@ async def _save_pending_otp_db(
     existing = result.scalar_one_or_none()
     if existing:
         existing.verification_id = verification_id
-        existing.pending_username = username
-        existing.pending_email = email
-        existing.pending_referral_code = referral_code
+        if username is not None:
+            existing.pending_username = username
+        if email is not None:
+            existing.pending_email = email
+        if referral_code is not None:
+            existing.pending_referral_code = referral_code
         existing.expires_at = expires_at
         db.add(existing)
     else:
@@ -619,17 +622,7 @@ async def _delete_pending_otp_db(db: AsyncSession, phone: str) -> None:
 @router.post("/signup")
 @limiter.limit("5/minute")
 async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depends(get_db)) -> Any:
-    # ── Memory Hygiene ────────────────────────────────────────────────────────
-    # Basic cleanup: if store gets too large, purge entries older than 30 mins
-    if len(_pending_signups) > 1000:
-        now = datetime.utcnow()
-        to_delete = [
-            k for k, v in _pending_signups.items() 
-            if (now - v.get("_created_at", now)).total_seconds() > 1800
-        ]
-        for k in to_delete:
-            _pending_signups.pop(k, None)
-            _otp_store.pop(k, None)
+
 
     email = user_in.email.strip().lower().split('\n')[0]
     phone = _normalize_signup_phone(user_in.phone_number)
@@ -962,7 +955,6 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
                 identifier=raw_identifier,
                 phone=admin_phone,
             )
-            _otp_store.pop(admin_phone, None)
             logger.info("Admin login OTP sent on Telegram for %s", admin_phone)
             return {
                 "message": "OTP sent on Telegram",
@@ -1008,7 +1000,7 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
         from services import otp as otp_service
         # Async call with await
         res = await otp_service.send_otp(user.phone_number)
-        _otp_store[user.phone_number] = res["data"]["verificationId"]
+        await _save_pending_otp_db(db, user.phone_number, res["data"]["verificationId"])
         await register_otp_send_success_async(
             db=db,
             phone=user.phone_number,
@@ -1062,7 +1054,6 @@ async def send_otp(
                 identifier=settings.ADMIN_LOGIN_IDENTIFIER or admin_phone,
                 phone=admin_phone,
             )
-            _otp_store.pop(admin_phone, None)
             return {
                 "message": "OTP sent on Telegram",
                 "phone": admin_phone,
@@ -1087,13 +1078,16 @@ async def send_otp(
     if existing_user and await _is_blocked_for_login_support(db, existing_user):
         return _build_banned_support_response(existing_user, normalized_phone)
 
-    if not existing_user and normalized_phone not in _pending_signups:
+    pending_record = await _get_pending_otp_db(db, normalized_phone)
+    is_signup_pending = pending_record is not None and pending_record.pending_username is not None
+
+    if not existing_user and not is_signup_pending:
         raise HTTPException(status_code=404, detail="Account not found for this phone")
 
     try:
         from services import otp as otp_service
         res = await otp_service.send_otp(normalized_phone)
-        _otp_store[normalized_phone] = res["data"]["verificationId"]
+        await _save_pending_otp_db(db, normalized_phone, res["data"]["verificationId"])
         await register_otp_send_success_async(
             db=db,
             phone=normalized_phone,
