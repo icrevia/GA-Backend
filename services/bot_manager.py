@@ -14,6 +14,16 @@ logger = logging.getLogger("GamerzAdda.bot_manager")
 
 class BotManager:
     def __init__(self):
+        import os
+        self.custom_names = []
+        try:
+            file_path = os.path.join(os.path.dirname(__file__), "bot_names.txt")
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as f:
+                    self.custom_names = [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            logger.error(f"Failed to load bot names: {e}")
+            
         # Indian First Names (Diverse)
         self.first_names = [
             "Aryan", "Vihaan", "Sia", "Ananya", "Kabir", "Ishaan", "Advait", "Myra", "Kyra", "Zoya",
@@ -88,7 +98,12 @@ class BotManager:
             to_add = []
             for bot_id in range(99000, 100000):
                 if bot_id not in existing_ids:
-                    username = self._generate_username()
+                    idx = bot_id - 99000
+                    if self.custom_names and idx < len(self.custom_names):
+                        username = self.custom_names[idx]
+                    else:
+                        username = self._generate_username()
+                        
                     # Ensure username uniqueness (basic check)
                     if any(u.username == username for u in to_add):
                         username = f"{username}_{bot_id}"
