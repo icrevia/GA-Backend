@@ -2911,14 +2911,12 @@ def search_users(
             db.query(User)
             .filter(or_(*filters))
             .order_by(User.created_at.desc(), User.id.desc())
-            .limit(50)
             .all()
         )
     else:
         users = (
             db.query(User)
             .order_by(User.created_at.desc(), User.id.desc())
-            .limit(50)
             .all()
         )
 
