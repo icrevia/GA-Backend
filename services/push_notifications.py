@@ -106,12 +106,15 @@ def send_push(
         body = append_firebase_suffix(body)
         payload_data = {str(k): str(v) for k, v in (data or {}).items()}
         if image_url:
-            payload_data.setdefault("image_url", image_url)
+            payload_data["image_url"] = str(image_url)
         msg = messaging.Message(
             notification=messaging.Notification(title=title, body=body, image=image_url or None),
             data=payload_data,
             token=fcm_token,
-            android=messaging.AndroidConfig(priority="high"),
+            android=messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(channel_id="gamerzadda_main")
+            ),
         )
         messaging.send(msg, app=app)
         return True
@@ -192,10 +195,6 @@ def send_push_to_many_detailed(
                 "invalid_tokens": [],
             }
 
-        payload_data = {str(k): str(v) for k, v in (data or {}).items()}
-        if image_url:
-            payload_data.setdefault("image_url", image_url)
-
         # Limit batch size to 500 (Firebase Admin SDK limit for send_each)
         batch_size = 500
         total_success = 0
@@ -204,12 +203,19 @@ def send_push_to_many_detailed(
         
         for i in range(0, len(normalized_tokens), batch_size):
             chunk = normalized_tokens[i : i + batch_size]
+            payload_data = {str(k): str(v) for k, v in (data or {}).items()}
+            if image_url:
+                payload_data["image_url"] = str(image_url)
+
             messages = [
                 messaging.Message(
                     notification=messaging.Notification(title=title, body=body, image=image_url or None),
                     data=payload_data,
                     token=token,
-                    android=messaging.AndroidConfig(priority="high"),
+                    android=messaging.AndroidConfig(
+                        priority="high",
+                        notification=messaging.AndroidNotification(channel_id="gamerzadda_main")
+                    ),
                 )
                 for token in chunk
             ]
