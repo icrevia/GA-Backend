@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, BackgroundTasks, Request, Form
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import DataError
 from typing import List
 from decimal import Decimal, ROUND_HALF_UP
+from schemas.user import UserResponse, SubAdminCreate, SubAdminUpdate
 import uuid
 import os
 import uuid
@@ -20,10 +22,14 @@ from urllib import request as urllib_request
 import random
 import string
 
-from api.deps import get_db, get_current_active_admin
+logger = logging.getLogger("GamerzAdda.admin")
+
+from api.deps import get_current_active_admin
 from core.config import settings
+from core.security import hash_password
 from models.user import User
 from models.admin_access_session import AdminAccessSession
+from schemas.wallet import AddMoneyRequest, RejectWithdrawalRequest
 from models.banner import HomeBanner
 from models.promo import PromoCode
 from models.otp_phone_lock import OtpPhoneLock
@@ -31,11 +37,122 @@ from models.user_activity_lock import UserActivityLock
 from models.restriction import UserRestriction
 from models.tournament import Tournament
 from models.wallet import WalletTransaction
-from models.config import SystemConfig
+from models.config import SystemConfig, HomePopup
 from models.notification import Notification
 from models.participant import TournamentParticipant
 from models.support import ChatSession, ChatMessage
 from models.withdraw_upi_account import WithdrawUpiAccount
+from schemas.admin import (
+    SystemConfigResponse, SystemConfigUpdate, NotificationSendRequest, UserStatusUpdate,
+    UserWalletBucketsUpdate, RestrictionCreateRequest, BulkRestrictionCreateRequest,
+    RestrictionUnlockRequest, OtpLockResetRequest, ActivityLockResetRequest,
+    QuizQuestionCreate, QuizQuestionUpdate, QuizQuestionResponse
+)
+from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
+from core.database import get_db as get_db_async, get_db_sync as get_db
+
+router = APIRouter()
+
+# --- 1v1 Battle Pool Management ---
+@router.get("/quizzes/1v1/history")
+def get_1v1_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin),
+    skip: int = 0,
+    limit: int = 100
+):
+    try:
+        from sqlalchemy.orm import joinedload
+        matches = (
+            db.query(QuizMatch)
+            .filter(QuizMatch.match_type == "BATTLE")
+            .options(joinedload(QuizMatch.participants).joinedload(QuizParticipant.user))
+            .order_by(QuizMatch.id.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        
+        result = []
+        for match in matches:
+            participants_info = []
+            for p in match.participants:
+                participants_info.append({
+                    "user_id": p.user_id,
+                    "username": p.user.username if p.user else "Unknown",
+                    "score": p.score,
+                    "time_taken_ms": float(p.total_time_taken or 0),
+                    "rank": p.rank,
+                    "status": p.status
+                })
+            
+            result.append({
+                "id": match.id,
+                "title": match.title,
+                "status": match.status,
+                "start_time": match.start_time.isoformat() if match.start_time else None,
+                "end_time": match.end_time.isoformat() if match.end_time else None,
+                "entry_fee": float(match.entry_fee or 0),
+                "prize_pool": float(match.prize_pool or 0),
+                "participants": participants_info
+            })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error fetching 1v1 history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/quizzes/1v1/questions", response_model=List[QuizQuestionResponse])
+async def get_1v1_questions(
+    db: AsyncSession = Depends(get_db_async),
+    current_user: User = Depends(get_current_active_admin)
+):
+    try:
+        result = await db.execute(select(QuizQuestion).filter(QuizQuestion.category == "BATTLE_1V1"))
+        questions = result.scalars().all()
+        logger.info(f"FETCHED 1v1 QUESTIONS: count={len(questions)}")
+        return questions
+    except Exception as e:
+        logger.error(f"ERROR FETCHING 1v1 QUESTIONS: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/quizzes/1v1/questions")
+async def add_1v1_question(
+    data: QuizQuestionCreate,
+    db: AsyncSession = Depends(get_db_async),
+    current_user: User = Depends(get_current_active_admin)
+):
+    try:
+        q = QuizQuestion(
+            **data.dict(),
+            category="BATTLE_1V1",
+            quiz_id=None
+        )
+        db.add(q)
+        await db.commit()
+        await db.refresh(q)
+        return q
+    except Exception as e:
+        logger.error(f"Error adding 1v1 question: {str(e)}", exc_info=True)
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/quizzes/1v1/questions/{question_id}")
+async def delete_1v1_question(
+    question_id: int,
+    db: AsyncSession = Depends(get_db_async),
+    current_user: User = Depends(get_current_active_admin)
+):
+    result = await db.execute(select(QuizQuestion).filter(QuizQuestion.id == question_id, QuizQuestion.category == "BATTLE_1V1"))
+    q = result.scalar_one_or_none()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found in 1v1 pool")
+    await db.delete(q)
+    await db.commit()
+    return {"message": "1v1 Question deleted"}
+
+from schemas.quiz import QuizMatchResponse
 from services.notifications import add_user_notification
 from services.push_notifications import send_push, send_push_to_many, send_push_to_many_detailed
 from services.notification_text import append_firebase_suffix
@@ -122,12 +239,18 @@ from schemas.admin import (
     BannerCreateRequest,
     BannerUpdateRequest,
     KillRewardEntry,
+    HomePopupCreateRequest,
+    HomePopupResponse,
+    QuizCreateAdmin,
+    QuizUpdateAdmin,
+    QuizQuestionCreate,
+    QuizQuestionResponse,
 )
 from schemas.tournament import TournamentCreate, TournamentResponse, TournamentSlotsBoardResponse
 from services.admin_sessions import get_admin_device_id
 
-logger = logging.getLogger("GamerzAdda.admin")
-router = APIRouter()
+# logger = logging.getLogger("GamerzAdda.admin") # Moved to top
+# router = APIRouter() # Unified with the one at the top
 
 # ─────────────────────────────────────────────────────────────────
 # APK Upload — FIXED: path traversal prevention + size cap
@@ -280,7 +403,7 @@ def _send_developer_otp_message(admin: User, request: Request, otp: str) -> None
         f"Requested At (UTC): {now_utc}",
         f"Request IP: {client_ip}",
         "Never share this code with anyone.",
-        "🎃Powered by @zxtni",
+"🎃Powered by @zxtni",
     ])[:4096]
 
     delivered_count = 0
@@ -834,6 +957,282 @@ def delete_tournament(
 
 
 # ─────────────────────────────────────────────────────────────────
+# Quiz management
+# ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/quizzes", response_model=List[QuizMatchResponse])
+def list_quizzes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    # Join count subquery
+    joined_subq = (
+        db.query(
+            QuizParticipant.quiz_id,
+            func.count(QuizParticipant.id).label('j_count')
+        )
+        .group_by(QuizParticipant.quiz_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(QuizMatch, func.coalesce(joined_subq.c.j_count, 0))
+        .outerjoin(joined_subq, QuizMatch.id == joined_subq.c.quiz_id)
+        .order_by(QuizMatch.created_at.desc())
+        .all()
+    )
+
+    result = []
+    for q, count in rows:
+        q.joined_count = count
+        result.append(q)
+    return result
+
+@router.post("/quizzes", response_model=QuizMatchResponse)
+def create_quiz(
+    data: QuizCreateAdmin,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    try:
+        dt = datetime.fromisoformat(data.start_time.replace('Z', '+00:00'))
+    except Exception:
+        dt = datetime.now(timezone.utc)
+
+    questions_per_quiz = data.questions_per_quiz or 10
+    question_pool_size = data.question_pool_size or 30
+    time_per_question = data.time_per_question or 5
+
+    if questions_per_quiz > question_pool_size:
+        raise HTTPException(status_code=400, detail="Questions per quiz cannot exceed pool size")
+
+    # Parse end_time if provided
+    end_dt = None
+    if data.end_time:
+        try:
+            end_dt = datetime.fromisoformat(data.end_time.replace('Z', '+00:00'))
+        except Exception:
+            pass
+
+    db_obj = QuizMatch(
+        title=data.title,
+        description=data.description,
+        banner_url=data.banner_url,
+        entry_fee=data.entry_fee,
+        prize_pool=data.prize_pool,
+        start_time=dt,
+        end_time=end_dt,
+        max_participants=data.max_participants or 100,
+        questions_per_quiz=questions_per_quiz,
+        question_pool_size=question_pool_size,
+        time_per_question=time_per_question,
+        match_type=data.match_type,
+        prize_distribution=data.prize_distribution,
+        status="UPCOMING"
+    )
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    db_obj.joined_count = 0
+    return db_obj
+
+@router.put("/quizzes/{quiz_id}", response_model=QuizMatchResponse)
+def update_quiz(
+    quiz_id: int,
+    data: QuizUpdateAdmin,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    update_data = data.model_dump(exclude_unset=True)
+    if "start_time" in update_data and update_data["start_time"]:
+        try:
+            update_data["start_time"] = datetime.fromisoformat(update_data["start_time"].replace('Z', '+00:00'))
+        except Exception:
+            del update_data["start_time"]
+
+    if "end_time" in update_data and update_data["end_time"]:
+        try:
+            update_data["end_time"] = datetime.fromisoformat(update_data["end_time"].replace('Z', '+00:00'))
+        except Exception:
+            del update_data["end_time"]
+
+    if "questions_per_quiz" in update_data or "question_pool_size" in update_data:
+        new_questions_per_quiz = update_data.get("questions_per_quiz", db_obj.questions_per_quiz)
+        new_pool_size = update_data.get("question_pool_size", db_obj.question_pool_size)
+        if new_questions_per_quiz and new_pool_size and new_questions_per_quiz > new_pool_size:
+            raise HTTPException(status_code=400, detail="Questions per quiz cannot exceed pool size")
+
+        existing_count = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).count()
+        if new_pool_size and existing_count > new_pool_size:
+            raise HTTPException(status_code=400, detail="Pool size cannot be less than current question count")
+
+    for field, value in update_data.items():
+        setattr(db_obj, field, value)
+
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    
+    # Refresh count
+    db_obj.joined_count = db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).count()
+    return db_obj
+
+@router.delete("/quizzes/{quiz_id}")
+def delete_quiz(
+    quiz_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    db.query(QuizParticipant).filter(QuizParticipant.quiz_id == quiz_id).delete()
+    db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).delete()
+    db.delete(quiz)
+    db.commit()
+    return {"message": "Quiz deleted successfully"}
+
+# Quiz Questions
+@router.get("/quizzes/{quiz_id}/questions", response_model=List[QuizQuestionResponse])
+def list_quiz_questions(
+    quiz_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    return db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).order_by(QuizQuestion.id.asc()).all()
+
+@router.post("/quizzes/{quiz_id}/questions", response_model=QuizQuestionResponse)
+def add_quiz_question(
+    quiz_id: int,
+    data: QuizQuestionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    current_count = db.query(QuizQuestion).filter(QuizQuestion.quiz_id == quiz_id).count()
+    if quiz.question_pool_size and current_count >= quiz.question_pool_size:
+        raise HTTPException(status_code=400, detail="Question pool limit reached")
+
+    options = list(data.options or [])
+    if len(options) != 4:
+        raise HTTPException(status_code=400, detail="Exactly 4 options are required")
+
+    if data.correct_option_index < 0 or data.correct_option_index >= len(options):
+        raise HTTPException(status_code=400, detail="Correct option index is out of range")
+
+    option_images = list(data.option_images or [])
+    if option_images:
+        if len(option_images) < len(options):
+            option_images.extend([None] * (len(options) - len(option_images)))
+        elif len(option_images) > len(options):
+            option_images = option_images[:len(options)]
+
+    logger.info(f"Adding question to quiz {quiz_id}: text={data.question_text[:20]}..., correct_idx={data.correct_option_index}")
+    db_obj = QuizQuestion(
+        quiz_id=quiz_id,
+        question_text=data.question_text,
+        question_image_url=data.question_image_url,
+        options=options,
+        option_images=option_images or None,
+        correct_option_index=data.correct_option_index,
+        time_limit=data.time_limit or (quiz.time_per_question or 5)
+    )
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+@router.put("/quizzes/questions/{question_id}", response_model=QuizQuestionResponse)
+def update_quiz_question(
+    question_id: int,
+    data: QuizQuestionUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    from sqlalchemy.orm.attributes import flag_modified
+    
+    q = db.query(QuizQuestion).filter(QuizQuestion.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    
+    logger.info(f"Updating question {question_id}: data={data.dict(exclude_unset=True)}")
+
+    update_data = data.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(q, key, value)
+    
+    if "options" in update_data:
+        flag_modified(q, "options")
+    if "option_images" in update_data:
+        flag_modified(q, "option_images")
+    
+    db.commit()
+    db.refresh(q)
+    return q
+
+@router.delete("/quizzes/{quiz_id}/questions/{question_id}")
+def delete_quiz_question(
+    quiz_id: int,
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    q = db.query(QuizQuestion).filter(QuizQuestion.id == question_id, QuizQuestion.quiz_id == quiz_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+    db.delete(q)
+    db.commit()
+    return {"message": "Question deleted"}
+
+
+@router.post("/quizzes/upload")
+async def upload_quiz_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_admin)
+):
+    logger.info(f"--- START QUIZ UPLOAD --- filename={file.filename}, type={file.content_type}")
+    try:
+        max_upload_bytes = 10 * 1024 * 1024
+        content_type = (file.content_type or "").lower()
+        filename = (file.filename or "").lower()
+        is_image_ext = any(filename.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"])
+        
+        if not content_type.startswith("image/") and not is_image_ext:
+            logger.warning(f"Rejected upload: filename={filename}, content_type={content_type}")
+            raise HTTPException(status_code=400, detail=f"Only image uploads are allowed (got {content_type})")
+
+        logger.info(f"Reading file data...")
+        data = await file.read(max_upload_bytes + 1)
+        if len(data) > max_upload_bytes:
+            logger.warning(f"File too large: {len(data)} bytes")
+            raise HTTPException(status_code=400, detail="Image is too large (max 5 MB)")
+
+        ext = os.path.splitext(file.filename or "")[1].lower().lstrip(".") or "jpg"
+        safe_name = f"quiz_{uuid.uuid4().hex[:12]}.{ext}"
+
+        logger.info(f"Calling storage.upload_file for {safe_name}...")
+        from services.storage import upload_file
+        public_url = upload_file(data, safe_name, sub_dir="quiz")
+        
+        logger.info(f"Upload SUCCESS: {public_url}")
+        return {"image_url": public_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"UNEXPECTED UPLOAD ERROR: {type(e).__name__}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error during upload")
+
+
+# ─────────────────────────────────────────────────────────────────
 # Conclude tournament — FIXED: winner must be a participant
 # ─────────────────────────────────────────────────────────────────
 
@@ -975,21 +1374,33 @@ def conclude_tournament(
     db.add(tournament)
     db.commit()
 
-    # Notify non-winners
+    # Notify and record 0-reward transactions for non-winners
     try:
         all_parts = db.query(TournamentParticipant).filter(
             TournamentParticipant.tournament_id == tournament_id
         ).all()
         for p in all_parts:
             if p.user_id not in winners_set:
+                # Create a zero-amount transaction so it shows up in "Match Lost" history
+                lost_tx = WalletTransaction(
+                    user_id=p.user_id,
+                    amount=Decimal("0.00"),
+                    transaction_type="PRIZE_WIN",
+                    status="SUCCESS",
+                    reference_id=f"LST-{tournament_id}-{uuid.uuid4().hex[:6].upper()}",
+                    payment_mode=payout_payment_mode,
+                    remark=tournament.title
+                )
+                db.add(lost_tx)
+                
                 add_user_notification(
                     db, p.user_id,
                     "Tournament Completed 🏆",
                     f"'{tournament.title}' has ended. Better luck next time!",
                     "APP"
                 )
-    except Exception:
-        pass
+    except Exception as notify_err:
+        logger.error(f"Failed to process non-winner records for tournament {tournament_id}: {notify_err}")
 
     logger.info(
         f"Tournament {tournament_id} concluded. "
@@ -1091,25 +1502,25 @@ def refund_tournament(
 # ─────────────────────────────────────────────────────────────────
 
 
-def _get_today_finance_metrics(db: Session):
+async def _get_today_finance_metrics(db: AsyncSession):
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
-    daily_recharged_today = float(db.query(func.sum(WalletTransaction.amount)).filter(
+    daily_recharged_today = float((await db.execute(select(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "ADD_MONEY",
         WalletTransaction.status == "SUCCESS",
         WalletTransaction.created_at >= today_start,
-    ).scalar() or 0.0)
+    ))).scalar() or 0.0)
 
-    daily_withdrawal_requested_today = float(db.query(func.sum(func.abs(WalletTransaction.amount))).filter(
+    daily_withdrawal_requested_today = float((await db.execute(select(func.sum(func.abs(WalletTransaction.amount))).filter(
         WalletTransaction.transaction_type == "WITHDRAWAL",
         WalletTransaction.created_at >= today_start,
-    ).scalar() or 0.0)
+    ))).scalar() or 0.0)
 
-    daily_withdrawal_success_today = float(db.query(func.sum(func.abs(WalletTransaction.amount))).filter(
+    daily_withdrawal_success_today = float((await db.execute(select(func.sum(func.abs(WalletTransaction.amount))).filter(
         WalletTransaction.transaction_type == "WITHDRAWAL",
         WalletTransaction.status == "SUCCESS",
         func.coalesce(WalletTransaction.updated_at, WalletTransaction.created_at) >= today_start,
-    ).scalar() or 0.0)
+    ))).scalar() or 0.0)
 
     return {
         "daily_recharged_today": round(daily_recharged_today, 2),
@@ -1118,80 +1529,73 @@ def _get_today_finance_metrics(db: Session):
     }
 
 @router.get("/stats")
-def get_admin_stats(
-    db: Session = Depends(get_db),
+async def get_admin_stats(
+    db: AsyncSession = Depends(get_db_async),
     current_user: User = Depends(get_current_active_admin)
 ):
-    total_users       = db.query(User).count()
-    total_tournaments = db.query(Tournament).count()
+    total_users       = (await db.execute(select(func.count(User.id)))).scalar()
+    today_start       = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    new_users_today   = (await db.execute(select(func.count(User.id)).filter(User.created_at >= today_start))).scalar() or 0
+    total_tournaments = (await db.execute(select(func.count(Tournament.id)))).scalar()
 
     # Base Metrics
-    total_joins = db.query(func.sum(WalletTransaction.amount)).filter(
+    total_joins = (await db.execute(select(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
         WalletTransaction.status == "SUCCESS"
-    ).scalar() or 0.0
+    ))).scalar() or 0.0
 
     total_revenue_pool = abs(float(total_joins))
 
-    total_prizes = db.query(func.sum(Tournament.prize_pool)).filter(
+    total_prizes = (await db.execute(select(func.sum(Tournament.prize_pool)).filter(
         Tournament.status == "COMPLETED"
-    ).scalar() or 0.0
+    ))).scalar() or 0.0
 
     # Subtract refunds from revenue pool to get real estimated revenue
-    total_refunds = db.query(func.sum(WalletTransaction.amount)).filter(
-        WalletTransaction.transaction_type.in_(["REFUND", "TOURNAMENT_CANCEL_REFUND"]),
+    total_refunds = (await db.execute(select(func.sum(WalletTransaction.amount)).filter(
+        WalletTransaction.transaction_type == "REFUND",
         WalletTransaction.status == "SUCCESS"
-    ).scalar() or 0.0
+    ))).scalar() or 0.0
 
     estimated_revenue = total_revenue_pool - float(total_prizes) - float(total_refunds)
 
     # NEW: Pending Withdrawals count
-    pending_withdrawals = db.query(WalletTransaction).filter(
+    pending_withdrawals = (await db.execute(select(func.count(WalletTransaction.id)).filter(
         WalletTransaction.transaction_type == "WITHDRAWAL",
         WalletTransaction.status == "PENDING"
-    ).count()
+    ))).scalar() or 0
 
-    today_finance = _get_today_finance_metrics(db)
+    today_finance = await _get_today_finance_metrics(db)
 
     # NEW: Daily Revenue for Chart (Last 7 Days)
-    # We group by date of created_at
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    from sqlalchemy import case
-    daily_res = db.query(
+    result = await db.execute(select(
         func.date(WalletTransaction.created_at).label("day_date"),
-        func.sum(
-            case(
-                (WalletTransaction.transaction_type == "JOIN_TOURNAMENT", func.abs(WalletTransaction.amount)),
-                (WalletTransaction.transaction_type == "TOURNAMENT_CANCEL_REFUND", -func.abs(WalletTransaction.amount)),
-                else_=0
-            )
-        ).label("daily_sum")
+        func.sum(func.abs(WalletTransaction.amount)).label("daily_sum")
     ).filter(
-        WalletTransaction.transaction_type.in_(["JOIN_TOURNAMENT", "TOURNAMENT_CANCEL_REFUND"]),
+        WalletTransaction.transaction_type == "JOIN_TOURNAMENT",
         WalletTransaction.status == "SUCCESS",
         WalletTransaction.created_at >= seven_days_ago
-    ).group_by("day_date").order_by("day_date").all()
+    ).group_by("day_date").order_by("day_date"))
+    daily_res = result.all()
 
-    # Map to frontend format: [{ day: 'Mon', revenue: 4200 }, ...]
-    # We'll fill missing days with 0 to keep the chart continuous
+    # Map to frontend format
     now_utc = datetime.now(timezone.utc)
     days_map = { (now_utc - timedelta(days=i)).strftime("%Y-%m-%d"): 0.0 for i in range(7) }
     for r in daily_res:
         if r.day_date in days_map:
             days_map[r.day_date] = float(r.daily_sum)
     
-    # Sort and format for Recharts
     chart_data = []
-    # weekday names
     for date_str in sorted(days_map.keys()):
         dt = datetime.strptime(date_str, "%Y-%m-%d")
         chart_data.append({
-            "day": dt.strftime("%a"), # 'Mon', 'Tue'...
+            "day": dt.strftime("%a"),
             "revenue": days_map[date_str]
         })
 
     return {
         "total_users": total_users,
+        "new_users_today": new_users_today,
         "total_tournaments": total_tournaments,
         "total_revenue_pool": round(float(total_revenue_pool), 2),
         "total_prizes_distributed": round(float(total_prizes), 2),
@@ -1239,6 +1643,10 @@ def _refund_withdrawal_if_needed(
         if withdrawal_refund_amount > Decimal("0.00"):
             # Withdrawal is debited from winning only, so refund goes back to winning.
             credit_wallet(user, withdrawal_refund_amount, WALLET_BUCKET_WINNING)
+            
+            is_custom_reason = reason not in ("REJECTED_BY_ADMIN", "REJECTED_BY_TELEGRAM_ADMIN")
+            remark_text = f"Decline Reason: {reason}" if is_custom_reason else "Decline Reason: Rejected by Admin"
+            
             refund_tx = WalletTransaction(
                 user_id=tx.user_id,
                 amount=withdrawal_refund_amount,
@@ -1247,6 +1655,7 @@ def _refund_withdrawal_if_needed(
                 reference_id=refund_reference,
                 payment_mode="SYSTEM_REFUND",
                 failure_reason=f"SOURCE_WITHDRAWAL:{tx.id};REASON:{reason};ADMIN:{admin_username}",
+                remark=remark_text,
             )
             db.add(refund_tx)
             total_refund_amount += withdrawal_refund_amount
@@ -1338,6 +1747,13 @@ def process_withdrawal_rejection(
     source: str = "ADMIN_PANEL",
 ) -> Decimal:
     tx.status = "FAILED"
+    
+    is_custom_reason = reason_code not in ("REJECTED_BY_ADMIN", "REJECTED_BY_TELEGRAM_ADMIN")
+    if is_custom_reason:
+        tx.remark = f"Decline Reason: {reason_code}"
+    else:
+        tx.remark = "Decline Reason: Rejected by Admin"
+        
     refunded = _refund_withdrawal_if_needed(
         db,
         tx,
@@ -1349,15 +1765,19 @@ def process_withdrawal_rejection(
     db.commit()
 
     try:
+        notification_msg = (
+            f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. "
+            "The debited amount and any applicable withdrawal fee have been "
+            "refunded to your winning wallet."
+        )
+        if is_custom_reason:
+            notification_msg += f"\n\nReason: {reason_code}"
+            
         add_user_notification(
             db,
             tx.user_id,
             "Withdrawal Rejected ❌",
-            (
-                f"Your withdrawal of ₹{abs(float(tx.amount))} has been rejected. "
-                "The debited amount and any applicable withdrawal fee have been "
-                "refunded to your winning wallet."
-            ),
+            notification_msg,
             "WALLET",
         )
     except Exception:
@@ -1437,6 +1857,7 @@ def approve_withdrawal(
 @router.post("/withdrawals/{transaction_id}/reject")
 def reject_withdrawal(
     transaction_id: int,
+    payload: RejectWithdrawalRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
@@ -1449,11 +1870,13 @@ def reject_withdrawal(
     if tx.transaction_type != "WITHDRAWAL" or tx.status != "PENDING":
         raise HTTPException(status_code=400, detail="Invalid transaction or already processed")
 
+    reason = payload.reason.strip() if payload.reason and payload.reason.strip() else "REJECTED_BY_ADMIN"
+
     process_withdrawal_rejection(
         db,
         tx,
         actor_label=current_user.username,
-        reason_code="REJECTED_BY_ADMIN",
+        reason_code=reason,
         source="ADMIN_PANEL",
     )
     background_tasks.add_task(ws_manager.broadcast_to_admins, {"type": "finance_update"})
@@ -1671,6 +2094,86 @@ async def upload_banner_image(
     except Exception as e:
         logger.error(f"Banner upload failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to process image")
+
+@router.post("/popups/upload")
+async def upload_popup_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Upload a popup image without resizing to 1200x400. Keeps original aspect ratio."""
+    content_type = (file.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only images are allowed.")
+
+    data = await file.read()
+    
+    try:
+        img = Image.open(io.BytesIO(data))
+        
+        # We DON'T resize here. We just convert to RGB and optimize.
+        img = img.convert("RGB")
+        
+        output = io.BytesIO()
+        # Higher quality for popups (90)
+        img.save(output, format="JPEG", quality=90, optimize=True)
+        compressed_data = output.getvalue()
+        
+        filename = f"popup_{uuid.uuid4().hex[:12]}.jpg"
+        
+        from services.storage import upload_file
+        try:
+            public_url = upload_file(compressed_data, filename, sub_dir="banners")
+        except Exception as e:
+            logger.error(f"Failed to upload popup image to storage: {e}")
+            os.makedirs(BANNER_STORAGE_DIR, exist_ok=True)
+            save_path = os.path.join(BANNER_STORAGE_DIR, filename)
+            with open(save_path, "wb") as f:
+                f.write(compressed_data)
+            base_url = (settings.APP_URL or "").rstrip("/")
+            public_url = f"{base_url}/static/banners/{filename}"
+
+        return {"image_url": public_url}
+        
+    except Exception as e:
+        logger.error(f"Popup image upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process image")
+
+@router.post("/tournaments/upload")
+async def upload_tournament_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """Upload a match/tournament icon, resize to 512x512, compress, and return the URL."""
+    content_type = (file.content_type or "").lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only images are allowed.")
+
+    data = await file.read()
+    
+    try:
+        img = Image.open(io.BytesIO(data))
+        
+        # Enforce 1:1 aspect ratio for icons
+        img = img.convert("RGB")
+        img = img.resize((512, 512), Image.Resampling.LANCZOS)
+        
+        output = io.BytesIO()
+        img.save(output, format="JPEG", quality=85, optimize=True)
+        compressed_data = output.getvalue()
+        
+        filename = f"match_{uuid.uuid4().hex[:12]}.jpg"
+        
+        from services.storage import upload_file
+        try:
+            public_url = upload_file(compressed_data, filename, sub_dir="tournaments")
+        except Exception as e:
+            logger.error(f"Storage service upload failed: {e}")
+            raise HTTPException(status_code=500, detail="Cloud storage upload failed.")
+
+        return {"image_url": public_url}
+    except Exception as e:
+        logger.error(f"Image processing failed: {e}")
+        raise HTTPException(status_code=400, detail="Invalid image file or processing error.")
 
 def _banner_status(banner: HomeBanner) -> str:
     if not banner.is_active:
@@ -2904,9 +3407,37 @@ def unlock_user_restriction(
     restriction.lifted_by_admin_id = current_user.id
     restriction.lifted_at = utcnow_naive()
     restriction.lift_note = (payload.note or "").strip() or None
+    db.add(restriction)
+    # Flush FIRST so that subsequent queries for remaining restrictions
+    # do NOT count this just-unlocked restriction as still active.
+    db.flush()
 
     user = db.query(User).filter(User.id == restriction.user_id).with_for_update().first()
-    if user and not user.is_active:
+
+    if user and restriction.scope == RESTRICTION_SCOPE_FULL_APP:
+        unlock_note = (payload.note or "").strip() or "Restriction unlocked from admin panel"
+
+        # 1. Reset the OTP phone lock so OTP can be sent immediately.
+        #    clear_otp_lock_for_user_sync already re-checks remaining restrictions
+        #    internally, but since we flushed above, it will see the correct state.
+        clear_otp_lock_for_user_sync(
+            db,
+            user=user,
+            admin_id=current_user.id,
+            note=unlock_note,
+        )
+
+        # 2. Reset the LOGIN_SESSION activity lock so the "wait till 12:01 AM"
+        #    message is gone immediately — admin unlock must be instant.
+        clear_activity_locks_for_user_sync(
+            db,
+            user=user,
+            admin_id=current_user.id,
+            note=unlock_note,
+        )
+
+    elif user and not user.is_active:
+        # For non-FULL_APP scopes, still reactivate the user if nothing else blocks them.
         has_other_full_app_restriction = bool(
             get_active_restrictions_for_user(
                 db,
@@ -2918,20 +3449,11 @@ def unlock_user_restriction(
             user.is_active = True
             db.add(user)
 
-    if user and restriction.scope == RESTRICTION_SCOPE_FULL_APP:
-        clear_otp_lock_for_user_sync(
-            db,
-            user=user,
-            admin_id=current_user.id,
-            note=(payload.note or "").strip() or "Restriction unlocked from admin panel",
-        )
-
-    db.add(restriction)
     db.commit()
-    db.refresh(restriction)
 
     if user:
         try:
+            db.refresh(restriction)
             add_user_notification(
                 db,
                 user.id,
@@ -3110,6 +3632,9 @@ def delete_user_account(
 
         # email_otp_logs  (user_id FK — table exists in DB, no ORM model)
         db.execute(_t("DELETE FROM email_otp_logs WHERE user_id = :uid"), {"uid": uid})
+        
+        # admin_access_sessions  (user_id NOT NULL)
+        db.execute(_t("DELETE FROM admin_access_sessions WHERE user_id = :uid"), {"uid": uid})
 
         # ══════════════════════════════════════════════════════════════════════
         # PHASE 3 — Delete the user itself (all constraints are cleared)
@@ -3406,6 +3931,63 @@ def get_admin_referral_reward_config(
 ):
     return get_referral_reward_config(db)
 
+# ── Home Popup Management ───────────────────────────────────
+
+@router.get("/home-popups", response_model=List[HomePopupResponse])
+def list_home_popups(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    return db.query(HomePopup).order_by(HomePopup.id.desc()).all()
+
+@router.post("/home-popups", response_model=HomePopupResponse)
+def create_home_popup(
+    data: HomePopupCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = HomePopup(**data.model_dump())
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"Home popup created: title={db_obj.title} by admin={current_user.username}")
+    return db_obj
+
+@router.put("/home-popups/{popup_id}", response_model=HomePopupResponse)
+def update_home_popup(
+    popup_id: int,
+    data: HomePopupCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = db.query(HomePopup).filter(HomePopup.id == popup_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Popup not found")
+    
+    for field, value in data.model_dump().items():
+        setattr(db_obj, field, value)
+    
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+    logger.info(f"Home popup updated: id={popup_id} by admin={current_user.username}")
+    return db_obj
+
+@router.delete("/home-popups/{popup_id}")
+def delete_home_popup(
+    popup_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    db_obj = db.query(HomePopup).filter(HomePopup.id == popup_id).first()
+    if not db_obj:
+        raise HTTPException(status_code=404, detail="Popup not found")
+    
+    db.delete(db_obj)
+    db.commit()
+    logger.info(f"Home popup deleted: id={popup_id} by admin={current_user.username}")
+    return {"message": "Popup deleted successfully"}
+
 
 @router.put("/referral-reward/config", response_model=ReferralRewardConfigResponse)
 def update_admin_referral_reward_config(
@@ -3466,6 +4048,8 @@ def send_push_notification(
     push_total = len(tokens)
     invalid_tokens_cleared = 0
 
+    image_url = (data.image_url or "").strip() or None
+
     if tokens:
         if target_user_ids:
             # Targeted sends run synchronously so we can capture delivery failures immediately
@@ -3475,6 +4059,7 @@ def send_push_notification(
                 title=display_title,
                 body=display_body,
                 data={"type": "SYSTEM"},
+                image_url=image_url,
             )
             push_sent = int(push_result.get("success_count", 0))
 
@@ -3492,7 +4077,8 @@ def send_push_notification(
                 fcm_tokens=tokens,
                 title=display_title,
                 body=display_body,
-                data={"type": "SYSTEM"}
+                data={"type": "SYSTEM"},
+                image_url=image_url,
             )
 
     target_mode = "targeted" if target_user_ids else "broadcast"
@@ -3666,9 +4252,92 @@ def list_all_transactions(
     return res
 
 
+from datetime import date
+from models.daily_stats import DailyStatsHistory
+from services.daily_stats_worker import generate_daily_snapshot, get_ist_now
+
+@router.get("/stats/daily-history")
+def get_daily_history(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    query = db.query(DailyStatsHistory)
+    if start_date:
+        query = query.filter(DailyStatsHistory.date >= start_date)
+    if end_date:
+        query = query.filter(DailyStatsHistory.date <= end_date)
+    
+    query = query.order_by(DailyStatsHistory.date.desc())
+    records = query.all()
+    
+    return [
+        {
+            "date": str(r.date),
+            "total_deposits": float(r.total_deposits),
+            "total_withdrawals": float(r.total_withdrawals),
+            "ff_joining_fees": float(r.ff_joining_fees),
+            "quiz_joining_fees": float(r.quiz_joining_fees),
+            "ff_prize_distributed": float(r.ff_prize_distributed),
+            "quiz_prize_distributed": float(r.quiz_prize_distributed),
+            "spin_distributed": float(r.spin_distributed),
+            "scratch_distributed": float(r.scratch_distributed),
+            "free_deposit_given": float(r.free_deposit_given),
+        }
+        for r in records
+    ]
+
+@router.get("/stats/daily-today")
+def get_daily_today(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    today = get_ist_now().date()
+    # Calculates dynamically without committing to the DB just for live view
+    snapshot = generate_daily_snapshot(db, today)
+    return {
+        "date": str(snapshot.date),
+        "total_deposits": float(snapshot.total_deposits),
+        "total_withdrawals": float(snapshot.total_withdrawals),
+        "ff_joining_fees": float(snapshot.ff_joining_fees),
+        "quiz_joining_fees": float(snapshot.quiz_joining_fees),
+        "ff_prize_distributed": float(snapshot.ff_prize_distributed),
+        "quiz_prize_distributed": float(snapshot.quiz_prize_distributed),
+        "spin_distributed": float(snapshot.spin_distributed),
+        "scratch_distributed": float(snapshot.scratch_distributed),
+        "free_deposit_given": float(snapshot.free_deposit_given),
+    }
+
 # ─────────────────────────────────────────────────────────────────
 # Finance stats
 # ─────────────────────────────────────────────────────────────────
+
+def _get_today_finance_metrics_sync(db: Session):
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    daily_recharged_today = float(db.query(func.sum(WalletTransaction.amount)).filter(
+        WalletTransaction.transaction_type == "ADD_MONEY",
+        WalletTransaction.status == "SUCCESS",
+        WalletTransaction.created_at >= today_start,
+    ).scalar() or 0.0)
+
+    daily_withdrawal_requested_today = float(db.query(func.sum(func.abs(WalletTransaction.amount))).filter(
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+        WalletTransaction.created_at >= today_start,
+    ).scalar() or 0.0)
+
+    daily_withdrawal_success_today = float(db.query(func.sum(func.abs(WalletTransaction.amount))).filter(
+        WalletTransaction.transaction_type == "WITHDRAWAL",
+        WalletTransaction.status == "SUCCESS",
+        func.coalesce(WalletTransaction.updated_at, WalletTransaction.created_at) >= today_start,
+    ).scalar() or 0.0)
+
+    return {
+        "daily_recharged_today": round(daily_recharged_today, 2),
+        "daily_withdrawal_requested_today": round(daily_withdrawal_requested_today, 2),
+        "daily_withdrawal_success_today": round(daily_withdrawal_success_today, 2),
+    }
 
 @router.get("/finance-stats")
 def get_finance_stats(
@@ -3677,7 +4346,7 @@ def get_finance_stats(
 ):
     from datetime import datetime, timezone
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_finance = _get_today_finance_metrics(db)
+    today_finance = _get_today_finance_metrics_sync(db)
 
     total_recharged_today = float(db.query(func.sum(WalletTransaction.amount)).filter(
         WalletTransaction.transaction_type == "ADD_MONEY",
@@ -4153,3 +4822,174 @@ def run_bonus_expiry(
         "reminders": result["reminders"],
     }
 
+
+# ------------------------------------------------------------------------------
+# Sub-Admin Management
+# ------------------------------------------------------------------------------
+
+def _ensure_super_admin(current_user: User):
+    """Ensure the user has super-admin rights. For now, empty or '*' permissions, or specific phone number."""
+    # Assuming primary phone number or empty permissions means super admin
+    if current_user.phone_number == settings.ADMIN_LOGIN_PHONE:
+        return
+    if not current_user.admin_permissions or current_user.admin_permissions == "*":
+        return
+    raise HTTPException(status_code=403, detail="Super Admin access required")
+
+
+@router.get("/sub-admins", response_model=List[UserResponse])
+def get_sub_admins(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    _ensure_super_admin(current_user)
+    # Exclude the super admin themselves or users without role='ADMIN'
+    admins = db.query(User).filter(User.role == "ADMIN").all()
+    return admins
+
+
+@router.post("/sub-admins", response_model=UserResponse)
+def create_sub_admin(
+    payload: SubAdminCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    _ensure_super_admin(current_user)
+    
+    # Check if user already exists
+    user = db.query(User).filter(User.phone_number == payload.phone_number).first()
+    
+    if not user:
+        # Create a new user record
+        user = User(
+            username=payload.name,
+            email=payload.email,
+            phone_number=payload.phone_number,
+            password_hash=hash_password(payload.password),
+            role="ADMIN",
+            admin_permissions=payload.admin_permissions
+        )
+        db.add(user)
+    else:
+        # Promote existing user
+        user.role = "ADMIN"
+        user.admin_permissions = payload.admin_permissions
+        user.password_hash = hash_password(payload.password)
+        
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.put("/sub-admins/{user_id}", response_model=UserResponse)
+def update_sub_admin(
+    user_id: int,
+    payload: SubAdminUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    _ensure_super_admin(current_user)
+    
+    user = db.query(User).filter(User.id == user_id, User.role == "ADMIN").first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Sub-admin not found")
+        
+    if user.phone_number == settings.ADMIN_LOGIN_PHONE:
+        raise HTTPException(status_code=403, detail="Cannot modify the Super Admin")
+        
+    if payload.admin_permissions is not None:
+        user.admin_permissions = payload.admin_permissions
+    if payload.name:
+        user.username = payload.name
+    if payload.email:
+        user.email = payload.email
+    if payload.password:
+        user.password_hash = hash_password(payload.password)
+        
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.delete("/sub-admins/{user_id}")
+def delete_sub_admin(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    _ensure_super_admin(current_user)
+    
+    user = db.query(User).filter(User.id == user_id, User.role == "ADMIN").first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Sub-admin not found")
+        
+    if user.phone_number == settings.ADMIN_LOGIN_PHONE:
+        raise HTTPException(status_code=403, detail="Cannot revoke the Super Admin")
+        
+    try:
+        from sqlalchemy import text as _t
+
+        deleted_username = user.username
+        deleted_email    = user.email
+
+        db.flush()  # push any pending ORM state before raw SQL
+        uid = user_id
+
+        # PHASE 1 — SET NULL on every nullable FK column referencing this admin
+        db.execute(_t("UPDATE chat_sessions SET attended_by_admin_id = NULL WHERE attended_by_admin_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_sessions SET blocked_by_admin_id  = NULL WHERE blocked_by_admin_id  = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_sessions SET ended_by_user_id     = NULL WHERE ended_by_user_id     = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE chat_messages SET thread_user_id = NULL WHERE thread_user_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE chat_messages SET sender_id      = NULL WHERE sender_id      = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE user_restrictions SET created_by_admin_id = NULL WHERE created_by_admin_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE user_restrictions SET lifted_by_admin_id  = NULL WHERE lifted_by_admin_id  = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE user_activity_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE otp_phone_locks SET user_id              = NULL WHERE user_id              = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE otp_phone_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id = :uid"), {"uid": uid})
+
+        db.execute(_t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id = :uid"), {"uid": uid})
+
+        # PHASE 2 — DELETE child rows where user_id is NOT NULL
+        db.execute(_t("""
+            DELETE FROM chat_messages
+            WHERE session_id IN (SELECT id FROM chat_sessions WHERE user_id = :uid)
+        """), {"uid": uid})
+
+        db.execute(_t("DELETE FROM chat_sessions WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM notifications WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM tournament_participants WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM user_restrictions WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM user_activity_locks WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM withdraw_upi_accounts WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM email_otp_logs WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM admin_access_sessions WHERE user_id = :uid"), {"uid": uid})
+
+        # PHASE 3 — Delete the user itself
+        profile_pic_url = user.profile_pic
+        db.execute(_t("DELETE FROM users WHERE id = :uid"), {"uid": uid})
+        db.commit()
+
+        # PHASE 4 — Cleanup profile picture from disk
+        if profile_pic_url and "/static/profile_pics/" in profile_pic_url:
+            try:
+                import os
+                filename = profile_pic_url.rsplit("/", 1)[-1]
+                path = os.path.join("static/profile_pics", filename)
+                if os.path.isfile(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.warning(f"Failed to delete profile pic file for user {user_id}: {e}")
+
+        logger.warning(f"Sub-Admin fully deleted by Super Admin {current_user.username}: id={user_id}, username={deleted_username}")
+
+        return {"message": "Sub-admin account fully deleted successfully"}
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error fully deleting sub-admin: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to delete sub-admin from database")
