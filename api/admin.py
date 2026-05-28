@@ -3551,11 +3551,19 @@ def purge_all_non_admin_users(
         from sqlalchemy import text as _t
         db.flush()
         
+        # 1. Update nullable foreign keys where non-admins act as some role
         db.execute(_t("UPDATE chat_sessions SET ended_by_user_id = NULL WHERE ended_by_user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE chat_sessions SET attended_by_admin_id = NULL WHERE attended_by_admin_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE chat_sessions SET blocked_by_admin_id = NULL WHERE blocked_by_admin_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         db.execute(_t("UPDATE chat_messages SET thread_user_id = NULL WHERE thread_user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         db.execute(_t("UPDATE chat_messages SET sender_id = NULL WHERE sender_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         db.execute(_t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE user_restrictions SET created_by_admin_id = NULL WHERE created_by_admin_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE user_restrictions SET lifted_by_admin_id = NULL WHERE lifted_by_admin_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE user_activity_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE otp_phone_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
 
+        # 2. Delete child records
         db.execute(_t("DELETE FROM quiz_responses WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         db.execute(_t("DELETE FROM quiz_participants WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         db.execute(_t("DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN'))"))
@@ -3567,8 +3575,10 @@ def purge_all_non_admin_users(
         db.execute(_t("DELETE FROM user_activity_locks WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         db.execute(_t("DELETE FROM withdraw_upi_accounts WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         db.execute(_t("DELETE FROM email_otp_logs WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM otp_phone_locks WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         db.execute(_t("DELETE FROM admin_access_sessions WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
         
+        # 3. Delete users
         result = db.execute(_t("DELETE FROM users WHERE role != 'ADMIN'"))
         db.commit()
         
