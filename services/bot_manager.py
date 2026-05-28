@@ -115,12 +115,16 @@ class BotManager:
                         
                     avatar_idx = (bot_id % 5) + 1
                     
+                    bio_str = random.choice(self.bios)
+                    if len(bio_str) > 30:
+                        bio_str = bio_str[:30]
+                        
                     to_add.append(User(
                         id=bot_id,
                         username=username,
                         email=f"bot_{bot_id}@gamerzadda.in",
                         mmr=random.randint(1100, 1500),
-                        bio=random.choice(self.bios),
+                        bio=bio_str,
                         profile_pic=f"{settings.APP_URL}/static/avatars/avatar{avatar_idx}.png",
                         is_active=True,
                         role="USER"
