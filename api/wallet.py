@@ -1085,10 +1085,29 @@ def cancel_payment(
 @router.post("/withdraw")
 def request_withdrawal(
     req: WithdrawalRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_wallet)
 ):
+    # ── Per-user withdrawal cooldown (prevent rapid-fire abuse) ──────────────
+    _now = datetime.now(timezone.utc).replace(tzinfo=None)
+    _cooldown_window = _now - timedelta(seconds=30)
+    _recent_withdrawal = (
+        db.query(WalletTransaction.id)
+        .filter(
+            WalletTransaction.user_id == current_user.id,
+            WalletTransaction.transaction_type == "WITHDRAWAL",
+            WalletTransaction.created_at >= _cooldown_window,
+        )
+        .first()
+    )
+    if _recent_withdrawal:
+        raise HTTPException(
+            status_code=429,
+            detail="Please wait 30 seconds before submitting another withdrawal request.",
+        )
+    # ─────────────────────────────────────────────────────────────────────────
     amount_to_withdraw = to_money(req.amount)
     minimum_withdrawal_amount = _get_min_withdrawal_amount(db)
 

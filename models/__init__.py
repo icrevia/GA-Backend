@@ -14,5 +14,6 @@ from models.notification import Notification
 from models.admin_access_session import AdminAccessSession
 from models.quiz import QuizMatch, QuizQuestion, QuizParticipant
 from models.daily_stats import DailyStatsHistory
+from models.pending_otp import PendingOtp
 
 # This file is used to import all models so Alembic can discover them

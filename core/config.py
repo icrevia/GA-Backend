@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     
     # ── VPS API Storage (HTTP Bypass) ──────────────────────────────────────
     VPS_API_UPLOAD_URL: str = "" # e.g. https://gamerzadda.in/upload_handler.php
-    VPS_API_SECRET: str = "GamerzAdda_Secret_2026"
+    VPS_API_SECRET: str = ""  # Must be set in Railway environment variables
 
     class Config:
         env_file = ".env"

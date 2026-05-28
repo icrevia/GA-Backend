@@ -24,7 +24,7 @@ logger = logging.getLogger("GamerzAdda")
 
 from api.router import api_router
 from core.database import engine, Base
-from models import user, tournament, wallet, support, withdraw_upi_account, promo, banner, restriction, otp_phone_lock, user_activity_lock, admin_access_session, config, daily_stats
+from models import user, tournament, wallet, support, withdraw_upi_account, promo, banner, restriction, otp_phone_lock, user_activity_lock, admin_access_session, config, daily_stats, pending_otp
 
 SYSTEM_STATUS_CACHE_TTL_SECONDS = 15.0
 _system_status_cache: dict[str, object] = {

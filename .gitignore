@@ -19,6 +19,14 @@ tmp_*.md
 test_status.py
 *.log
 
+# Scratch/debug files — never commit
+scratch_*.py
+scratch/
+delete_non_admins.py
+query.py
+migrate_prize_distribution.py
+test_*.py
+
 # Generated verification artifacts
 verification/*_traces.json
 verification/*_proof.json

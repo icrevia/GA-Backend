@@ -38,9 +38,9 @@ from services.activity_limits import (
 )
 from services.wallet_balances import WALLET_BUCKET_DEPOSIT, credit_wallet, to_money
 
-# In-memory store
-_otp_store: dict[str, str] = {}
-_pending_signups: dict[str, dict] = {}
+from models.pending_otp import PendingOtp
+
+# Admin login OTP is still in-memory (short-lived, admin-only, server restart is acceptable)
 _admin_login_otp_store: dict[str, dict[str, Any]] = {}
 
 logger = logging.getLogger("GamerzAdda.auth")
@@ -561,6 +561,61 @@ async def signup_availability(
         "role": role,
     }
 
+# ── DB-backed OTP + Pending Signup helpers ────────────────────────────────────
+async def _save_pending_otp_db(
+    db: AsyncSession,
+    phone: str,
+    verification_id: str,
+    username: str,
+    email: str,
+    referral_code: str | None,
+) -> None:
+    """Upsert a pending OTP record into DB."""
+    expires_at = datetime.utcnow() + timedelta(minutes=30)
+    result = await db.execute(select(PendingOtp).where(PendingOtp.phone_number == phone))
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.verification_id = verification_id
+        existing.pending_username = username
+        existing.pending_email = email
+        existing.pending_referral_code = referral_code
+        existing.expires_at = expires_at
+        db.add(existing)
+    else:
+        db.add(PendingOtp(
+            phone_number=phone,
+            verification_id=verification_id,
+            pending_username=username,
+            pending_email=email,
+            pending_referral_code=referral_code,
+            expires_at=expires_at,
+        ))
+    await db.commit()
+
+
+async def _get_pending_otp_db(db: AsyncSession, phone: str) -> PendingOtp | None:
+    """Fetch pending OTP record from DB, returns None if missing or expired."""
+    result = await db.execute(select(PendingOtp).where(PendingOtp.phone_number == phone))
+    record = result.scalar_one_or_none()
+    if not record:
+        return None
+    if record.expires_at and datetime.utcnow() > record.expires_at:
+        await db.delete(record)
+        await db.commit()
+        return None
+    return record
+
+
+async def _delete_pending_otp_db(db: AsyncSession, phone: str) -> None:
+    """Delete pending OTP record from DB after use."""
+    result = await db.execute(select(PendingOtp).where(PendingOtp.phone_number == phone))
+    record = result.scalar_one_or_none()
+    if record:
+        await db.delete(record)
+        await db.commit()
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 @router.post("/signup")
 @limiter.limit("5/minute")
 async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depends(get_db)) -> Any:
@@ -579,46 +634,37 @@ async def signup(request: Request, user_in: UserCreate, db: AsyncSession = Depen
     email = user_in.email.strip().lower().split('\n')[0]
     phone = _normalize_signup_phone(user_in.phone_number)
 
-    # Email check
+    # Check for existing records — use GENERIC messages to prevent user enumeration
     result = await db.execute(select(User).where(User.email == email))
     if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=400, detail="Unable to complete registration. Please check your details.")
 
-    # Phone check
     result = await db.execute(select(User).where(User.phone_number == phone))
     if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Phone number already in use")
+        raise HTTPException(status_code=400, detail="Unable to complete registration. Please check your details.")
 
-    # Username check
     result = await db.execute(select(User).where(User.username == user_in.username))
     if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Username taken")
+        raise HTTPException(status_code=400, detail="This username is not available. Please choose another.")
 
     await _raise_if_phone_otp_locked(db, phone)
 
-    _pending_signups[phone] = {
-        "username": user_in.username,
-        "email": email,
-        "phone_number": phone,
-        "referral_code": user_in.referral_code,
-        "_created_at": datetime.utcnow(),
-    }
-
     try:
         from services import otp as otp_service
-        # Async call with await
         result = await otp_service.send_otp(phone)
         verification_id = result["data"]["verificationId"]
-        _otp_store[phone] = verification_id
-        await register_otp_send_success_async(
+        # Save OTP state and pending signup to DB (survives restarts)
+        await _save_pending_otp_db(
             db=db,
             phone=phone,
-            source="SIGNUP",
-            user=None,
+            verification_id=verification_id,
+            username=user_in.username,
+            email=email,
+            referral_code=user_in.referral_code,
         )
+        await register_otp_send_success_async(db=db, phone=phone, source="SIGNUP", user=None)
         return {"message": "OTP sent to phone for verification", "phone": phone, "status": "pending_verification"}
     except Exception as e:
-        _pending_signups.pop(phone, None)
         logger.error(f"OTP send error during signup: {e}")
         raise HTTPException(status_code=503, detail=f"Failed to send OTP verification. Error: {str(e)}")
 
@@ -631,7 +677,10 @@ async def verify_otp(
 ) -> Any:
     normalized_phone = _normalize_signup_phone(phone)
     is_admin_phone = _is_admin_login_phone_value(normalized_phone)
-    is_signup_pending = normalized_phone in _pending_signups
+
+    # Load pending OTP record from DB (survives restarts)
+    pending_record = await _get_pending_otp_db(db, normalized_phone)
+    is_signup_pending = pending_record is not None and pending_record.pending_username is not None
 
     phone_candidates = list(_phone_variants(normalized_phone))
     if phone_candidates:
@@ -647,7 +696,7 @@ async def verify_otp(
                 raise HTTPException(status_code=400, detail="OTP expired or not requested. Please resend.")
             raise HTTPException(status_code=400, detail="Invalid OTP")
     else:
-        verification_id = _otp_store.get(normalized_phone)
+        verification_id = pending_record.verification_id if pending_record else None
         sms_valid = False
         sms_invalid = False
         sms_provider_error = False
@@ -667,33 +716,31 @@ async def verify_otp(
                     status_code=503,
                     detail="OTP verification service is temporarily unavailable. Please retry in 30 seconds."
                 )
-
             if sms_invalid:
                 raise HTTPException(status_code=400, detail="Invalid OTP")
-
             raise HTTPException(status_code=400, detail="OTP expired or not requested. Please resend.")
 
-        _otp_store.pop(normalized_phone, None)
+        await _delete_pending_otp_db(db, normalized_phone)
 
     signup_bonus_total = Decimal("0.00")
     signup_bonus_amount = None
     if is_signup_pending:
-        pending_data = _pending_signups.pop(normalized_phone)
+        pending_data = pending_record  # already fetched from DB
 
         ref_code = await generate_unique_referral_code_async(
             db=db,
-            username=pending_data["username"],
+            username=pending_data.pending_username,
         )
 
         referrer = None
-        if pending_data["referral_code"]:
-            res = await db.execute(select(User).where(User.referral_code == pending_data["referral_code"].strip().upper()))
+        if pending_data.pending_referral_code:
+            res = await db.execute(select(User).where(User.referral_code == pending_data.pending_referral_code.strip().upper()))
             referrer = res.scalar_one_or_none()
 
         db_user = User(
-            username=pending_data["username"],
-            email=pending_data["email"],
-            phone_number=pending_data["phone_number"],
+            username=pending_data.pending_username,
+            email=pending_data.pending_email,
+            phone_number=normalized_phone,
             role="USER",
             referral_code=ref_code,
             referred_by_id=referrer.id if referrer else None,
