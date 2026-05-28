@@ -3548,14 +3548,35 @@ def purge_all_non_admin_users(
     current_user: User = Depends(get_current_active_admin)
 ):
     try:
-        from sqlalchemy import delete
-        stmt = delete(User).where(User.role != "admin")
-        result = db.execute(stmt)
+        from sqlalchemy import text as _t
+        db.flush()
+        
+        db.execute(_t("UPDATE chat_sessions SET ended_by_user_id = NULL WHERE ended_by_user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE chat_messages SET thread_user_id = NULL WHERE thread_user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE chat_messages SET sender_id = NULL WHERE sender_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+
+        db.execute(_t("DELETE FROM quiz_responses WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM quiz_participants WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN'))"))
+        db.execute(_t("DELETE FROM chat_sessions WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM notifications WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM tournament_participants WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM wallet_transactions WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM user_restrictions WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM user_activity_locks WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM withdraw_upi_accounts WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM email_otp_logs WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        db.execute(_t("DELETE FROM admin_access_sessions WHERE user_id IN (SELECT id FROM users WHERE role != 'ADMIN')"))
+        
+        result = db.execute(_t("DELETE FROM users WHERE role != 'ADMIN'"))
         db.commit()
+        
         logger.warning(f"Admin {current_user.username} purged {result.rowcount} non-admin users.")
         return {"message": f"Successfully purged {result.rowcount} non-admin users."}
     except Exception as e:
         db.rollback()
+        logger.error(f"Purge error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to purge users: {e}")
 
 @router.delete("/users/{user_id}")
