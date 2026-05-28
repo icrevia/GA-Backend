@@ -3542,6 +3542,21 @@ def unlock_all_user_restrictions(
         "unlocked_count": unlocked_count,
     }
 
+@router.delete("/users/purge-all")
+def purge_all_non_admin_users(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    try:
+        from sqlalchemy import delete
+        stmt = delete(User).where(User.role != "admin")
+        result = db.execute(stmt)
+        db.commit()
+        logger.warning(f"Admin {current_user.username} purged {result.rowcount} non-admin users.")
+        return {"message": f"Successfully purged {result.rowcount} non-admin users."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to purge users: {e}")
 
 @router.delete("/users/{user_id}")
 def delete_user_account(
