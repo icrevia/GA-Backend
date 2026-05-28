@@ -95,6 +95,9 @@ class BotManager:
             res = await db.execute(select(User.id).where(User.id >= 99000, User.id <= 99999))
             existing_ids = set(res.scalars().all())
             
+            res_names = await db.execute(select(User.username))
+            existing_names = set(res_names.scalars().all())
+            
             to_add = []
             for bot_id in range(99000, 100000):
                 if bot_id not in existing_ids:
@@ -106,8 +109,8 @@ class BotManager:
                     else:
                         username = self._generate_username()[:23]
                         
-                    # Ensure username uniqueness (basic check)
-                    if any(u.username == username for u in to_add):
+                    # Ensure username uniqueness against DB and current batch
+                    if username in existing_names or any(u.username == username for u in to_add):
                         username = f"{username}_{bot_id}"
                         
                     # Hard limit to 30 characters for DB constraint
