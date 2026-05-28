@@ -247,7 +247,8 @@ async def lifespan(app: FastAPI):
     try:
         ensure_support_media_storage_dir()
         await matchmaker.initialize()
-        await bot_manager.ensure_bot_users()
+        # Disable bot creation for now
+        # await bot_manager.ensure_bot_users()
     except Exception as startup_init_error:
         logger.warning("Startup service init failed: %s", startup_init_error)
 
