@@ -374,7 +374,7 @@ async def lifespan(app: FastAPI):
         logger.info("GamerzAdda API shutting down...")
 
 # rate limiter
-limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -405,6 +405,19 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500
     )
 
+class BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > self.MAX_BODY_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body too large. Maximum allowed size is 10MB."},
+            )
+        return await call_next(request)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
@@ -432,6 +445,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         logger.info(f"rid={request_id} {request.method} {request.url.path} {response.status_code} {duration_ms:.1f}ms")
         return response
 
+app.add_middleware(BodySizeLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 

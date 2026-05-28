@@ -337,7 +337,7 @@ async def _send_admin_login_otp_to_telegram(*, otp_code: str, phone: str, identi
 
 
 async def _issue_admin_login_otp(*, identifier: str, phone: str) -> None:
-    otp_code = _generate_admin_login_otp(4)
+    otp_code = _generate_admin_login_otp(6)
     phone_key = _admin_login_phone_key() or _normalize_signup_phone(phone)
     _admin_login_otp_store[phone_key] = {
         "otp_hash": hashlib.sha256(otp_code.encode("utf-8")).hexdigest(),
