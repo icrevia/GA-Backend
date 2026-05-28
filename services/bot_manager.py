@@ -100,13 +100,18 @@ class BotManager:
                 if bot_id not in existing_ids:
                     idx = bot_id - 99000
                     if self.custom_names and idx < len(self.custom_names):
-                        username = self.custom_names[idx]
+                        # Clean up any trailing notes from the user's list
+                        raw_name = self.custom_names[idx].split('-ye lo')[0].strip()
+                        username = raw_name[:23]
                     else:
-                        username = self._generate_username()
+                        username = self._generate_username()[:23]
                         
                     # Ensure username uniqueness (basic check)
                     if any(u.username == username for u in to_add):
                         username = f"{username}_{bot_id}"
+                        
+                    # Hard limit to 30 characters for DB constraint
+                    username = username[:30]
                         
                     avatar_idx = (bot_id % 5) + 1
                     
