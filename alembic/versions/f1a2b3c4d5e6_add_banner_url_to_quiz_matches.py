@@ -19,8 +19,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('quiz_matches', sa.Column('banner_url', sa.String(), nullable=True))
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('quiz_matches')]
+    if 'banner_url' not in columns:
+        op.add_column('quiz_matches', sa.Column('banner_url', sa.String(), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column('quiz_matches', 'banner_url')
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('quiz_matches')]
+    if 'banner_url' in columns:
+        op.drop_column('quiz_matches', 'banner_url')
