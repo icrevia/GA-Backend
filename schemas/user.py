@@ -65,6 +65,7 @@ class UserResponse(BaseModel):
     is_active: bool = True
     admin_permissions: Optional[str] = None
     active_restrictions: List[UserRestrictionView] = Field(default_factory=list)
+    last_login_ip: Optional[str] = None
 
     # Path to stored face image (if enrolled)
     face_image_path: Optional[str] = None

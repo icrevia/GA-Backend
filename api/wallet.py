@@ -72,12 +72,15 @@ SPIN_COST = Decimal("10.00")
 DAILY_SPIN_LIMIT = 1
 SPIN_DAILY_RESET_MINUTE_IST = 1
 WITHDRAWAL_DAILY_RESET_MINUTE_IST = 1
-WITHDRAWAL_SAME_DAY_FEE = Decimal("10.00")
 IST = timezone(timedelta(hours=5, minutes=30))
 MIN_DEPOSIT_CONFIG_KEY = "minimum_deposit_amount"
 MIN_WITHDRAWAL_CONFIG_KEY = "minimum_withdrawal_amount"
+FIRST_WITHDRAWAL_FEE_CONFIG_KEY = "first_withdrawal_fee"
+SAME_DAY_WITHDRAWAL_FEE_CONFIG_KEY = "same_day_withdrawal_fee"
 DEFAULT_MIN_DEPOSIT_AMOUNT = Decimal("10.00")
 DEFAULT_MIN_WITHDRAWAL_AMOUNT = Decimal("50.00")
+DEFAULT_FIRST_WITHDRAWAL_FEE = Decimal("5.00")
+DEFAULT_SAME_DAY_WITHDRAWAL_FEE = Decimal("10.00")
 
 
 def _common_spin_prize_amount() -> Decimal:
@@ -173,6 +176,14 @@ def _get_min_deposit_amount(db: Session) -> Decimal:
 
 def _get_min_withdrawal_amount(db: Session) -> Decimal:
     return _read_decimal_system_config(db, MIN_WITHDRAWAL_CONFIG_KEY, DEFAULT_MIN_WITHDRAWAL_AMOUNT)
+
+
+def _get_first_withdrawal_fee(db: Session) -> Decimal:
+    return _read_decimal_system_config(db, FIRST_WITHDRAWAL_FEE_CONFIG_KEY, DEFAULT_FIRST_WITHDRAWAL_FEE)
+
+
+def _get_same_day_withdrawal_fee(db: Session) -> Decimal:
+    return _read_decimal_system_config(db, SAME_DAY_WITHDRAWAL_FEE_CONFIG_KEY, DEFAULT_SAME_DAY_WITHDRAWAL_FEE)
 
 
 def _serialize_deposit_bonus_rule(rule: dict[str, Any]) -> dict[str, Any]:
@@ -1139,24 +1150,25 @@ def request_withdrawal(
         .count()
     )
     withdrawal_fee = (
-        WITHDRAWAL_SAME_DAY_FEE
+        _get_same_day_withdrawal_fee(db)
         if same_day_withdraw_count >= 1
-        else Decimal("5.00")
+        else _get_first_withdrawal_fee(db)
     )
-    total_wallet_debit = amount_to_withdraw + withdrawal_fee
+    total_wallet_debit = amount_to_withdraw
+    net_withdrawal = amount_to_withdraw - withdrawal_fee
+
+    if net_withdrawal <= Decimal("0.00"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Withdrawal amount must be greater than the processing fee of ₹{withdrawal_fee:.2f}",
+        )
 
     withdrawable_balance = get_withdrawable_balance(user)
     if withdrawable_balance < total_wallet_debit:
-        if withdrawal_fee > Decimal("0.00"):
-            detail = (
-                f"Insufficient winning balance. Available ₹{withdrawable_balance:.2f}, "
-                f"requested ₹{amount_to_withdraw:.2f} + fee ₹{withdrawal_fee:.2f}."
-            )
-        else:
-            detail = (
-                f"Insufficient winning balance. Available ₹{withdrawable_balance:.2f}, "
-                f"requested ₹{amount_to_withdraw:.2f}."
-            )
+        detail = (
+            f"Insufficient winning balance. Available ₹{withdrawable_balance:.2f}, "
+            f"requested ₹{amount_to_withdraw:.2f}."
+        )
         raise HTTPException(
             status_code=400,
             detail=detail,
@@ -1169,15 +1181,9 @@ def request_withdrawal(
             spend_order=(WALLET_BUCKET_WINNING,),
         )
     except InsufficientWalletBalanceError as exc:
-        if withdrawal_fee > Decimal("0.00"):
-            detail = (
-                f"Insufficient winning balance. Available ₹{exc.available:.2f}, requested ₹{amount_to_withdraw:.2f} "
-                f"+ fee ₹{withdrawal_fee:.2f}."
-            )
-        else:
-            detail = (
-                f"Insufficient winning balance. Available ₹{exc.available:.2f}, requested ₹{exc.required:.2f}."
-            )
+        detail = (
+            f"Insufficient winning balance. Available ₹{exc.available:.2f}, requested ₹{total_wallet_debit:.2f}."
+        )
         raise HTTPException(
             status_code=400,
             detail=detail,
@@ -1202,7 +1208,7 @@ def request_withdrawal(
     withdraw_reference = f"GA-{uuid.uuid4().hex[:6].upper()}"
     tx = WalletTransaction(
         user_id=user.id,
-        amount=-amount_to_withdraw,
+        amount=-net_withdrawal,
         transaction_type="WITHDRAWAL",
         status="PENDING",
         reference_id=withdraw_reference,
@@ -1258,7 +1264,7 @@ def request_withdrawal(
         transaction_id=tx.id,
         user_id=user.id,
         username=user.username or f"User{user.id}",
-        amount=amount_to_withdraw,
+        amount=net_withdrawal,
         upi_id=normalized_upi_id,
         reference_id=tx.reference_id,
         created_at=tx.created_at,

@@ -4881,6 +4881,7 @@ def create_sub_admin(
         user.role = "ADMIN"
         user.admin_permissions = payload.admin_permissions
         user.password_hash = hash_password(payload.password)
+        user.token_version = (getattr(user, "token_version", 0) or 0) + 1
         
     db.commit()
     db.refresh(user)
@@ -4911,6 +4912,7 @@ def update_sub_admin(
         user.email = payload.email
     if payload.password:
         user.password_hash = hash_password(payload.password)
+        user.token_version = (getattr(user, "token_version", 0) or 0) + 1
         
     db.commit()
     db.refresh(user)

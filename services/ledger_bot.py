@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import html
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -146,6 +147,7 @@ def edit_message_text(chat_id: str | int, message_id: int, text: str) -> None:
             "message_id": int(message_id),
             "text": str(text or "").strip()[:4096],
             "disable_web_page_preview": True,
+            "parse_mode": "HTML",
         },
         timeout=8.0,
     )
@@ -156,6 +158,7 @@ def send_message(chat_id: str | int, text: str, reply_to_message_id: int | None 
         "chat_id": str(chat_id),
         "text": str(text or "").strip()[:4096],
         "disable_web_page_preview": True,
+        "parse_mode": "HTML",
     }
     if reply_to_message_id:
         payload["reply_to_message_id"] = reply_to_message_id
@@ -191,13 +194,13 @@ def build_withdrawal_resolution_text(
     refunded_amount: Decimal | float | int = Decimal("0.00"),
 ) -> str:
     lines = [
-        "WITHDRAWAL UPDATE",
+        "<b>WITHDRAWAL UPDATE</b>",
         f"Transaction ID: {transaction_id}",
         f"User ID: {user_id}",
         f"Amount: Rs {_format_amount(amount)}",
-        f"UPI ID: {upi_id or '-'}",
+        f"UPI ID: <code>{html.escape(upi_id)}</code>" if upi_id else "UPI ID: -",
         f"Status: {status}",
-        f"Action By: {actor_label}",
+        f"Action By: {html.escape(actor_label)}",
     ]
 
     if abs(float(refunded_amount)) > 0.0:
@@ -231,20 +234,20 @@ def send_withdrawal_request_to_admins(
         return 0
 
     lines = [
-        "NEW WITHDRAWAL REQUEST",
+        "<b>NEW WITHDRAWAL REQUEST</b>",
         f"Transaction ID: {transaction_id}",
-        f"Reference: {reference_id or '-'}",
+        f"Reference: {html.escape(reference_id) if reference_id else '-'}",
         f"User ID: {user_id}",
-        f"Username: {username or '-'}",
+        f"Username: {html.escape(username) if username else '-'}",
         f"Amount: Rs {_format_amount(amount)}",
-        f"UPI ID: {upi_id or '-'}",
+        f"UPI ID: <code>{html.escape(upi_id)}</code>" if upi_id else "UPI ID: -",
         f"Requested At: {_format_datetime_ist(created_at)}",
     ]
 
     if phone_number:
-        lines.append(f"Phone: {phone_number}")
+        lines.append(f"Phone: {html.escape(phone_number)}")
     if freefire_id:
-        lines.append(f"Free Fire ID: {freefire_id}")
+        lines.append(f"Free Fire ID: {html.escape(freefire_id)}")
     if abs(float(withdrawal_fee)) > 0.0:
         lines.append(f"Processing Fee: Rs {_format_amount(withdrawal_fee)}")
 
@@ -276,6 +279,7 @@ def send_withdrawal_request_to_admins(
                 "text": text,
                 "disable_web_page_preview": True,
                 "reply_markup": reply_markup,
+                "parse_mode": "HTML",
             },
             timeout=10.0,
         )
