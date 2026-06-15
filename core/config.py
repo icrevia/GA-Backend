@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     # ── StartMessaging OTP ────────────────────────────────────────────────────
     SM_API_KEY: str = ""
 
+    # ── HSP Media Network OTP ──────────────────────────────────────────────────
+    HSP_USERNAME: str = ""
+    HSP_API_KEY: str = ""
+    HSP_SENDERNAME: str = "GUERAR"
+    HSP_TEMPLATE: str = "{otp} is your verification code for GamerzAdda. Do not share this with anyone."
+
     # ── Email OTP (login only) ───────────────────────────────────────────────
     EMAIL_OTP_ENABLED: bool = False
     EMAIL_OTP_LENGTH: int = 4
