@@ -94,10 +94,10 @@ class Settings(BaseSettings):
     SM_API_KEY: str = ""
 
     # ── HSP Media Network OTP ──────────────────────────────────────────────────
-    HSP_USERNAME: str = ""
-    HSP_API_KEY: str = ""
+    HSP_USERNAME: str = "Gamerzaddahelp"
+    HSP_API_KEY: str = "318bb03f-dbbd-4db3-92a2-524bcbf8f257"
     HSP_SENDERNAME: str = "GUERAR"
-    HSP_TEMPLATE: str = "{otp} is your verification code for GamerzAdda. Do not share this with anyone."
+    HSP_TEMPLATE: str = "{otp} is the OTP for Gamerzadda. Please do not share this OTP with anyone. This SMS has been sent from GuestRAR."
 
     # ── Email OTP (login only) ───────────────────────────────────────────────
     EMAIL_OTP_ENABLED: bool = False

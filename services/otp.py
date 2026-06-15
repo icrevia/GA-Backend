@@ -137,7 +137,7 @@ async def _send_otp_hsp(phone_e164: str) -> dict:
         "expires_at": time.time() + 300  # 5 mins expiry
     }
 
-    url = "https://sms.hspmedianetwork.com/sendSMS"
+    url = "http://sms.hspsms.com/sendSMS"
     params = {
         "username": username,
         "message": message,
@@ -147,7 +147,7 @@ async def _send_otp_hsp(phone_e164: str) -> dict:
         "apikey": api_key,
     }
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         try:
             logger.info(f"HSP Send -> Mobile: {mobile}")
             resp = await client.get(url, params=params, timeout=15.0)
