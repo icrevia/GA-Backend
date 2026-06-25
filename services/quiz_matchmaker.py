@@ -192,7 +192,7 @@ class QuizMatchmaker:
         refund_buckets = _parse_deductions_payload(deductions_payload)
         
         is_early = wait_time < 300
-        cancel_fee = to_money(entry_fee_found * 0.1) if is_early else ZERO_MONEY
+        cancel_fee = to_money(entry_fee_found * 0.3) if is_early else ZERO_MONEY
         
         # Calculate actual refund per bucket by deducting the penalty from winning -> deposit -> bonus
         actual_refund_buckets = {k: v for k, v in refund_buckets.items()}
