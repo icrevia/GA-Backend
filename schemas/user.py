@@ -110,14 +110,14 @@ class UserRestrictionView(BaseModel):
     created_at: Optional[datetime] = None
 
 class SubAdminCreate(BaseModel):
-    name: str = Field(..., min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_ .\-]+$")
+    name: str = Field(..., min_length=2, max_length=64)
     email: EmailStr
     phone_number: str = Field(..., pattern=r"^\+?[0-9]{10,15}$")
     password: str = Field(..., min_length=6, max_length=128)
     admin_permissions: Optional[str] = None
 
 class SubAdminUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_ .\-]+$")
+    name: Optional[str] = Field(None, min_length=2, max_length=64)
     email: Optional[EmailStr] = None
     password: Optional[str] = Field(None, min_length=6, max_length=128)
     admin_permissions: Optional[str] = None
