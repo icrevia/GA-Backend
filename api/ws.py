@@ -255,6 +255,19 @@ async def websocket_endpoint(websocket: WebSocket):
                         await manager.send_personal_message(payload, user_id)
                 continue
 
+            if msg_type == "join_ludo":
+                match_id = int(msg.get("match_id", 0))
+                if match_id:
+                    await manager.join_ludo_room(user_id, match_id)
+                continue
+
+            if msg_type == "ludo_action":
+                from services.ludo_orchestrator import orchestrator
+                match_id = int(msg.get("match_id", 0))
+                if match_id:
+                    await orchestrator.handle_action(match_id, user_id, msg)
+                continue
+
             if msg_type == "join_battle":
                 entry_fee = int(msg.get("entry_fee", 0))
                 from services.quiz_matchmaker import matchmaker
