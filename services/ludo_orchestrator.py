@@ -4,6 +4,7 @@ from core.websockets import manager
 from services.ludo_engine import LudoEngine
 from core.database import SessionLocal
 from models.ludo import LudoMatch, LudoParticipant
+from sqlalchemy.future import select
 
 logger = logging.getLogger("GamerzAdda.LudoOrchestrator")
 
@@ -13,15 +14,17 @@ class LudoOrchestrator:
         self.games: Dict[int, LudoEngine] = {}
 
     async def start_game(self, match_id: int):
-        with SessionLocal() as db:
-            match = db.query(LudoMatch).filter(LudoMatch.id == match_id).first()
+        async with SessionLocal() as db:
+            result = await db.execute(select(LudoMatch).where(LudoMatch.id == match_id))
+            match = result.scalar_one_or_none()
             if not match:
                 return
             
             match.status = "PLAYING"
-            db.commit()
+            await db.commit()
 
-            participants = db.query(LudoParticipant).filter(LudoParticipant.match_id == match_id).all()
+            p_result = await db.execute(select(LudoParticipant).where(LudoParticipant.match_id == match_id))
+            participants = p_result.scalars().all()
             colors = [p.color for p in participants]
             
             engine = LudoEngine(match_id, colors)
@@ -38,11 +41,14 @@ class LudoOrchestrator:
         
         # We need mapping from user_id to color
         # In a real app we would cache this mapping
-        with SessionLocal() as db:
-            participant = db.query(LudoParticipant).filter(
-                LudoParticipant.match_id == match_id,
-                LudoParticipant.user_id == user_id
-            ).first()
+        async with SessionLocal() as db:
+            result = await db.execute(
+                select(LudoParticipant).where(
+                    LudoParticipant.match_id == match_id,
+                    LudoParticipant.user_id == user_id
+                )
+            )
+            participant = result.scalar_one_or_none()
             if not participant:
                 return
             player_color = participant.color
@@ -73,22 +79,26 @@ class LudoOrchestrator:
             return
             
         # Distribute prize and update DB
-        with SessionLocal() as db:
-            match = db.query(LudoMatch).filter(LudoMatch.id == match_id).first()
+        async with SessionLocal() as db:
+            result = await db.execute(select(LudoMatch).where(LudoMatch.id == match_id))
+            match = result.scalar_one_or_none()
             if match:
                 match.status = "COMPLETED"
                 
-                winner = db.query(LudoParticipant).filter(
-                    LudoParticipant.match_id == match_id,
-                    LudoParticipant.color == winner_color
-                ).first()
+                w_res = await db.execute(
+                    select(LudoParticipant).where(
+                        LudoParticipant.match_id == match_id,
+                        LudoParticipant.color == winner_color
+                    )
+                )
+                winner = w_res.scalar_one_or_none()
                 
                 if winner:
                     winner.status = "WON"
                     match.winner_id = winner.user_id
                     # Add wallet transaction logic here
                     
-                db.commit()
+                await db.commit()
                 
         del self.games[match_id]
 
