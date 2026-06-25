@@ -5,7 +5,7 @@ from core.database import get_db
 from models.user import User
 from models.ludo import LudoMatch, LudoParticipant
 from schemas.ludo import LudoMatchResponse
-from core.auth import get_current_user
+from api.deps import get_current_user
 
 router = APIRouter()
 
