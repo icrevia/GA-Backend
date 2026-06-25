@@ -255,6 +255,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         await manager.send_personal_message(payload, user_id)
                 continue
 
+            if msg_type == "join_ludo_matchmaking":
+                entry_fee = int(msg.get("entry_fee", 0))
+                from services.ludo_matchmaker import ludo_matchmaker
+                await ludo_matchmaker.add_to_pool(user_id, username, mmr, entry_fee, bio=bio, profile_pic=profile_pic)
+                continue
+
+            if msg_type == "cancel_ludo_matchmaking":
+                from services.ludo_matchmaker import ludo_matchmaker
+                await ludo_matchmaker.cancel_user_matchmaking(user_id)
+                continue
+
             if msg_type == "join_ludo":
                 match_id = int(msg.get("match_id", 0))
                 if match_id:
