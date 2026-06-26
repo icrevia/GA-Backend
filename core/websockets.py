@@ -8,7 +8,8 @@ logger = logging.getLogger("GamerzAdda.ws")
 
 ALLOWED_WS_EVENTS = {
     "chat_message", "support_escalation", "support_activity",
-    "join_quiz", "leave_quiz", "quiz_answer", "quiz_sync", "quiz_surrender"
+    "join_quiz", "leave_quiz", "quiz_answer", "quiz_sync", "quiz_surrender",
+    "join_ludo", "leave_ludo", "ludo_action"
 }
 
 SUPPORT_EVENT_TYPES = {
@@ -32,6 +33,8 @@ class ConnectionManager:
         self.pending_admin_support_events: deque[dict] = deque(maxlen=MAX_PENDING_ADMIN_SUPPORT_EVENTS)
         # quiz_id -> Set[user_id]
         self.quiz_rooms: Dict[int, set[int]] = {}
+        # ludo_match_id -> Set[user_id]
+        self.ludo_rooms: Dict[int, set[int]] = {}
 
     async def connect(self, user_id: int, websocket: WebSocket, is_admin: bool = False):
         if user_id not in self.active_connections:
@@ -87,6 +90,11 @@ class ConnectionManager:
             if not self.quiz_rooms[qid]:
                 del self.quiz_rooms[qid]
 
+        # Remove from any ludo rooms
+        for lid in list(self.ludo_rooms.keys()):
+            self.ludo_rooms[lid].discard(user_id)
+            if not self.ludo_rooms[lid]:
+                del self.ludo_rooms[lid]
 
 
     def is_user_online(self, user_id: int) -> bool:
@@ -213,6 +221,26 @@ class ConnectionManager:
         if quiz_id not in self.quiz_rooms:
             return
         user_ids = list(self.quiz_rooms[quiz_id])
+        for user_id in user_ids:
+            await self.send_personal_message(message, user_id)
+
+    async def join_ludo_room(self, user_id: int, match_id: int):
+        if match_id not in self.ludo_rooms:
+            self.ludo_rooms[match_id] = set()
+        self.ludo_rooms[match_id].add(user_id)
+        logger.info(f"WS Ludo: User {user_id} joined room {match_id}. Total: {len(self.ludo_rooms[match_id])}")
+
+    async def leave_ludo_room(self, user_id: int, match_id: int):
+        if match_id in self.ludo_rooms:
+            self.ludo_rooms[match_id].discard(user_id)
+            if not self.ludo_rooms[match_id]:
+                del self.ludo_rooms[match_id]
+            logger.info(f"WS Ludo: User {user_id} left room {match_id}")
+
+    async def broadcast_to_ludo(self, match_id: int, message: dict):
+        if match_id not in self.ludo_rooms:
+            return
+        user_ids = list(self.ludo_rooms[match_id])
         for user_id in user_ids:
             await self.send_personal_message(message, user_id)
 
