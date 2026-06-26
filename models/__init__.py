@@ -17,4 +17,3 @@ from models.daily_stats import DailyStatsHistory
 from models.pending_otp import PendingOtp
 
 # This file is used to import all models so Alembic can discover them
-from models.ludo import LudoMatch, LudoParticipant
