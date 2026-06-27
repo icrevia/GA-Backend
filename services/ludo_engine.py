@@ -73,14 +73,21 @@ class LudoEngine:
         return roll
 
     def has_valid_moves(self, player: str, roll: int) -> bool:
-        for pos in self.positions[player]:
+        return len(self.get_valid_moves_for_roll(player, roll)) > 0
+
+    def get_valid_moves(self, player: str) -> list[int]:
+        return self.get_valid_moves_for_roll(player, self.last_dice_roll)
+
+    def get_valid_moves_for_roll(self, player: str, roll: int) -> list[int]:
+        valid_indices = []
+        for i, pos in enumerate(self.positions[player]):
             if pos == -1:
                 if roll == 6:
-                    return True
+                    valid_indices.append(i)
             else:
                 if pos + roll <= TOTAL_CELLS_PER_PLAYER:
-                    return True
-        return False
+                    valid_indices.append(i)
+        return valid_indices
 
     def _relative_to_global(self, player: str, rel_pos: int) -> int:
         """Converts relative position (0-50) to global position (0-51)"""
