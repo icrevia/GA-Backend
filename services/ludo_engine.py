@@ -52,26 +52,29 @@ class LudoEngine:
             return -1
         if self.dice_rolled:
             return -1
-            
-        roll = random.randint(1, 6)
-        
-        # HACK: Increase chance of 6 for testing if needed, or just let it be random.
-        # Let's just make it completely random for normal gameplay.
-        
+
+        # Boost chance of 6 when all tokens are still at home — otherwise the
+        # game is unplayably frustrating (16.7% natural chance is too low).
+        all_home = all(pos == -1 for pos in self.positions[player])
+        if all_home:
+            # 45% chance of 6, remaining 55% split evenly across 1-5
+            roll_weights = [11, 11, 11, 11, 11, 45]  # sums to 100
+            roll = random.choices(range(1, 7), weights=roll_weights, k=1)[0]
+        else:
+            roll = random.randint(1, 6)
+
         self.last_dice_roll = roll
         self.dice_rolled = True
-        
+
         if roll == 6:
             self.sixes_in_a_row += 1
             if self.sixes_in_a_row == 3:
-                # 3 sixes = turn forfeited
+                # 3 sixes in a row = forfeit turn
                 self.next_turn()
                 return 0
         else:
             self.sixes_in_a_row = 0
-        
-        # If no valid moves, orchestrator will auto pass after a delay
-            
+
         return roll
 
     def has_valid_moves(self, player: str, roll: int) -> bool:
