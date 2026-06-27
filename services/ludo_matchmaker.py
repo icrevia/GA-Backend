@@ -215,6 +215,7 @@ class LudoMatchmaker:
             "type": "ludo_match_found",
             "match_id": str(match_id),
             "entry_fee": entry_fee,
+            "your_color": "RED",
             "opponent": {
                 "user_id": u2["user_id"],
                 "username": u2["username"],
@@ -225,6 +226,7 @@ class LudoMatchmaker:
         await ws_manager.send_personal_message(payload, u1["user_id"])
         
         if not is_bot:
+            payload["your_color"] = "BLUE"
             payload["opponent"] = {
                 "user_id": u1["user_id"],
                 "username": u1["username"],

@@ -169,6 +169,9 @@ class LudoEngine:
         return all(pos == TOTAL_CELLS_PER_PLAYER for pos in self.positions[player])
 
     def get_state(self) -> dict:
+        import time
+        now_ms = int(time.time() * 1000)
+        rem_sec = max(0, int((self.end_time_ms - now_ms) / 1000)) if self.end_time_ms > 0 else 0
         return {
             "match_id": self.match_id,
             "state": self.state,
@@ -177,6 +180,6 @@ class LudoEngine:
             "scores": self.scores,
             "last_dice_roll": self.last_dice_roll,
             "dice_rolled": self.dice_rolled,
-            "end_time_ms": self.end_time_ms,
+            "remaining_seconds": rem_sec,
             "winner": self.winner
         }
