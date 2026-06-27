@@ -107,9 +107,11 @@ class LudoEngine:
                 if opp_pos >= 0 and opp_pos <= 50:
                     opp_global = self._relative_to_global(opp, opp_pos)
                     if opp_global == global_pos:
-                        # Kill! Deduct points from opponent
-                        points_lost = opp_pos + 1
-                        self.scores[opp] = max(0, self.scores[opp] - points_lost)
+                        # Kill!
+                        # Opponent does not lose points as per user request
+                        # points_lost = opp_pos + 1
+                        # self.scores[opp] = max(0, self.scores[opp] - points_lost)
+                        
                         # Reset token to -1
                         self.positions[opp][i] = -1
                         killed_anyone = True
