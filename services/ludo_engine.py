@@ -74,9 +74,12 @@ class LudoEngine:
 
     def has_valid_moves(self, player: str, roll: int) -> bool:
         for pos in self.positions[player]:
-            start_pos = 0 if pos == -1 else pos
-            if start_pos + roll <= TOTAL_CELLS_PER_PLAYER:
-                return True
+            if pos == -1:
+                if roll == 6:
+                    return True
+            else:
+                if pos + roll <= TOTAL_CELLS_PER_PLAYER:
+                    return True
         return False
 
     def _relative_to_global(self, player: str, rel_pos: int) -> int:
@@ -124,8 +127,16 @@ class LudoEngine:
         if pos == TOTAL_CELLS_PER_PLAYER:
             return False # Already finished
             
-        start_pos = 0 if pos == -1 else pos
-        new_pos = start_pos + roll
+        if pos == -1:
+            if roll != 6:
+                return False
+            # Just pop out to 1
+            self.positions[player][token_index] = 1
+            self.scores[player] += 1
+            self.dice_rolled = False # Gets another turn
+            return True
+
+        new_pos = pos + roll
         if new_pos > TOTAL_CELLS_PER_PLAYER:
             return False # Overshot, exactly 57 is needed
             
