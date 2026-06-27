@@ -202,8 +202,14 @@ class LudoMatchmaker:
             db.add(match)
             await db.flush()
             
-            p1 = LudoParticipant(match_id=match.id, user_id=u1["user_id"], color="RED")
-            p2 = LudoParticipant(match_id=match.id, user_id=u2["user_id"], color="BLUE")
+            import random
+            pairs = [("RED", "YELLOW"), ("GREEN", "BLUE")]
+            color1, color2 = random.choice(pairs)
+            if random.random() < 0.5:
+                color1, color2 = color2, color1
+
+            p1 = LudoParticipant(match_id=match.id, user_id=u1["user_id"], color=color1)
+            p2 = LudoParticipant(match_id=match.id, user_id=u2["user_id"], color=color2)
             db.add_all([p1, p2])
             await db.commit()
             
@@ -215,7 +221,7 @@ class LudoMatchmaker:
             "type": "ludo_match_found",
             "match_id": str(match_id),
             "entry_fee": entry_fee,
-            "your_color": "RED",
+            "your_color": color1,
             "opponent": {
                 "user_id": u2["user_id"],
                 "username": u2["username"],
@@ -226,7 +232,7 @@ class LudoMatchmaker:
         await ws_manager.send_personal_message(payload, u1["user_id"])
         
         if not is_bot:
-            payload["your_color"] = "BLUE"
+            payload["your_color"] = color2
             payload["opponent"] = {
                 "user_id": u1["user_id"],
                 "username": u1["username"],
