@@ -108,9 +108,13 @@ class LudoOrchestrator:
         action_type = action.get("action")
         
         if action_type == "ROLL_DICE":
-            engine.roll_dice(player_color)
-            await self.broadcast_state(match_id)
-            
+            roll = engine.roll_dice(player_color)
+            if roll != -1:
+                await self.broadcast_state(match_id)
+                # If no valid moves, we pause briefly so the client can see the dice face
+                if not engine.has_valid_moves(player_color, roll):
+                    asyncio.create_task(self._auto_pass_task(match_id, player_color))
+                    
         elif action_type == "MOVE_TOKEN":
             token_index = action.get("token_index")
             if token_index is not None:
@@ -125,6 +129,15 @@ class LudoOrchestrator:
             return
         state = self.games[match_id].get_state()
         await manager.broadcast_to_ludo(match_id, {"type": "LUDO_STATE", "payload": state})
+
+    async def _auto_pass_task(self, match_id: int, player_color: str):
+        await asyncio.sleep(1.0)
+        if match_id not in self.games:
+            return
+        engine = self.games[match_id]
+        if engine.state == "PLAYING" and engine.get_current_player() == player_color and engine.dice_rolled:
+            engine.next_turn()
+            await self.broadcast_state(match_id)
 
     async def end_game(self, match_id: int, winner_color: str):
         if match_id not in self.games:

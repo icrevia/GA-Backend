@@ -70,9 +70,7 @@ class LudoEngine:
         else:
             self.sixes_in_a_row = 0
         
-        # If no valid moves, auto pass
-        if not self.has_valid_moves(player, roll):
-            self.next_turn()
+        # If no valid moves, orchestrator will auto pass after a delay
             
         return roll
 
