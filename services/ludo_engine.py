@@ -25,12 +25,14 @@ class LudoEngine:
         self.state = "WAITING"
         self.winner = None
         
-        # Player positions: [token1, token2, token3, token4] (-1 = home, 57 = finished)
-        self.positions: Dict[str, List[int]] = {p: [-1, -1, -1, -1] for p in players}
+        # Player positions: [token1, token2, token3, token4] (1 = start, 57 = finished)
+        self.positions: Dict[str, List[int]] = {p: [1, 1, 1, 1] for p in players}
+        self.scores: Dict[str, int] = {p: 0 for p in players}
         
         self.last_dice_roll = 0
         self.dice_rolled = False
         self.sixes_in_a_row = 0
+        self.end_time_ms = 0
 
     def get_current_player(self) -> str:
         return self.players[self.turn_index]
@@ -73,9 +75,7 @@ class LudoEngine:
 
     def has_valid_moves(self, player: str, roll: int) -> bool:
         for pos in self.positions[player]:
-            if pos == -1 and roll == 6:
-                return True
-            if pos != -1 and pos + roll <= TOTAL_CELLS_PER_PLAYER:
+            if pos < TOTAL_CELLS_PER_PLAYER and pos + roll <= TOTAL_CELLS_PER_PLAYER:
                 return True
         return False
 
@@ -104,8 +104,11 @@ class LudoEngine:
                 if opp_pos >= 1 and opp_pos <= 51:
                     opp_global = self._relative_to_global(opp, opp_pos)
                     if opp_global == global_pos:
-                        # Kill!
-                        self.positions[opp][i] = -1
+                        # Kill! Deduct points from opponent
+                        points_lost = opp_pos - 1
+                        self.scores[opp] = max(0, self.scores[opp] - points_lost)
+                        # Reset token
+                        self.positions[opp][i] = 1
                         killed_anyone = True
                         logger.info(f"Token {i} of {opp} was killed by {current_player} at global pos {global_pos}!")
                         
@@ -118,29 +121,28 @@ class LudoEngine:
         pos = self.positions[player][token_index]
         roll = self.last_dice_roll
         
-        if pos == -1:
-            if roll == 6:
-                self.positions[player][token_index] = 1 # Out of home
-                self.dice_rolled = False # Gets another turn
-                return True
-            return False
+        if pos == TOTAL_CELLS_PER_PLAYER:
+            return False # Already finished
             
         new_pos = pos + roll
         if new_pos > TOTAL_CELLS_PER_PLAYER:
             return False # Overshot, exactly 57 is needed
             
-        # Move token
+        # Move token and score
         self.positions[player][token_index] = new_pos
+        self.scores[player] += roll # +1 point per step
         
         # Check kill
         killed = self._check_and_execute_kill(player, new_pos)
-        
-        # Check win
-        if self._check_win(player):
-            self.state = "COMPLETED"
-            self.winner = player
-            return True
+        if killed:
+            self.scores[player] += 20 # +20 points for kill
             
+        # Check if reached home
+        if new_pos == TOTAL_CELLS_PER_PLAYER:
+            self.scores[player] += 50
+            if all(p == TOTAL_CELLS_PER_PLAYER for p in self.positions[player]):
+                self.scores[player] += 100 # Bonus for all tokens home
+        
         # Give another turn if 6, killed, or reached finish
         if roll == 6 or killed or new_pos == TOTAL_CELLS_PER_PLAYER:
             self.dice_rolled = False
@@ -158,7 +160,9 @@ class LudoEngine:
             "state": self.state,
             "turn": self.get_current_player(),
             "positions": self.positions,
+            "scores": self.scores,
             "last_dice_roll": self.last_dice_roll,
             "dice_rolled": self.dice_rolled,
+            "end_time_ms": self.end_time_ms,
             "winner": self.winner
         }

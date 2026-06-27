@@ -1,4 +1,6 @@
 import logging
+import time
+import asyncio
 from typing import Dict
 from core.websockets import manager
 from services.ludo_engine import LudoEngine
@@ -12,6 +14,7 @@ class LudoOrchestrator:
     def __init__(self):
         # match_id -> LudoEngine
         self.games: Dict[int, LudoEngine] = {}
+        self.timers: Dict[int, asyncio.Task] = {}
 
     async def start_game(self, match_id: int):
         async with SessionLocal() as db:
@@ -29,9 +32,58 @@ class LudoOrchestrator:
             
             engine = LudoEngine(match_id, colors)
             engine.state = "PLAYING"
+            
+            # Set timer for 7 minutes
+            now_ms = int(time.time() * 1000)
+            engine.end_time_ms = now_ms + (7 * 60 * 1000)
+            
             self.games[match_id] = engine
 
             await self.broadcast_state(match_id)
+            
+            # Start background timer
+            self.timers[match_id] = asyncio.create_task(self._match_timer_task(match_id))
+
+    async def _match_timer_task(self, match_id: int):
+        # Sleep for exactly 7 minutes
+        await asyncio.sleep(7 * 60)
+        await self.force_end_game_by_timer(match_id)
+
+    async def force_end_game_by_timer(self, match_id: int):
+        if match_id not in self.games:
+            return
+            
+        engine = self.games[match_id]
+        if engine.state == "COMPLETED":
+            return
+            
+        engine.state = "COMPLETED"
+        
+        # Calculate winner by score
+        highest_score = -1
+        best_players = []
+        for p, s in engine.scores.items():
+            if s > highest_score:
+                highest_score = s
+                best_players = [p]
+            elif s == highest_score:
+                best_players.append(p)
+                
+        # Tie-breaker: tokens at home (57)
+        if len(best_players) > 1:
+            most_home = -1
+            true_winner = best_players[0]
+            for p in best_players:
+                home_count = sum(1 for pos in engine.positions[p] if pos == 57)
+                if home_count > most_home:
+                    most_home = home_count
+                    true_winner = p
+            engine.winner = true_winner
+        else:
+            engine.winner = best_players[0]
+            
+        await self.broadcast_state(match_id)
+        await self.end_game(match_id, engine.winner)
 
     async def handle_action(self, match_id: int, user_id: int, action: dict):
         if match_id not in self.games:
