@@ -6,7 +6,7 @@ logger = logging.getLogger("GamerzAdda.LudoEngine")
 
 # Ludo Constants
 SAFE_CELLS = {0, 8, 13, 21, 26, 34, 39, 47} # Global 0-indexed positions
-TOTAL_CELLS_PER_PLAYER = 57 # 51 main track + 6 home stretch (index 57 = finish)
+TOTAL_CELLS_PER_PLAYER = 56 # 51 main track + 5 home stretch + 1 finish (index 56 = finish)
 
 COLOR_OFFSETS = {
     "RED": 0,
@@ -25,7 +25,7 @@ class LudoEngine:
         self.state = "WAITING"
         self.winner = None
         
-        # Player positions: [token1, token2, token3, token4] (-1 = start in home base, 57 = finished)
+        # Player positions: [token1, token2, token3, token4] (-1 = start in home base, 56 = finished)
         self.positions: Dict[str, List[int]] = {p: [-1, -1, -1, -1] for p in players}
         self.scores: Dict[str, int] = {p: 0 for p in players}
         
@@ -83,13 +83,13 @@ class LudoEngine:
         return False
 
     def _relative_to_global(self, player: str, rel_pos: int) -> int:
-        """Converts relative position (1-51) to global position (0-51)"""
-        if rel_pos < 1 or rel_pos > 51:
+        """Converts relative position (0-50) to global position (0-51)"""
+        if rel_pos < 0 or rel_pos > 50:
             return -1 # Home stretch or invalid, not on main track
         
         offset = COLOR_OFFSETS.get(player, 0)
-        # Relative pos starts at 1, so offset + (rel_pos - 1)
-        global_pos = (offset + (rel_pos - 1)) % 52
+        # Relative pos starts at 0, so offset + rel_pos
+        global_pos = (offset + rel_pos) % 52
         return global_pos
 
     def _check_and_execute_kill(self, current_player: str, new_rel_pos: int) -> bool:
@@ -104,11 +104,11 @@ class LudoEngine:
                 continue
             
             for i, opp_pos in enumerate(self.positions[opp]):
-                if opp_pos >= 1 and opp_pos <= 51:
+                if opp_pos >= 0 and opp_pos <= 50:
                     opp_global = self._relative_to_global(opp, opp_pos)
                     if opp_global == global_pos:
                         # Kill! Deduct points from opponent
-                        points_lost = opp_pos
+                        points_lost = opp_pos + 1
                         self.scores[opp] = max(0, self.scores[opp] - points_lost)
                         # Reset token to -1
                         self.positions[opp][i] = -1
@@ -130,15 +130,15 @@ class LudoEngine:
         if pos == -1:
             if roll != 6:
                 return False
-            # Just pop out to 1
-            self.positions[player][token_index] = 1
+            # Just pop out to 0
+            self.positions[player][token_index] = 0
             self.scores[player] += 1
             self.dice_rolled = False # Gets another turn
             return True
 
         new_pos = pos + roll
         if new_pos > TOTAL_CELLS_PER_PLAYER:
-            return False # Overshot, exactly 57 is needed
+            return False # Overshot, exactly 56 is needed
             
         # Move token and score
         self.positions[player][token_index] = new_pos
