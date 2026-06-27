@@ -105,8 +105,12 @@ class LudoOrchestrator:
                 return
             player_color = participant.color
 
-        action_type = action.get("action")
-        
+        action_data = action.get("action")
+        if isinstance(action_data, dict):
+            action_type = action_data.get("action")
+        else:
+            action_type = action_data
+            
         if action_type == "ROLL_DICE":
             roll = engine.roll_dice(player_color)
             if roll != -1:
@@ -116,7 +120,11 @@ class LudoOrchestrator:
                     asyncio.create_task(self._auto_pass_task(match_id, player_color))
                     
         elif action_type == "MOVE_TOKEN":
-            token_index = action.get("token_index")
+            if isinstance(action_data, dict):
+                token_index = action_data.get("token_index")
+            else:
+                token_index = action.get("token_index")
+                
             if token_index is not None:
                 success = engine.move_token(player_color, token_index)
                 if success:
