@@ -25,8 +25,8 @@ class LudoEngine:
         self.state = "WAITING"
         self.winner = None
         
-        # Player positions: [token1, token2, token3, token4] (1 = start, 57 = finished)
-        self.positions: Dict[str, List[int]] = {p: [1, 1, 1, 1] for p in players}
+        # Player positions: [token1, token2, token3, token4] (-1 = start in home base, 57 = finished)
+        self.positions: Dict[str, List[int]] = {p: [-1, -1, -1, -1] for p in players}
         self.scores: Dict[str, int] = {p: 0 for p in players}
         
         self.last_dice_roll = 0
@@ -38,13 +38,12 @@ class LudoEngine:
         return self.players[self.turn_index]
         
     def next_turn(self):
-        if self.winner:
-            return
-            
         self.turn_index = (self.turn_index + 1) % len(self.players)
         self.dice_rolled = False
         self.sixes_in_a_row = 0
-        self.last_dice_roll = 0
+
+    def start_game(self):
+        self.state = "PLAYING"
 
     def roll_dice(self, player: str) -> int:
         if self.state != "PLAYING":
@@ -75,7 +74,8 @@ class LudoEngine:
 
     def has_valid_moves(self, player: str, roll: int) -> bool:
         for pos in self.positions[player]:
-            if pos < TOTAL_CELLS_PER_PLAYER and pos + roll <= TOTAL_CELLS_PER_PLAYER:
+            start_pos = 0 if pos == -1 else pos
+            if start_pos + roll <= TOTAL_CELLS_PER_PLAYER:
                 return True
         return False
 
@@ -105,10 +105,10 @@ class LudoEngine:
                     opp_global = self._relative_to_global(opp, opp_pos)
                     if opp_global == global_pos:
                         # Kill! Deduct points from opponent
-                        points_lost = opp_pos - 1
+                        points_lost = opp_pos
                         self.scores[opp] = max(0, self.scores[opp] - points_lost)
-                        # Reset token
-                        self.positions[opp][i] = 1
+                        # Reset token to -1
+                        self.positions[opp][i] = -1
                         killed_anyone = True
                         logger.info(f"Token {i} of {opp} was killed by {current_player} at global pos {global_pos}!")
                         
@@ -124,7 +124,8 @@ class LudoEngine:
         if pos == TOTAL_CELLS_PER_PLAYER:
             return False # Already finished
             
-        new_pos = pos + roll
+        start_pos = 0 if pos == -1 else pos
+        new_pos = start_pos + roll
         if new_pos > TOTAL_CELLS_PER_PLAYER:
             return False # Overshot, exactly 57 is needed
             
