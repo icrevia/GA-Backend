@@ -81,22 +81,24 @@ class LudoMatchmaker:
                 return
 
             try:
-                deductions = debit_wallet(
-                    user, 
-                    entry_fee, 
-                    spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING)
-                )
-                deduction_marker = _format_deduction_marker(deductions)
-                db.add(WalletTransaction(
-                    user_id=user.id,
-                    amount=-to_money(entry_fee),
-                    transaction_type="LUDO_ENTRY",
-                    status="SUCCESS",
-                    reference_id=f"LMM-ENTRY-{uuid.uuid4().hex[:8]}",
-                    remark=f"Ludo Matchmaking Search Fee",
-                    failure_reason=f"LMM_ENTRY;{deduction_marker}"
-                ))
-                await db.commit()
+                deductions = {}
+                if entry_fee > 0:
+                    deductions = debit_wallet(
+                        user, 
+                        entry_fee, 
+                        spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING)
+                    )
+                    deduction_marker = _format_deduction_marker(deductions)
+                    db.add(WalletTransaction(
+                        user_id=user.id,
+                        amount=-to_money(entry_fee),
+                        transaction_type="LUDO_ENTRY",
+                        status="SUCCESS",
+                        reference_id=f"LMM-ENTRY-{uuid.uuid4().hex[:8]}",
+                        remark=f"Ludo Matchmaking Search Fee",
+                        failure_reason=f"LMM_ENTRY;{deduction_marker}"
+                    ))
+                    await db.commit()
             except InsufficientWalletBalanceError:
                 from core.websockets import manager as ws_manager
                 await ws_manager.send_personal_message({
