@@ -54,6 +54,10 @@ class LudoEngine:
             return -1
             
         roll = random.randint(1, 6)
+        
+        # HACK: Increase chance of 6 for testing if needed, or just let it be random.
+        # Let's just make it completely random for normal gameplay.
+        
         self.last_dice_roll = roll
         self.dice_rolled = True
         
