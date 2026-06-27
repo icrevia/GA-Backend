@@ -243,7 +243,7 @@ class BotManager:
                     break
                 bot_color = part.color
 
-            if engine.current_turn != bot_color:
+            if engine.get_current_player() != bot_color:
                 await asyncio.sleep(1)
                 continue
 
@@ -252,7 +252,7 @@ class BotManager:
             await asyncio.sleep(random.uniform(1.0, 2.5))
             
             # Re-check turn just in case it timed out
-            if engine.current_turn != bot_color:
+            if engine.get_current_player() != bot_color:
                 continue
 
             # Check if dice needs to be rolled or token needs to be moved
