@@ -222,59 +222,61 @@ class BotManager:
 
         from services.ludo_orchestrator import orchestrator
 
+        # Resolve bot color once from the orchestrator cache (no repeated DB hits)
+        bot_color: str | None = None
+
         while True:
-            # Check if match still exists and is playing
             if match_id not in orchestrator.games:
                 break
-            
+
             engine = orchestrator.games[match_id]
             if engine.state != "PLAYING":
                 break
 
-            # Need to figure out the bot's color
-            # Just search in engine.players for the bot
-            # But the engine doesn't have user_ids mapped directly to colors in its dict
-            # We can find the color via DB or pass it. Let's find it via DB.
-            async with SessionLocal() as db:
-                from models.ludo import LudoParticipant
-                part_res = await db.execute(select(LudoParticipant).where(LudoParticipant.match_id == match_id, LudoParticipant.user_id == bot_user_id))
-                part = part_res.scalar_one_or_none()
-                if not part:
-                    break
-                bot_color = part.color
+            # Resolve color — try cache first, fall back to DB once
+            if bot_color is None:
+                bot_color = orchestrator._get_color(match_id, bot_user_id)
+                if bot_color is None:
+                    async with SessionLocal() as db:
+                        from models.ludo import LudoParticipant
+                        part_res = await db.execute(
+                            select(LudoParticipant).where(
+                                LudoParticipant.match_id == match_id,
+                                LudoParticipant.user_id == bot_user_id
+                            )
+                        )
+                        part = part_res.scalar_one_or_none()
+                        if not part:
+                            break
+                        bot_color = part.color
 
             if engine.get_current_player() != bot_color:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # poll every 0.5s instead of 1s
                 continue
 
-            # It's the bot's turn!
-            # Realistic delay before action
-            await asyncio.sleep(random.uniform(1.0, 2.5))
-            
-            # Re-check turn just in case it timed out
-            if engine.get_current_player() != bot_color:
-                continue
-
-            # Check if dice needs to be rolled or token needs to be moved
+            # It's the bot's turn — roll dice
             if not engine.dice_rolled:
+                await asyncio.sleep(random.uniform(0.6, 1.2))  # human-like thinking delay
+                if engine.get_current_player() != bot_color:  # re-check after delay
+                    continue
                 await orchestrator.handle_action(match_id, bot_user_id, {"action": "ROLL_DICE"})
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
                 continue
-            
-            # Dice is rolled, we must move a token
+
+            # Dice rolled — pick a token to move
             valid_moves = engine.get_valid_moves(bot_color)
             if not valid_moves:
-                # No valid moves, turn automatically passes usually, but we should just wait
-                await asyncio.sleep(1)
+                # No valid moves; _auto_pass_task will handle it. Just wait.
+                await asyncio.sleep(1.5)
                 continue
 
-            # Bot logic: Prioritize taking opponent's piece, getting to home, or moving piece out of base
-            # Simple AI: just pick a random valid move for now
             selected_token_idx = random.choice(valid_moves)
-            await asyncio.sleep(random.uniform(0.5, 1.5))
-            await orchestrator.handle_action(match_id, bot_user_id, {"action": "MOVE_TOKEN", "token_index": selected_token_idx})
-            
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(random.uniform(0.4, 0.9))  # quick move
+            await orchestrator.handle_action(
+                match_id, bot_user_id,
+                {"action": "MOVE_TOKEN", "token_index": selected_token_idx}
+            )
+            await asyncio.sleep(0.2)
 
         logger.info(f"Bot {bot_user_id} finished Ludo match {match_id}")
 
