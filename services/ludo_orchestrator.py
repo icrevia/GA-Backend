@@ -50,8 +50,30 @@ class LudoOrchestrator:
             self.timers[match_id] = asyncio.create_task(self._match_timer_task(match_id))
 
     async def _match_timer_task(self, match_id: int):
-        await asyncio.sleep(7 * 60)
-        await self.force_end_game_by_timer(match_id)
+        import time
+        while True:
+            await asyncio.sleep(1)
+            if match_id not in self.games:
+                break
+            
+            engine = self.games[match_id]
+            if engine.state == "COMPLETED":
+                break
+                
+            now_ms = int(time.time() * 1000)
+            
+            # Check 7-minute match end
+            if engine.end_time_ms > 0 and now_ms >= engine.end_time_ms:
+                await self.force_end_game_by_timer(match_id)
+                break
+                
+            # Check 10-second turn timer
+            if engine.state == "PLAYING":
+                turn_elapsed = now_ms - engine.turn_start_time_ms
+                if turn_elapsed > 10000:
+                    logger.info(f"Match {match_id}: Player {engine.get_current_player()} timed out. Passing turn.")
+                    engine.next_turn()
+                    await self.broadcast_state(match_id)
 
     async def force_end_game_by_timer(self, match_id: int):
         if match_id not in self.games:

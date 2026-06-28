@@ -33,6 +33,9 @@ class LudoEngine:
         self.dice_rolled = False
         self.sixes_in_a_row = 0
         self.end_time_ms = 0
+        
+        import time
+        self.turn_start_time_ms = int(time.time() * 1000)
 
     def get_current_player(self) -> str:
         return self.players[self.turn_index]
@@ -40,6 +43,8 @@ class LudoEngine:
     def next_turn(self):
         self.turn_index = (self.turn_index + 1) % len(self.players)
         self.dice_rolled = False
+        import time
+        self.turn_start_time_ms = int(time.time() * 1000)
         self.sixes_in_a_row = 0
 
     def start_game(self):
@@ -65,6 +70,8 @@ class LudoEngine:
 
         self.last_dice_roll = roll
         self.dice_rolled = True
+        import time
+        self.turn_start_time_ms = int(time.time() * 1000)
 
         if roll == 6:
             self.sixes_in_a_row += 1
@@ -193,5 +200,6 @@ class LudoEngine:
             "last_dice_roll": self.last_dice_roll,
             "dice_rolled": self.dice_rolled,
             "remaining_seconds": rem_sec,
+            "turn_start_time_ms": self.turn_start_time_ms,
             "winner": self.winner
         }
