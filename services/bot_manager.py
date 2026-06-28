@@ -256,22 +256,22 @@ class BotManager:
 
             # It's the bot's turn — roll dice
             if not engine.dice_rolled:
-                await asyncio.sleep(random.uniform(0.6, 1.2))  # human-like thinking delay
+                await asyncio.sleep(random.uniform(1.5, 2.5))  # human-like thinking delay, allows user's previous animations to finish
                 if engine.get_current_player() != bot_color:  # re-check after delay
                     continue
                 await orchestrator.handle_action(match_id, bot_user_id, {"action": "ROLL_DICE"})
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
                 continue
 
             # Dice rolled — pick a token to move
             valid_moves = engine.get_valid_moves(bot_color)
             if not valid_moves:
-                # No valid moves; _auto_pass_task will handle it. Just wait.
-                await asyncio.sleep(1.5)
+                # No valid moves; engine skips automatically now. Just wait.
+                await asyncio.sleep(1.0)
                 continue
 
             selected_token_idx = random.choice(valid_moves)
-            await asyncio.sleep(random.uniform(0.4, 0.9))  # quick move
+            await asyncio.sleep(random.uniform(1.5, 3.0))  # human-like moving delay
             await orchestrator.handle_action(
                 match_id, bot_user_id,
                 {"action": "MOVE_TOKEN", "token_index": selected_token_idx}
