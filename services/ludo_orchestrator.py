@@ -157,9 +157,6 @@ class LudoOrchestrator:
             roll = engine.roll_dice(player_color)
             if roll != -1:
                 await self.broadcast_state(match_id)
-                # If no valid moves after roll, auto-pass after a short delay
-                if not engine.has_valid_moves(player_color, roll):
-                    asyncio.create_task(self._auto_pass_task(match_id, player_color))
 
         elif action_type == "MOVE_TOKEN":
             token_index = action_data.get("token_index")
@@ -180,15 +177,7 @@ class LudoOrchestrator:
         state = self.games[match_id].get_state()
         await manager.broadcast_to_ludo(match_id, {"type": "LUDO_STATE", "payload": state})
 
-    async def _auto_pass_task(self, match_id: int, player_color: str):
-        """Called when a player rolls but has no valid moves. Passes their turn after a short delay."""
-        await asyncio.sleep(1.2)
-        if match_id not in self.games:
-            return
-        engine = self.games[match_id]
-        if engine.state == "PLAYING" and engine.get_current_player() == player_color and engine.dice_rolled:
-            engine.next_turn()
-            await self.broadcast_state(match_id)
+
 
     async def end_game(self, match_id: int, winner_color: str):
         if match_id not in self.games:
