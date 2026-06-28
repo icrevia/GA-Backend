@@ -82,6 +82,10 @@ class LudoEngine:
         else:
             self.sixes_in_a_row = 0
 
+        if not self.has_valid_moves(player, roll):
+            self.next_turn()
+            return roll
+
         return roll
 
     def has_valid_moves(self, player: str, roll: int) -> bool:
