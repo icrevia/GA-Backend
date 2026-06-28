@@ -183,6 +183,8 @@ class LudoEngine:
         # Give another turn if 6, killed, or reached finish
         if roll == 6 or killed or new_pos == TOTAL_CELLS_PER_PLAYER:
             self.dice_rolled = False
+            import time
+            self.turn_start_time_ms = int(time.time() * 1000)
         else:
             self.next_turn()
             
