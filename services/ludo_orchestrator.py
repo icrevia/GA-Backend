@@ -48,6 +48,9 @@ class LudoOrchestrator:
         # match_id → {user_id: color_str}  — populated once at start_game, never hits DB again
         self._color_cache: Dict[int, Dict[int, str]] = {}
 
+    def _get_color(self, match_id: int, user_id: int) -> Optional[str]:
+        return self._color_cache.get(match_id, {}).get(user_id)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
