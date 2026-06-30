@@ -1068,7 +1068,7 @@ async def send_otp(
         user_result = await db.execute(select(User).where(User.phone_number.in_(phone_candidates)))
     else:
         user_result = await db.execute(select(User).where(User.phone_number == normalized_phone))
-    existing_user = user_result.scalar_one_or_none()
+    existing_user = user_result.scalars().first()
 
     await _raise_if_phone_otp_locked(db, normalized_phone)
 
