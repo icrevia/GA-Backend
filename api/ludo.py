@@ -369,3 +369,43 @@ async def admin_force_end_match(
     orchestrator.games.pop(match_id, None)
 
     return {"status": "cancelled", "match_id": match_id}
+
+@router.get("/history")
+async def get_my_ludo_history_endpoint(
+    db: AsyncSession = Depends(get_async_db),
+    current_user: User = Depends(get_current_user),
+    skip: int = 0,
+    limit: int = 20
+):
+    """Get the current user's completed Ludo matches (Matches API expected structure)."""
+    result = await db.execute(
+        select(LudoMatch)
+        .join(LudoParticipant)
+        .where(
+            LudoParticipant.user_id == current_user.id,
+            LudoMatch.status.in_(["COMPLETED", "CANCELLED", "ABANDONED"])
+        )
+        .order_by(LudoMatch.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    matches = result.scalars().all()
+    
+    out = []
+    for m in matches:
+        if m.status == "CANCELLED":
+            result_str = "CANCELLED"
+        elif m.winner_id == current_user.id:
+            result_str = "WON"
+        else:
+            result_str = "LOST"
+
+        out.append({
+            "match_id": m.id,
+            "entry_fee": float(m.entry_fee or 0),
+            "prize_pool": float(m.prize_pool or 0),
+            "status": m.status,
+            "result": result_str,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        })
+    return out
