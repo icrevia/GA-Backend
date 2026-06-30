@@ -680,7 +680,7 @@ async def verify_otp(
         result = await db.execute(select(User).where(User.phone_number.in_(phone_candidates)))
     else:
         result = await db.execute(select(User).where(User.phone_number == normalized_phone))
-    db_user = result.scalar_one_or_none()
+    db_user = result.scalars().first()
 
     if is_admin_phone:
         is_valid, reason = _verify_admin_login_otp(phone=normalized_phone, otp_code=otp)
