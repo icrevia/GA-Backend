@@ -50,7 +50,7 @@ class LudoEngine:
         "match_id", "players", "turn_index", "state", "winner",
         "positions", "scores",
         "last_dice_roll", "dice_rolled", "sixes_in_a_row",
-        "end_time_ms", "turn_start_time_ms",
+        "end_time_ms", "turn_start_time_ms", "missed_turns",
         # fast kill lookup: global_cell → list of (player, token_idx)
         "_cell_occupants",
     )
