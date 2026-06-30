@@ -200,9 +200,21 @@ class LudoOrchestrator:
                 turn_elapsed = now_ms - engine.turn_start_time_ms
                 if turn_elapsed > 10_000:
                     current = engine.get_current_player()
-                    logger.info(
-                        "Turn timeout: match=%d player=%s", match_id, current
-                    )
+                    engine.missed_turns[current] += 1
+                    logger.info("Turn timeout: match=%d player=%s (missed=%d)", match_id, current, engine.missed_turns[current])
+                    
+                    if engine.missed_turns[current] >= 3:
+                        logger.info("Player %s forfeited match %d due to inactivity", current, match_id)
+                        engine.state = "COMPLETED"
+                        # Other player wins
+                        engine.winner = engine.players[1] if engine.players[0] == current else engine.players[0]
+                        await self._broadcast(match_id, engine)
+                        asyncio.create_task(
+                            self.end_game(match_id, engine.winner),
+                            name=f"ludo_end_{match_id}"
+                        )
+                        break
+
                     engine.next_turn()
                     await self._broadcast(match_id, engine)
 

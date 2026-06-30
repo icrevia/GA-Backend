@@ -72,6 +72,8 @@ class LudoEngine:
         self.sixes_in_a_row: int = 0
         self.end_time_ms: int = 0
         self.turn_start_time_ms: int = int(_time_module.time() * 1000)
+        
+        self.missed_turns: Dict[str, int] = {p: 0 for p in players}
 
         # global_cell (0-51) → list of (player_str, token_idx)
         # Rebuilt only when tokens move on the main track
@@ -118,6 +120,7 @@ class LudoEngine:
 
         self.last_dice_roll = roll
         self.dice_rolled = True
+        self.missed_turns[player] = 0
         self.turn_start_time_ms = int(_time_module.time() * 1000)
 
         if roll == 6:
@@ -159,14 +162,19 @@ class LudoEngine:
         if pos == TOTAL_CELLS:
             return False  # already finished
 
+        self.missed_turns[player] = 0
+
         # ---- Leaving home base ----
         if pos == HOME:
-            if roll != 6:
+            if roll != 6 or self._has_block(player, 0):
                 return False
             positions[token_index] = 0
             self.scores[player] += 1
+            killed = self._execute_kill(player, token_index, 0)
+            if killed:
+                self.scores[player] += 20
             self._rebuild_occupants_for_player(player)
-            # Gets another roll (dice_rolled = False, keep turn)
+            
             self.dice_rolled = False
             self.turn_start_time_ms = int(_time_module.time() * 1000)
             return True
@@ -241,13 +249,29 @@ class LudoEngine:
     # Internal helpers — NOT called from outside
     # ------------------------------------------------------------------
 
+    def _has_block(self, current_player: str, new_rel_pos: int) -> bool:
+        if new_rel_pos > MAIN_TRACK_END:
+            return False
+        g = self._global_cell(current_player, new_rel_pos)
+        occupants = self._cell_occupants.get(g)
+        if not occupants:
+            return False
+        
+        counts = {}
+        for opp, tidx in occupants:
+            if opp != current_player:
+                counts[opp] = counts.get(opp, 0) + 1
+                if counts[opp] >= 2:
+                    return True
+        return False
+
     def _has_valid_moves(self, player: str, roll: int) -> bool:
         positions = self.positions[player]
         for pos in positions:
             if pos == HOME:
-                if roll == 6:
+                if roll == 6 and not self._has_block(player, 0):
                     return True
-            elif pos + roll <= TOTAL_CELLS:
+            elif pos + roll <= TOTAL_CELLS and not self._has_block(player, pos + roll):
                 return True
         return False
 
@@ -255,9 +279,9 @@ class LudoEngine:
         out = []
         for i, pos in enumerate(self.positions[player]):
             if pos == HOME:
-                if roll == 6:
+                if roll == 6 and not self._has_block(player, 0):
                     out.append(i)
-            elif pos != TOTAL_CELLS and pos + roll <= TOTAL_CELLS:
+            elif pos != TOTAL_CELLS and pos + roll <= TOTAL_CELLS and not self._has_block(player, pos + roll):
                 out.append(i)
         return out
 
