@@ -82,7 +82,11 @@ class LudoOrchestrator:
 
         engine = LudoEngine(match_id, colors)
         engine.state = "PLAYING"
-        engine.end_time_ms = int(_time.time() * 1000) + 7 * 60 * 1000  # 7 min
+        
+        # Add 5 seconds grace period to allow clients to connect their WebSockets
+        now_ms = int(_time.time() * 1000)
+        engine.end_time_ms = now_ms + 7 * 60 * 1000 + 5000
+        engine.turn_start_time_ms = now_ms + 5000
 
         self.games[match_id] = engine
         self._color_cache[match_id] = color_map
