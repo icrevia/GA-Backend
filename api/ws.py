@@ -270,6 +270,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 match_id = int(msg.get("match_id", 0))
                 if match_id:
                     await manager.join_ludo_room(user_id, match_id)
+                    from services.ludo_orchestrator import orchestrator
+                    engine = orchestrator.games.get(match_id)
+                    if engine:
+                        await manager.send_personal_message({"type": "LUDO_STATE", "payload": engine.get_state()}, user_id)
                 continue
 
             if msg_type == "ludo_action":
