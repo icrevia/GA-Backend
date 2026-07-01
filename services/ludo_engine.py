@@ -63,8 +63,8 @@ class LudoEngine:
         self.state: str = "WAITING"
         self.winner: Optional[str] = None
 
-        # positions[player] = list of 4 ints; -1 = home, 56 = finished
-        self.positions: Dict[str, List[int]] = {p: [-1, -1, -1, -1] for p in players}
+        # positions[player] = list of 4 ints; 0 = start of path, 56 = finished
+        self.positions: Dict[str, List[int]] = {p: [0, 0, 0, 0] for p in players}
         self.scores: Dict[str, int] = {p: 0 for p in players}
 
         self.last_dice_roll: int = 0
@@ -78,6 +78,9 @@ class LudoEngine:
         # global_cell (0-51) → list of (player_str, token_idx)
         # Rebuilt only when tokens move on the main track
         self._cell_occupants: Dict[int, List] = {}
+        for p in players:
+            for i in range(4):
+                self._add_occupant(p, i, 0)
 
     # ------------------------------------------------------------------
     # Public API
@@ -112,11 +115,8 @@ class LudoEngine:
 
         positions = self.positions[player]
 
-        # Boost: if all 4 tokens are at home, favour 6
-        if positions[0] == positions[1] == positions[2] == positions[3] == HOME:
-            roll = random.choices(_BOOST_POPULATION, weights=_BOOST_WEIGHTS, k=1)[0]
-        else:
-            roll = random.randint(1, 6)
+        # In Rush Ludo, we don't boost 6 since they are all on the board
+        roll = random.randint(1, 6)
 
         self.last_dice_roll = roll
         self.dice_rolled = True
@@ -164,20 +164,8 @@ class LudoEngine:
 
         self.missed_turns[player] = 0
 
-        # ---- Leaving home base ----
-        if pos == HOME:
-            if roll != 6 or self._has_block(player, 0):
-                return False
-            positions[token_index] = 0
-            self.scores[player] += 1
-            killed = self._execute_kill(player, token_index, 0)
-            if killed:
-                self.scores[player] += 20
-            self._rebuild_occupants_for_player(player)
-            
-            self.dice_rolled = False
-            self.turn_start_time_ms = int(_time_module.time() * 1000)
-            return True
+        # No 'leaving home base' logic needed since tokens start at 0
+
 
         # ---- Normal move ----
         new_pos = pos + roll
@@ -268,20 +256,14 @@ class LudoEngine:
     def _has_valid_moves(self, player: str, roll: int) -> bool:
         positions = self.positions[player]
         for pos in positions:
-            if pos == HOME:
-                if roll == 6 and not self._has_block(player, 0):
-                    return True
-            elif pos + roll <= TOTAL_CELLS and not self._has_block(player, pos + roll):
+            if pos != TOTAL_CELLS and pos + roll <= TOTAL_CELLS and not self._has_block(player, pos + roll):
                 return True
         return False
 
     def _get_valid_token_indices(self, player: str, roll: int) -> List[int]:
         out = []
         for i, pos in enumerate(self.positions[player]):
-            if pos == HOME:
-                if roll == 6 and not self._has_block(player, 0):
-                    out.append(i)
-            elif pos != TOTAL_CELLS and pos + roll <= TOTAL_CELLS and not self._has_block(player, pos + roll):
+            if pos != TOTAL_CELLS and pos + roll <= TOTAL_CELLS and not self._has_block(player, pos + roll):
                 out.append(i)
         return out
 
