@@ -273,6 +273,37 @@ async def websocket_endpoint(websocket: WebSocket):
                     from services.ludo_orchestrator import orchestrator
                     engine = orchestrator.games.get(match_id)
                     if engine:
+                        # Fetch and send opponent info for reconnection sync
+                        from models.ludo import LudoParticipant
+                        async with SessionLocal() as db:
+                            res = await db.execute(
+                                select(LudoParticipant, User)
+                                .join(User, LudoParticipant.user_id == User.id)
+                                .where(LudoParticipant.match_id == match_id)
+                            )
+                            participants = res.all()
+                            
+                            my_color = "RED"
+                            opp_obj = None
+                            for p, u in participants:
+                                if p.user_id == user_id:
+                                    my_color = p.color
+                                else:
+                                    opp_obj = {
+                                        "user_id": u.id,
+                                        "username": u.username,
+                                        "profile_pic": u.profile_pic or "",
+                                        "is_bot": u.role == "BOT"
+                                    }
+                            
+                            if opp_obj:
+                                await manager.send_personal_message({
+                                    "type": "ludo_match_found",
+                                    "match_id": match_id,
+                                    "your_color": my_color,
+                                    "opponent": opp_obj
+                                }, user_id)
+
                         await manager.send_personal_message({"type": "LUDO_STATE", "payload": engine.get_state()}, user_id)
                 continue
 
