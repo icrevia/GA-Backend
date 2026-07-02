@@ -30,13 +30,7 @@ router = APIRouter()
 
 _DEFAULT_CONFIG = {
     "is_enabled": True,
-    "entry_fee_tiers": [
-        {"fee": 0,  "prize": 0,   "label": "Practice", "color": "#6B7280"},
-        {"fee": 5,  "prize": 9,   "label": "Starter",  "color": "#22C55E"},
-        {"fee": 10, "prize": 18,  "label": "Classic",  "color": "#16A34A"},
-        {"fee": 25, "prize": 45,  "label": "Pro",      "color": "#15803D"},
-        {"fee": 50, "prize": 90,  "label": "Elite",    "color": "#166534"},
-    ],
+    "entry_fee": 10,
     "prize_multiplier": 1.8,
     "max_wait_seconds": 10,
     "turn_timer_seconds": 10,
@@ -97,7 +91,7 @@ async def get_ludo_tiers(
     await _load_config_from_db(db)
     return {
         "is_enabled": _ludo_config.get("is_enabled", True),
-        "entry_fee_tiers": _ludo_config.get("entry_fee_tiers", _DEFAULT_CONFIG["entry_fee_tiers"]),
+        "entry_fee": _ludo_config.get("entry_fee", _DEFAULT_CONFIG["entry_fee"]),
         "turn_timer_seconds": _ludo_config.get("turn_timer_seconds", 10),
         "match_duration_minutes": _ludo_config.get("match_duration_minutes", 7),
         "bot_enabled": _ludo_config.get("bot_enabled", True),
@@ -324,7 +318,7 @@ async def admin_update_ludo_config(
     await _load_config_from_db(db)
 
     allowed_keys = {
-        "is_enabled", "entry_fee_tiers", "prize_multiplier",
+        "is_enabled", "entry_fee", "prize_multiplier",
         "max_wait_seconds", "turn_timer_seconds",
         "match_duration_minutes", "bot_enabled",
     }
