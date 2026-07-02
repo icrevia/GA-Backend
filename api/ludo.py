@@ -92,6 +92,7 @@ async def get_ludo_tiers(
     return {
         "is_enabled": _ludo_config.get("is_enabled", True),
         "entry_fee": _ludo_config.get("entry_fee", _DEFAULT_CONFIG["entry_fee"]),
+        "prize_multiplier": _ludo_config.get("prize_multiplier", _DEFAULT_CONFIG["prize_multiplier"]),
         "turn_timer_seconds": _ludo_config.get("turn_timer_seconds", 10),
         "match_duration_minutes": _ludo_config.get("match_duration_minutes", 7),
         "bot_enabled": _ludo_config.get("bot_enabled", True),
