@@ -141,7 +141,14 @@ class LudoMatchmaker:
 
         deductions_payload = user_entry.get("deductions") or {}
         refund_buckets = _parse_deductions_payload(deductions_payload)
-        actual_refund_total = sum(refund_buckets.values(), ZERO_MONEY)
+        
+        from decimal import Decimal
+        refund_multiplier = Decimal("0.7")
+        actual_refund_total = ZERO_MONEY
+        
+        for bucket in refund_buckets:
+            refund_buckets[bucket] = to_money(refund_buckets[bucket] * refund_multiplier)
+            actual_refund_total += refund_buckets[bucket]
 
         async with SessionLocal() as db:
             user = await db.get(User, user_id)
@@ -156,7 +163,7 @@ class LudoMatchmaker:
                     transaction_type="LUDO_REFUND",
                     status="SUCCESS",
                     reference_id=f"LMM-REFUND-{uuid.uuid4().hex[:8]}",
-                    remark=f"Ludo Matchmaking Refund",
+                    remark=f"Ludo Matchmaking Refund (70% early abort)",
                 ))
                 await db.commit()
 
