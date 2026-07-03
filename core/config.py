@@ -78,6 +78,7 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     DATABASE_URL: str = ""
+    REDIS_URL: str = "redis://localhost:6379/0"
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_POOL_TIMEOUT_SECONDS: int = 30

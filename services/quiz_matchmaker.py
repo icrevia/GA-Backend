@@ -85,9 +85,9 @@ class QuizMatchmaker:
     async def _matchmaking_loop(self):
         while True:
             await asyncio.sleep(1)
-            if not self.is_redis_active:
-                for entry_fee in list(self.match_pools.keys()):
-                    await self.find_match(entry_fee)
+            # Always run in-memory matchmaking loop regardless of Redis status.
+            for entry_fee in list(self.match_pools.keys()):
+                await self.find_match(entry_fee)
 
     async def add_to_pool(self, user_id: int, username: str, mmr: int, entry_fee: int, bio: str = "", profile_pic: str = ""):
         # 0. Deduct entry fee immediately

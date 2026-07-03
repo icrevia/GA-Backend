@@ -70,9 +70,11 @@ class LudoMatchmaker:
     async def _matchmaking_loop(self):
         while True:
             await asyncio.sleep(1)
-            if not self.is_redis_active:
-                for entry_fee in list(self.match_pools.keys()):
-                    await self.find_match(entry_fee)
+            # Always run in-memory matchmaking loop regardless of Redis status.
+            # Redis is only used for cross-process shared state (future);
+            # for single-process deployments, in-memory pools always need processing.
+            for entry_fee in list(self.match_pools.keys()):
+                await self.find_match(entry_fee)
 
     async def add_to_pool(self, user_id: int, username: str, mmr: int, entry_fee: int, bio: str = "", profile_pic: str = ""):
         async with SessionLocal() as db:
