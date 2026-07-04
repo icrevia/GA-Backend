@@ -310,20 +310,79 @@ async def cancel_challenge(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
+    """
+    Cancel / abandon a challenge:
+    - OPEN        → 100% refund to creator
+    - WAITING_SYNC → 70% refund to BOTH players (30% platform penalty)
+    - PLAYING      → not allowed
+    """
     challenge = await db.get(LudoChallenge, challenge_id)
     if not challenge:
         raise HTTPException(404, "Challenge not found.")
     if challenge.creator_id != current_user.id:
-        raise HTTPException(403, "Only the creator can cancel.")
-    if challenge.status != "OPEN":
-        raise HTTPException(400, "Can only cancel an OPEN challenge (before opponent joins).")
+        raise HTTPException(403, "Only the creator can cancel this challenge.")
+    if challenge.status not in ("OPEN", "WAITING_SYNC"):
+        raise HTTPException(400, "Cannot cancel a challenge that is already in progress or completed.")
 
+    from services.ludo_challenge_manager import _parse_deductions, _refund_user
+
+    original_status = challenge.status
     challenge.status = "CANCELLED"
-    user = await db.get(User, current_user.id)
-    if user and challenge.creator_deductions:
-        from services.ludo_challenge_manager import _parse_deductions, _refund_user
-        deductions = _parse_deductions(challenge.creator_deductions)
-        await _refund_user(db, user, deductions, Decimal("1.0"),
-                           f"CHG-CANCEL-{challenge.id}", f"Challenge #{challenge.id} cancelled - full refund")
-    await db.commit()
-    return {"success": True, "message": "Challenge cancelled. Full refund issued."}
+
+    if original_status == "OPEN":
+        # Full refund to creator only
+        creator = await db.get(User, current_user.id)
+        if creator and challenge.creator_deductions:
+            await _refund_user(
+                db, creator,
+                _parse_deductions(challenge.creator_deductions),
+                Decimal("1.0"),
+                f"CHG-CANCEL-{challenge.id}",
+                f"Challenge #{challenge.id} cancelled - full refund"
+            )
+        await db.commit()
+        return {"success": True, "message": "Challenge cancelled. Full refund issued.", "refund_type": "FULL"}
+
+    else:
+        # WAITING_SYNC: 70% refund to both players
+        creator  = await db.get(User, challenge.creator_id)
+        opponent = await db.get(User, challenge.opponent_id) if challenge.opponent_id else None
+
+        if creator and challenge.creator_deductions:
+            await _refund_user(
+                db, creator,
+                _parse_deductions(challenge.creator_deductions),
+                Decimal("0.7"),
+                f"CHG-ABN-{challenge.id}-C",
+                f"Challenge #{challenge.id} abandoned - 70% refund"
+            )
+
+        if opponent and challenge.opponent_deductions:
+            await _refund_user(
+                db, opponent,
+                _parse_deductions(challenge.opponent_deductions),
+                Decimal("0.7"),
+                f"CHG-ABN-{challenge.id}-O",
+                f"Challenge #{challenge.id} abandoned by creator - 70% refund"
+            )
+
+        await db.commit()
+
+        # Notify opponent that challenge was abandoned
+        if challenge.opponent_id:
+            try:
+                from core.websockets import manager
+                await manager.send_personal_message({
+                    "type": "challenge_cancelled",
+                    "challenge_id": challenge_id,
+                    "reason": "creator_abandoned",
+                    "message": "The challenge creator abandoned. You received a 70% refund.",
+                }, challenge.opponent_id)
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "message": "Challenge abandoned. Both players receive a 70% refund.",
+            "refund_type": "PARTIAL_70"
+        }
