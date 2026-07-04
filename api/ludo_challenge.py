@@ -3,6 +3,7 @@ Ludo Challenge Mode REST API
 POST /api/v1/ludo/challenge/create         - Create challenge (deducts entry fee)
 GET  /api/v1/ludo/challenge/list           - List OPEN challenges
 GET  /api/v1/ludo/challenge/my             - My active challenges
+GET  /api/v1/ludo/challenge/{id}           - Single challenge detail
 POST /api/v1/ludo/challenge/{id}/join      - Join a challenge
 POST /api/v1/ludo/challenge/{id}/play      - Tap Play Now (enter sync)
 POST /api/v1/ludo/challenge/{id}/cancel    - Cancel own challenge (before opponent joins)
@@ -10,7 +11,6 @@ POST /api/v1/ludo/challenge/{id}/cancel    - Cancel own challenge (before oppone
 import uuid
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -47,6 +47,9 @@ def _deductions_to_json(d: dict) -> dict:
 def _challenge_to_dict(c: LudoChallenge, me_id: int) -> dict:
     expires_in_s = max(0, int((c.expires_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds()))
     sync_deadline_iso = c.sync_deadline.isoformat() if c.sync_deadline else None
+    sync_seconds_left = None
+    if c.sync_deadline:
+        sync_seconds_left = max(0, int((c.sync_deadline.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds()))
     return {
         "id": c.id,
         "creator_id": c.creator_id,
@@ -60,6 +63,7 @@ def _challenge_to_dict(c: LudoChallenge, me_id: int) -> dict:
         "status": c.status,
         "expires_in_seconds": expires_in_s,
         "sync_deadline": sync_deadline_iso,
+        "sync_seconds_left": sync_seconds_left,
         "creator_synced": c.creator_synced,
         "opponent_synced": c.opponent_synced,
         "match_id": c.match_id,
@@ -132,7 +136,6 @@ async def list_challenges(
         ).order_by(LudoChallenge.created_at.desc()).limit(50)
     )
     challenges = res.scalars().all()
-    # Load relationships manually (async-safe)
     result = []
     for c in challenges:
         await db.refresh(c, ["creator"])
@@ -159,6 +162,23 @@ async def my_challenges(
         await db.refresh(c, ["creator", "opponent"])
         result.append(_challenge_to_dict(c, current_user.id))
     return result
+
+
+@router.get("/{challenge_id}")
+async def get_challenge(
+    challenge_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_db),
+):
+    """Get a single challenge by ID."""
+    challenge = await db.get(LudoChallenge, challenge_id)
+    if not challenge:
+        raise HTTPException(404, "Challenge not found.")
+    # Only participants can view a non-OPEN challenge
+    if challenge.status != "OPEN" and challenge.creator_id != current_user.id and challenge.opponent_id != current_user.id:
+        raise HTTPException(403, "You are not part of this challenge.")
+    await db.refresh(challenge, ["creator", "opponent"])
+    return _challenge_to_dict(challenge, current_user.id)
 
 
 @router.post("/{challenge_id}/join")
@@ -194,9 +214,13 @@ async def join_challenge(
     except InsufficientWalletBalanceError:
         raise HTTPException(400, "Insufficient balance.")
 
+    now = datetime.now(timezone.utc)
     challenge.opponent_id = current_user.id
     challenge.opponent_deductions = _deductions_to_json(deductions)
     challenge.status = "WAITING_SYNC"
+    # Set sync_deadline immediately so the timeout loop always fires,
+    # even if neither player ever presses Play Now.
+    challenge.sync_deadline = now + timedelta(minutes=SYNC_WINDOW_MINUTES)
 
     db.add(WalletTransaction(
         user_id=user.id,
@@ -208,12 +232,13 @@ async def join_challenge(
     ))
     await db.commit()
 
-    # Notify creator
+    # Notify creator — include full sync deadline so app can show the countdown
     try:
         from core.websockets import manager
         await manager.send_personal_message({
             "type": "challenge_opponent_joined",
             "challenge_id": challenge_id,
+            "sync_deadline": challenge.sync_deadline.isoformat(),
             "opponent": {
                 "user_id": current_user.id,
                 "username": current_user.username,
@@ -223,7 +248,7 @@ async def join_challenge(
     except Exception:
         pass
 
-    return {"success": True}
+    return {"success": True, "sync_deadline": challenge.sync_deadline.isoformat()}
 
 
 @router.post("/{challenge_id}/play")
@@ -244,11 +269,11 @@ async def enter_sync(
     if not is_creator and not is_opponent:
         raise HTTPException(403, "You are not part of this challenge.")
 
-    now = datetime.now(timezone.utc)
-
-    # Set sync_deadline on FIRST Play Now tap
-    if challenge.sync_deadline is None:
-        challenge.sync_deadline = now + timedelta(minutes=SYNC_WINDOW_MINUTES)
+    # Guard against already-synced players tapping again
+    if is_creator and challenge.creator_synced:
+        return {"success": True, "waiting_for_opponent": not challenge.opponent_synced}
+    if is_opponent and challenge.opponent_synced:
+        return {"success": True, "waiting_for_opponent": not challenge.creator_synced}
 
     if is_creator:
         challenge.creator_synced = True
@@ -265,7 +290,7 @@ async def enter_sync(
             "type": "challenge_sync_request",
             "challenge_id": challenge_id,
             "from_user_id": current_user.id,
-            "sync_deadline": challenge.sync_deadline.isoformat(),
+            "sync_deadline": challenge.sync_deadline.isoformat() if challenge.sync_deadline else None,
         }, other_id)
     except Exception:
         pass
