@@ -204,9 +204,30 @@ class LudoOrchestrator:
                 turn_elapsed = now_ms - engine.turn_start_time_ms
                 if turn_elapsed > 10_000:
                     current = engine.get_current_player()
+
+                    # Find the user_id for the current player color
+                    color_map = self._color_cache.get(match_id, {})
+                    current_user_id = next((uid for uid, c in color_map.items() if c == current), None)
+
+                    # If the player is offline (brief network cut), pause the miss counter
+                    # and reset the turn clock. We allow up to 30s total for reconnection.
+                    if current_user_id and not manager.is_user_online(current_user_id):
+                        offline_wait = engine.offline_wait_ms.get(current, 0) + turn_elapsed
+                        engine.offline_wait_ms[current] = offline_wait
+                        # Reset turn start so we don't double-count
+                        engine.turn_start_time_ms = now_ms
+                        if offline_wait < 30_000:
+                            # Still within grace window — keep waiting silently
+                            continue
+                        # Grace window exceeded — count as a miss now
+                        engine.offline_wait_ms[current] = 0
+                    else:
+                        # Player is online — clear any offline wait tracking
+                        engine.offline_wait_ms[current] = 0
+
                     engine.missed_turns[current] += 1
                     logger.info("Turn timeout: match=%d player=%s (missed=%d)", match_id, current, engine.missed_turns[current])
-                    
+
                     if engine.missed_turns[current] >= 3:
                         logger.info("Player %s forfeited match %d due to inactivity", current, match_id)
                         engine.state = "COMPLETED"
@@ -221,6 +242,7 @@ class LudoOrchestrator:
 
                     engine.next_turn()
                     await self._broadcast(match_id, engine)
+
 
     # ------------------------------------------------------------------
     # Force-end by timer

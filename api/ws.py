@@ -311,6 +311,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 from services.ludo_orchestrator import orchestrator
                 match_id = int(msg.get("match_id", 0))
                 if match_id:
+                    # Auto-rejoin room if user was disconnected and reconnected without sending join_ludo.
+                    # This is the most common cause of "game frozen after brief network cut".
+                    if user_id not in manager.ludo_rooms.get(match_id, set()):
+                        logger.info("WS Ludo: auto-rejoining user %d to room %d on ludo_action", user_id, match_id)
+                        await manager.join_ludo_room(user_id, match_id)
+                        engine = orchestrator.games.get(match_id)
+                        if engine:
+                            await manager.send_personal_message(
+                                {"type": "LUDO_STATE", "payload": engine.get_state()}, user_id
+                            )
                     await orchestrator.handle_action(match_id, user_id, msg)
                 continue
 

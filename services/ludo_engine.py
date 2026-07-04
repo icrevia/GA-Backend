@@ -50,7 +50,7 @@ class LudoEngine:
         "match_id", "players", "turn_index", "state", "winner",
         "positions", "scores",
         "last_dice_roll", "dice_rolled", "sixes_in_a_row",
-        "end_time_ms", "turn_start_time_ms", "missed_turns",
+        "end_time_ms", "turn_start_time_ms", "missed_turns", "offline_wait_ms",
         # fast kill lookup: global_cell → list of (player, token_idx)
         "_cell_occupants",
     )
@@ -74,6 +74,7 @@ class LudoEngine:
         self.turn_start_time_ms: int = int(_time_module.time() * 1000)
         
         self.missed_turns: Dict[str, int] = {p: 0 for p in players}
+        self.offline_wait_ms: Dict[str, int] = {p: 0 for p in players}  # ms waited while offline
 
         # global_cell (0-51) → list of (player_str, token_idx)
         # Rebuilt only when tokens move on the main track
