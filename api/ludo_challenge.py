@@ -1,4 +1,4 @@
-﻿"""
+"""
 Ludo Challenge Mode REST API
 POST /api/v1/ludo/challenge/create         - Create challenge (deducts entry fee)
 GET  /api/v1/ludo/challenge/list           - List OPEN challenges
@@ -28,7 +28,7 @@ from services.wallet_balances import (
     ZERO_MONEY, to_money, InsufficientWalletBalanceError,
 )
 
-router = APIRouter(prefix="/ludo/challenge", tags=["ludo-challenge"])
+router = APIRouter(prefix="/challenge", tags=["ludo-challenge"])
 
 PRIZE_MULTIPLIER = Decimal("1.8")
 CHALLENGE_TTL_HOURS = 1
