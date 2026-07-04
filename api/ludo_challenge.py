@@ -1,4 +1,4 @@
-"""
+ï»¿"""
 Ludo Challenge Mode REST API
 POST /api/v1/ludo/challenge/create         - Create challenge (deducts entry fee)
 GET  /api/v1/ludo/challenge/list           - List OPEN challenges
@@ -232,7 +232,7 @@ async def enter_sync(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
-    """Tap Play Now — mark this player as synced. When both are synced, game launches."""
+    """Tap Play Now - mark this player as synced. When both are synced, game launches."""
     challenge = await db.get(LudoChallenge, challenge_id)
     if not challenge:
         raise HTTPException(404, "Challenge not found.")
