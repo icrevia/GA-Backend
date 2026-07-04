@@ -160,58 +160,87 @@ async def launch_game(challenge_id: int):
     import random
     from services.ludo_orchestrator import orchestrator
 
-    async with SessionLocal() as db:
-        challenge = await db.get(LudoChallenge, challenge_id)
-        if not challenge or challenge.status != "WAITING_SYNC":
-            return
-        if not (challenge.creator_synced and challenge.opponent_synced):
-            return
+    logger.info("launch_game: starting for challenge %d", challenge_id)
+    try:
+        async with SessionLocal() as db:
+            challenge = await db.get(LudoChallenge, challenge_id)
+            if not challenge:
+                logger.error("launch_game: challenge %d not found", challenge_id)
+                return
+            if challenge.status != "WAITING_SYNC":
+                logger.warning("launch_game: challenge %d status=%s, skipping", challenge_id, challenge.status)
+                return
+            if not (challenge.creator_synced and challenge.opponent_synced):
+                logger.warning("launch_game: challenge %d not fully synced, skipping", challenge_id)
+                return
 
-        prize_pool = challenge.entry_fee * PRIZE_MULTIPLIER
-        match = LudoMatch(entry_fee=challenge.entry_fee, prize_pool=prize_pool, status="PLAYING")
-        db.add(match)
-        await db.flush()
+            prize_pool = challenge.entry_fee * PRIZE_MULTIPLIER
+            # Create match with WAITING status; start_game() will set it to PLAYING
+            match = LudoMatch(entry_fee=challenge.entry_fee, prize_pool=prize_pool, status="WAITING")
+            db.add(match)
+            await db.flush()
 
-        pairs = [("RED", "YELLOW"), ("GREEN", "BLUE")]
-        color1, color2 = random.choice(pairs)
-        if random.random() < 0.5:
-            color1, color2 = color2, color1
+            pairs = [("RED", "YELLOW"), ("GREEN", "BLUE")]
+            color1, color2 = random.choice(pairs)
+            if random.random() < 0.5:
+                color1, color2 = color2, color1
 
-        p1 = LudoParticipant(match_id=match.id, user_id=challenge.creator_id,  color=color1)
-        p2 = LudoParticipant(match_id=match.id, user_id=challenge.opponent_id, color=color2)
-        db.add_all([p1, p2])
+            p1 = LudoParticipant(match_id=match.id, user_id=challenge.creator_id,  color=color1)
+            p2 = LudoParticipant(match_id=match.id, user_id=challenge.opponent_id, color=color2)
+            db.add_all([p1, p2])
 
-        challenge.match_id = match.id
-        challenge.status   = "PLAYING"
-        await db.commit()
-        match_id  = match.id
-        c_id      = challenge.creator_id
-        o_id      = challenge.opponent_id
+            challenge.match_id = match.id
+            challenge.status   = "PLAYING"
+            await db.commit()
 
-    await orchestrator.start_game(match_id)
+            match_id = match.id
+            c_id     = challenge.creator_id
+            o_id     = challenge.opponent_id
 
-    async with SessionLocal() as db:
-        creator  = await db.get(User, c_id)
-        opponent = await db.get(User, o_id)
+        logger.info("launch_game: match %d created for challenge %d (creator=%d opp=%d color1=%s color2=%s)",
+                    match_id, challenge_id, c_id, o_id, color1, color2)
 
-    from core.websockets import manager
-    await manager.send_personal_message({
-        "type": "challenge_started", "challenge_id": challenge_id, "match_id": match_id,
-        "your_color": color1,
-        "opponent": {"user_id": o_id,
-                     "username": opponent.username if opponent else "Opponent",
-                     "profile_pic": (opponent.profile_pic or "") if opponent else ""},
-    }, c_id)
+        # Start the in-memory engine (also marks match PLAYING in DB)
+        await orchestrator.start_game(match_id)
 
-    await manager.send_personal_message({
-        "type": "challenge_started", "challenge_id": challenge_id, "match_id": match_id,
-        "your_color": color2,
-        "opponent": {"user_id": c_id,
-                     "username": creator.username if creator else "Creator",
-                     "profile_pic": (creator.profile_pic or "") if creator else ""},
-    }, o_id)
+        # Load user details for the WS payload
+        async with SessionLocal() as db:
+            creator  = await db.get(User, c_id)
+            opponent = await db.get(User, o_id)
 
-    logger.info("Challenge %d started as match %d", challenge_id, match_id)
+        from core.websockets import manager
+
+        logger.info("launch_game: sending challenge_started to creator=%d opp=%d", c_id, o_id)
+
+        await manager.send_personal_message({
+            "type": "challenge_started",
+            "challenge_id": challenge_id,
+            "match_id": match_id,
+            "your_color": color1,
+            "opponent": {
+                "user_id": o_id,
+                "username": opponent.username if opponent else "Opponent",
+                "profile_pic": (opponent.profile_pic or "") if opponent else "",
+            },
+        }, c_id)
+
+        await manager.send_personal_message({
+            "type": "challenge_started",
+            "challenge_id": challenge_id,
+            "match_id": match_id,
+            "your_color": color2,
+            "opponent": {
+                "user_id": c_id,
+                "username": creator.username if creator else "Creator",
+                "profile_pic": (creator.profile_pic or "") if creator else "",
+            },
+        }, o_id)
+
+        logger.info("launch_game: challenge %d started as match %d — challenge_started sent to both", challenge_id, match_id)
+
+    except Exception:
+        logger.exception("launch_game: UNHANDLED ERROR for challenge %d", challenge_id)
+
 
 
 async def _expire_loop():

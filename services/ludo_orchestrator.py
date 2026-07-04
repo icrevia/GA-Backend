@@ -57,9 +57,10 @@ class LudoOrchestrator:
 
     async def start_game(self, match_id: int) -> None:
         """
-        Called by LudoMatchmaker after match row is committed.
-        Does ONE DB read to load participant colors, then everything runs in-memory.
+        Called by launch_game after match row is committed.
+        Loads participant colors then runs everything in-memory.
         """
+        # --- First session: update match status ---
         async with SessionLocal() as db:
             match_res = await db.execute(
                 select(LudoMatch).where(LudoMatch.id == match_id)
@@ -68,22 +69,27 @@ class LudoOrchestrator:
             if not match:
                 logger.warning("start_game: match %d not found", match_id)
                 return
-
             match.status = "PLAYING"
             await db.commit()
 
+        # --- Second session: load participants (after commit so data is visible) ---
+        async with SessionLocal() as db:
             p_res = await db.execute(
                 select(LudoParticipant).where(LudoParticipant.match_id == match_id)
             )
             participants = p_res.scalars().all()
+
+        if not participants:
+            logger.error("start_game: no participants found for match %d — aborting", match_id)
+            return
 
         colors = [p.color for p in participants]
         color_map = {p.user_id: p.color for p in participants}
 
         engine = LudoEngine(match_id, colors)
         engine.state = "PLAYING"
-        
-        # Add 5 seconds grace period to allow clients to connect their WebSockets
+
+        # 5-second grace period so clients can connect before first turn starts
         now_ms = int(_time.time() * 1000)
         engine.end_time_ms = now_ms + 7 * 60 * 1000 + 5000
         engine.turn_start_time_ms = now_ms + 5000
@@ -98,7 +104,7 @@ class LudoOrchestrator:
         self.timers[match_id] = asyncio.create_task(
             self._timer_loop(match_id), name=f"ludo_timer_{match_id}"
         )
-        logger.info("Game started: match=%d players=%s", match_id, colors)
+        logger.info("Game started: match=%d players=%s colors=%s", match_id, list(color_map.keys()), colors)
 
     # ------------------------------------------------------------------
     # Hot path — called on every player action
