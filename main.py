@@ -261,6 +261,10 @@ async def lifespan(app: FastAPI):
     daily_stats_task = asyncio.create_task(daily_stats_scheduler())
     logger.info("Daily stats scheduler started")
 
+    from services.ludo_challenge_manager import start_background_tasks as start_challenge_tasks
+    start_challenge_tasks()
+    logger.info("Ludo Challenge background tasks started")
+
     # ── Startup push notification to all users ───────────────────
     async def _send_startup_notification():
         try:
