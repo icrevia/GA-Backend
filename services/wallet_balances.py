@@ -131,11 +131,14 @@ def debit_wallet(
     user: User,
     amount: Decimal | int | float | str,
     spend_order: Iterable[str],
+    max_bonus_amount: Decimal | int | float | str | None = None,
 ) -> dict[str, Decimal]:
     ensure_wallet_buckets(user)
     debit_amount = to_money(amount)
     if debit_amount <= ZERO_MONEY:
         raise ValueError("Debit amount must be positive")
+        
+    max_bonus = to_money(max_bonus_amount) if max_bonus_amount is not None else None
 
     ordered_buckets: list[str] = []
     for bucket in spend_order:
@@ -144,7 +147,14 @@ def debit_wallet(
         if bucket not in ordered_buckets:
             ordered_buckets.append(bucket)
 
-    available = sum((_bucket_value(user, bucket) for bucket in ordered_buckets), ZERO_MONEY)
+    # First pass: calculate total available considering max_bonus limit
+    available = ZERO_MONEY
+    for bucket in ordered_buckets:
+        bucket_val = _bucket_value(user, bucket)
+        if bucket == WALLET_BUCKET_BONUS and max_bonus is not None:
+            bucket_val = min(bucket_val, max_bonus)
+        available += bucket_val
+
     if available < debit_amount:
         raise InsufficientWalletBalanceError(required=debit_amount, available=available)
 
@@ -157,10 +167,18 @@ def debit_wallet(
         current = _bucket_value(user, bucket)
         if current <= ZERO_MONEY:
             continue
-        take = min(current, remaining)
+            
+        allowed = current
+        if bucket == WALLET_BUCKET_BONUS and max_bonus is not None:
+            allowed = min(current, max_bonus)
+            
+        take = min(allowed, remaining)
+        if take <= ZERO_MONEY:
+            continue
+            
         _set_bucket_value(user, bucket, current - take)
-        deductions[bucket] = to_money(deductions[bucket] + take)
-        remaining = to_money(remaining - take)
+        deductions[bucket] = take
+        remaining -= take
 
     sync_wallet_total(user)
     return deductions

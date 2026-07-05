@@ -36,6 +36,7 @@ _DEFAULT_CONFIG = {
     "turn_timer_seconds": 10,
     "match_duration_minutes": 7,
     "bot_enabled": True,
+    "bonus_usage_percentage": 0,
 }
 
 _ludo_config: dict = dict(_DEFAULT_CONFIG)
@@ -96,6 +97,7 @@ async def get_ludo_tiers(
         "turn_timer_seconds": _ludo_config.get("turn_timer_seconds", 10),
         "match_duration_minutes": _ludo_config.get("match_duration_minutes", 7),
         "bot_enabled": _ludo_config.get("bot_enabled", True),
+        "bonus_usage_percentage": _ludo_config.get("bonus_usage_percentage", 0),
     }
 
 
@@ -321,7 +323,7 @@ async def admin_update_ludo_config(
     allowed_keys = {
         "is_enabled", "entry_fee", "prize_multiplier",
         "max_wait_seconds", "turn_timer_seconds",
-        "match_duration_minutes", "bot_enabled",
+        "match_duration_minutes", "bot_enabled", "bonus_usage_percentage",
     }
     for k, v in body.items():
         if k in allowed_keys:

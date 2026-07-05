@@ -3,6 +3,7 @@ import logging
 import json
 import uuid
 from typing import Dict, List
+from decimal import Decimal
 from core.config import settings
 from redis import asyncio as aioredis
 from core.database import SessionLocal
@@ -85,10 +86,15 @@ class LudoMatchmaker:
             try:
                 deductions = {}
                 if entry_fee > 0:
+                    from api.ludo import _ludo_config
+                    bonus_pct = _ludo_config.get("bonus_usage_percentage", 0)
+                    max_b = Decimal(entry_fee) * (Decimal(bonus_pct) / Decimal(100))
+                    
                     deductions = debit_wallet(
                         user, 
                         entry_fee, 
-                        spend_order=(WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING)
+                        spend_order=(WALLET_BUCKET_BONUS, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING),
+                        max_bonus_amount=max_b
                     )
                     deduction_marker = _format_deduction_marker(deductions)
                     db.add(WalletTransaction(
