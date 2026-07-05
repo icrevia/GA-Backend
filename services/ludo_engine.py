@@ -232,6 +232,7 @@ class LudoEngine:
                 self._get_valid_token_indices(self.players[self.turn_index], self.last_dice_roll)
                 if self.dice_rolled else []
             ),
+            "missed_turns": self.missed_turns,
         }
 
     # ------------------------------------------------------------------
