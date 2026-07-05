@@ -243,6 +243,7 @@ class LudoOrchestrator:
                             self.end_game(match_id, engine.winner, engine),
                             name=f"end_abandon_game_{match_id}"
                         )
+                        await self._broadcast(match_id, engine)
                         break
 
                     engine.next_turn()
