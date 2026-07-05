@@ -167,7 +167,7 @@ class QuizMatchmaker:
     async def cancel_user_matchmaking(self, user_id: int):
         """
         Handle user-initiated cancellation from the searching screen.
-        Refund 90% if < 5 mins, 100% if >= 5 mins.
+        Refund 70% if < 5 mins, 100% if >= 5 mins.
         """
         user_entry = None
         entry_fee_found = 0
@@ -207,7 +207,7 @@ class QuizMatchmaker:
         actual_refund_total = to_money(sum(actual_refund_buckets.values(), ZERO_MONEY))
 
         deduction_msg = (
-            f"({'90% Early Cancel Refund' if is_early else '100% Full Refund'}; "
+            f"({'70% Early Cancel Refund' if is_early else '100% Full Refund'}; "
             f"Dep: {actual_refund_buckets[WALLET_BUCKET_DEPOSIT]}, "
             f"Win: {actual_refund_buckets[WALLET_BUCKET_WINNING]}, "
             f"Bonus: {actual_refund_buckets[WALLET_BUCKET_BONUS]})"
@@ -231,7 +231,7 @@ class QuizMatchmaker:
                     failure_reason=f"MM_REFUND;{_format_deduction_marker(actual_refund_buckets)}"
                 ))
                 
-                # 2. Create a history record for the 10% penalty deduction
+                # 2. Create a history record for the 30% penalty deduction
                 if is_early:
                     penalty_buckets = {k: refund_buckets[k] - actual_refund_buckets[k] for k in refund_buckets}
                     penalty_msg = (
@@ -245,7 +245,7 @@ class QuizMatchmaker:
                         transaction_type="PENALTY",
                         status="SUCCESS",
                         reference_id=f"MM-PENALTY-{uuid.uuid4().hex[:8]}",
-                        remark=f"10% Early Cancellation Penalty. {penalty_msg}",
+                        remark=f"30% Early Cancellation Penalty. {penalty_msg}",
                         failure_reason=f"MM_PENALTY;{_format_deduction_marker(penalty_buckets)}"
                     ))
 
@@ -338,7 +338,7 @@ class QuizMatchmaker:
                 status="LIVE",
                 match_type="BATTLE",
                 start_time=start_delay,
-                questions_per_quiz=5,
+                questions_per_quiz=10,
                 time_per_question=10
             )
             db.add(new_quiz)
@@ -355,7 +355,7 @@ class QuizMatchmaker:
                 select(QuizQuestion)
                 .where(QuizQuestion.category == "BATTLE_1V1")
                 .order_by(func.random())
-                .limit(5)
+                .limit(10)
             )
             master_questions = q_res.scalars().all()
             
@@ -366,7 +366,7 @@ class QuizMatchmaker:
                     select(QuizQuestion)
                     .where(QuizQuestion.category == "ARENA")
                     .order_by(func.random())
-                    .limit(5)
+                    .limit(10)
                 )
                 master_questions = q_res.scalars().all()
 
