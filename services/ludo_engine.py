@@ -121,7 +121,6 @@ class LudoEngine:
 
         self.last_dice_roll = roll
         self.dice_rolled = True
-        self.missed_turns[player] = 0
         self.turn_start_time_ms = int(_time_module.time() * 1000)
 
         if roll == 6:
@@ -162,8 +161,6 @@ class LudoEngine:
 
         if pos == TOTAL_CELLS:
             return False  # already finished
-
-        self.missed_turns[player] = 0
 
         # No 'leaving home base' logic needed since tokens start at 0
 
