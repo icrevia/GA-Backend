@@ -126,16 +126,39 @@ async def get_ludo_history(
     out = []
     for m in matches:
         parts_res = await db.execute(
-            select(LudoParticipant).where(LudoParticipant.match_id == m.id)
+            select(LudoParticipant, User)
+            .join(User, User.id == LudoParticipant.user_id)
+            .where(LudoParticipant.match_id == m.id)
         )
-        parts = parts_res.scalars().all()
-        my_part = next((p for p in parts if p.user_id == current_user.id), None)
+        parts_data = parts_res.all()
+        
+        my_part = None
+        opp_part = None
+        opp_user = None
+        
+        for p, u in parts_data:
+            if p.user_id == current_user.id:
+                my_part = p
+            else:
+                opp_part = p
+                opp_user = u
+                
+        money_won = 0.0
+        if my_part and my_part.status == "WON":
+            money_won = float(m.prize_pool or 0)
+            
         out.append({
             "match_id": m.id,
             "entry_fee": float(m.entry_fee or 0),
             "prize_pool": float(m.prize_pool or 0),
             "status": m.status,
             "result": my_part.status if my_part else "UNKNOWN",
+            "my_score": my_part.score if my_part else 0,
+            "opponent_score": opp_part.score if opp_part else 0,
+            "opponent_name": opp_user.username if opp_user else "Unknown",
+            "opponent_pic": opp_user.profile_pic if opp_user else None,
+            "opponent_bio": opp_user.bio if opp_user else None,
+            "money_won": money_won,
             "created_at": m.created_at.isoformat() if m.created_at else None,
         })
     return out

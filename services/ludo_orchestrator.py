@@ -156,10 +156,10 @@ class LudoOrchestrator:
                 return
             await self._broadcast(match_id, engine)
             if engine.state == "COMPLETED":
-                # Schedule DB write + payout — don't block the WS loop
+                # Let orchestrator end game fully
                 asyncio.create_task(
-                    self.end_game(match_id, engine.winner),
-                    name=f"ludo_end_{match_id}",
+                    self.end_game(match_id, engine.winner, engine),
+                    name=f"end_game_{match_id}"
                 )
             return
 
@@ -237,12 +237,10 @@ class LudoOrchestrator:
                     if engine.missed_turns[current] >= 3:
                         logger.info("Player %s forfeited match %d due to inactivity", current, match_id)
                         engine.state = "COMPLETED"
-                        # Other player wins
                         engine.winner = engine.players[1] if engine.players[0] == current else engine.players[0]
-                        await self._broadcast(match_id, engine)
                         asyncio.create_task(
-                            self.end_game(match_id, engine.winner),
-                            name=f"ludo_end_{match_id}"
+                            self.end_game(match_id, engine.winner, engine),
+                            name=f"end_abandon_game_{match_id}"
                         )
                         break
 
@@ -264,10 +262,11 @@ class LudoOrchestrator:
         engine.winner = winner_color
 
         await self._broadcast(match_id, engine)
-        asyncio.create_task(
-            self.end_game(match_id, winner_color),
-            name=f"ludo_end_{match_id}",
-        )
+        if engine.state == "COMPLETED":
+            asyncio.create_task(
+                self.end_game(match_id, winner_color, engine),
+                name=f"end_timeout_game_{match_id}"
+            )
 
     def _determine_winner_by_score(self, engine: LudoEngine) -> str:
         """Find highest scorer; tie-break by most tokens at finish (pos == 56)."""
@@ -298,7 +297,7 @@ class LudoOrchestrator:
     # End-game — runs as a background task (DB + wallet)
     # ------------------------------------------------------------------
 
-    async def end_game(self, match_id: int, winner_color: Optional[str]) -> None:
+    async def end_game(self, match_id: int, winner_color: Optional[str], engine: LudoEngine = None) -> None:
         """
         Write match result to DB and credit winner's wallet.
         Runs AFTER broadcast so players see the result immediately.
@@ -321,36 +320,31 @@ class LudoOrchestrator:
                     logger.error("end_game: match %d not found in DB", match_id)
                     return
 
+                # Mark match completed
                 match.status = "COMPLETED"
+                match.end_time = datetime.datetime.utcnow()
                 prize_pool = match.prize_pool
 
-                if winner_color:
-                    w_res = await db.execute(
-                        select(LudoParticipant).where(
-                            LudoParticipant.match_id == match_id,
-                            LudoParticipant.color == winner_color,
-                        )
-                    )
-                    winner = w_res.scalar_one_or_none()
-                    if winner:
-                        winner.status = "WON"
-                        match.winner_id = winner.user_id
-
-                        # ---- Wallet payout ----
-                        if prize_pool and prize_pool > 0:
-                            await self._credit_winner(
-                                db, winner.user_id, prize_pool, match_id
-                            )
-
-                # Mark all other participants as LOST
-                losers_res = await db.execute(
-                    select(LudoParticipant).where(
-                        LudoParticipant.match_id == match_id,
-                        LudoParticipant.status == "PLAYING",
-                    )
+                # Update participants with scores and status
+                parts_res = await db.execute(
+                    select(LudoParticipant).where(LudoParticipant.match_id == match_id)
                 )
-                for loser in losers_res.scalars().all():
-                    loser.status = "LOST"
+                participants = parts_res.scalars().all()
+                
+                for p in participants:
+                    if engine:
+                        p.score = engine.scores.get(p.color, 0)
+                    if winner_color and p.color == winner_color:
+                        p.status = "WON"
+                        match.winner_id = p.user_id
+                    else:
+                        p.status = "LOST"
+
+                # Credit winner
+                if match.winner_id and prize_pool > 0:
+                    await self._credit_winner(
+                        db, match.winner_id, prize_pool, match_id
+                    )
 
                 await db.commit()
                 logger.info(

@@ -34,6 +34,8 @@ class LudoParticipant(Base):
     
     color = Column(String, nullable=False) # RED, BLUE, GREEN, YELLOW
     
+    score = Column(Integer, default=0) # Final score
+    
     status = Column(String, default="PLAYING") # WON, LOST, ABANDONED, PLAYING
     
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
