@@ -114,6 +114,8 @@ if sslmode:
         else:
             async_connect_args["ssl"] = True
 
+async_connect_args["statement_cache_size"] = 0
+
 sync_url = _to_sync_database_url(settings.DATABASE_URL)
 
 # Correct Async Engine for asyncpg driver
@@ -122,7 +124,6 @@ engine = create_async_engine(
     echo=False,
     future=True,
     connect_args=async_connect_args,
-    prepared_statement_cache_size=0,
     **_pool_kwargs_for_url(async_url)
 )
 
