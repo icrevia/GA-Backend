@@ -122,6 +122,7 @@ engine = create_async_engine(
     echo=False,
     future=True,
     connect_args=async_connect_args,
+    prepared_statement_cache_size=0,
     **_pool_kwargs_for_url(async_url)
 )
 
