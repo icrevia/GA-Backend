@@ -230,6 +230,46 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     try:
+        from core.database import SessionLocal
+        from sqlalchemy.future import select
+        from models.ludo import LudoChallenge, LudoParticipant
+        from models.user import User
+        async with SessionLocal() as db:
+            active_ch = await db.execute(
+                select(LudoChallenge).where(
+                    (LudoChallenge.creator_id == user_id) | (LudoChallenge.opponent_id == user_id),
+                    LudoChallenge.status == "PLAYING"
+                )
+            )
+            ch = active_ch.scalars().first()
+            if ch and ch.match_id:
+                part_query = await db.execute(
+                    select(LudoParticipant.color).where(
+                        LudoParticipant.match_id == ch.match_id,
+                        LudoParticipant.user_id == user_id
+                    )
+                )
+                my_color = part_query.scalar()
+                
+                opp_id = ch.opponent_id if ch.creator_id == user_id else ch.creator_id
+                if opp_id and my_color:
+                    opp_user = await db.get(User, opp_id)
+                    if opp_user:
+                        await websocket.send_text(json.dumps({
+                            "type": "challenge_started",
+                            "match_id": ch.match_id,
+                            "your_color": my_color,
+                            "opponent": {
+                                "user_id": opp_user.id,
+                                "username": opp_user.username,
+                                "profile_pic": opp_user.profile_pic or ""
+                            }
+                        }))
+                        logger.info(f"WS Auto-sent challenge_started to user_id={user_id} for match_id={ch.match_id}")
+    except Exception as e:
+        logger.error(f"WS Auto-send challenge_started error: {e}")
+
+    try:
         while True:
             data = await websocket.receive_text()
 
