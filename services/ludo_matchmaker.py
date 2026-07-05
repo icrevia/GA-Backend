@@ -147,21 +147,31 @@ class LudoMatchmaker:
             
         if not user_entry: return
 
+        now = asyncio.get_event_loop().time()
+        wait_time = now - user_entry["joined_at"]
         deductions_payload = user_entry.get("deductions") or {}
         refund_buckets = _parse_deductions_payload(deductions_payload)
         
         from decimal import Decimal
-        refund_multiplier = Decimal("0.7")
-        actual_refund_total = ZERO_MONEY
+        is_early = wait_time < 300
+        cancel_fee = to_money(entry_fee_found * 0.3) if is_early else ZERO_MONEY
         
-        for bucket in refund_buckets:
-            refund_buckets[bucket] = to_money(refund_buckets[bucket] * refund_multiplier)
-            actual_refund_total += refund_buckets[bucket]
+        actual_refund_buckets = {k: v for k, v in refund_buckets.items()}
+        if is_early:
+            fee_left = cancel_fee
+            for bucket in [WALLET_BUCKET_WINNING, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_BONUS]:
+                if fee_left > ZERO_MONEY and actual_refund_buckets.get(bucket, ZERO_MONEY) > ZERO_MONEY:
+                    take = min(actual_refund_buckets[bucket], fee_left)
+                    actual_refund_buckets[bucket] -= take
+                    fee_left -= take
+                    
+        actual_refund_total = to_money(sum(actual_refund_buckets.values(), ZERO_MONEY))
+        penalty_msg = "70% early abort" if is_early else "100% full refund"
 
         async with SessionLocal() as db:
             user = await db.get(User, user_id)
             if user:
-                for bucket, amount in refund_buckets.items():
+                for bucket, amount in actual_refund_buckets.items():
                     if amount > ZERO_MONEY:
                         credit_wallet(user, amount, bucket)
                 
@@ -171,7 +181,7 @@ class LudoMatchmaker:
                     transaction_type="LUDO_REFUND",
                     status="SUCCESS",
                     reference_id=f"LMM-REFUND-{uuid.uuid4().hex[:8]}",
-                    remark=f"Ludo Matchmaking Refund (70% early abort)",
+                    remark=f"Ludo Matchmaking Refund ({penalty_msg})",
                 ))
                 await db.commit()
 
