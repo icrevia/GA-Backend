@@ -164,12 +164,12 @@ class LudoMatchmaker:
         
         actual_refund_buckets = {k: v for k, v in refund_buckets.items()}
         if is_early:
-            fee_left = cancel_fee
-            for bucket in [WALLET_BUCKET_WINNING, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_BONUS]:
-                if fee_left > ZERO_MONEY and actual_refund_buckets.get(bucket, ZERO_MONEY) > ZERO_MONEY:
-                    take = min(actual_refund_buckets[bucket], fee_left)
-                    actual_refund_buckets[bucket] -= take
-                    fee_left -= take
+            # The user gets exactly 70% refund for EACH bucket that was deducted.
+            for bucket in actual_refund_buckets:
+                if actual_refund_buckets[bucket] > ZERO_MONEY:
+                    # Keep 70% of the deducted amount, truncate the rest as penalty
+                    refund_amount = to_money(actual_refund_buckets[bucket] * Decimal("0.7"))
+                    actual_refund_buckets[bucket] = refund_amount
                     
         actual_refund_total = to_money(sum(actual_refund_buckets.values(), ZERO_MONEY))
         penalty_msg = "70% early abort" if is_early else "100% full refund"
