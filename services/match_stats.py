@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 
 from models.participant import TournamentParticipant
 from models.tournament import Tournament
+from models.ludo import LudoMatch, LudoParticipant
 
-
-MODE_KEYS = ("free_fire", "fan_battle", "free_fire_max", "clash_squad")
+MODE_KEYS = ("free_fire", "fan_battle", "free_fire_max", "clash_squad", "ludo")
 LEADERBOARD_CATEGORIES = ("free_fire", "free_fire_max", "clash_squad")
 LEADERBOARD_PRIZE_PAYMENT_PREFIX = "LEADERBOARD_PRIZE:"
 
@@ -23,6 +23,7 @@ def empty_user_match_stats() -> dict[str, Any]:
         "fan_battle": _empty_mode_bucket(),
         "free_fire_max": _empty_mode_bucket(),
         "clash_squad": _empty_mode_bucket(),
+        "ludo": _empty_mode_bucket(),
         "total_matches": 0,
         "total_wins": 0,
         "overall_win_rate": 0,
@@ -136,6 +137,29 @@ def compute_match_stats_for_user_ids(db: Session, user_ids: Sequence[int]) -> di
         bucket = user_stats[mode]
         bucket["matches"] += 1
         if winner_id == user_id:
+            bucket["wins"] += 1
+
+    ludo_rows = (
+        db.query(
+            LudoParticipant.user_id,
+            LudoMatch.winner_id,
+        )
+        .join(LudoMatch, LudoMatch.id == LudoParticipant.match_id)
+        .filter(
+            LudoParticipant.user_id.in_(unique_ids),
+            LudoMatch.status == "COMPLETED",
+        )
+        .all()
+    )
+
+    for uid, winner_id in ludo_rows:
+        user_stats = stats_map.get(uid)
+        if not user_stats:
+            continue
+            
+        bucket = user_stats["ludo"]
+        bucket["matches"] += 1
+        if winner_id == uid:
             bucket["wins"] += 1
 
     for user_id in unique_ids:
