@@ -245,8 +245,20 @@ async def join_challenge(
                 "profile_pic": current_user.profile_pic or "",
             },
         }, challenge.creator_id)
-    except Exception:
-        pass
+        
+        # Send Push Notification to Creator
+        creator = await db.get(User, challenge.creator_id)
+        if creator and getattr(creator, "fcm_token", None):
+            from services.push_notifications import send_push
+            send_push(
+                fcm_token=creator.fcm_token,
+                title="Challenge Accepted! ⚔️",
+                body=f"{current_user.username} has joined your Ludo Challenge. Tap to sync and play!",
+                data={"type": "LUDO_CHALLENGE", "challenge_id": str(challenge_id)}
+            )
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to send challenge joined notifications: {e}")
 
     return {"success": True, "sync_deadline": challenge.sync_deadline.isoformat()}
 
