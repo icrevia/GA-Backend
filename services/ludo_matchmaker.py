@@ -86,8 +86,14 @@ class LudoMatchmaker:
             try:
                 deductions = {}
                 if entry_fee > 0:
-                    from api.ludo import _ludo_config
-                    bonus_pct = _ludo_config.get("bonus_usage_percentage", 0)
+                    from models.config import SystemConfig
+                    import json
+                    res = await db.execute(select(SystemConfig).where(SystemConfig.key == "ludo_config"))
+                    row = res.scalar_one_or_none()
+                    bonus_pct = 0
+                    if row and row.value:
+                        stored = json.loads(row.value) if isinstance(row.value, str) else row.value
+                        bonus_pct = stored.get("bonus_usage_percentage", 0)
                     max_b = Decimal(entry_fee) * (Decimal(bonus_pct) / Decimal(100))
                     
                     deductions = debit_wallet(
@@ -218,7 +224,15 @@ class LudoMatchmaker:
 
     async def create_battle(self, u1: Dict, u2: Dict, entry_fee: int, is_bot: bool = False):
         async with SessionLocal() as db:
-            prize_pool = entry_fee * 1.8
+            from models.config import SystemConfig
+            import json
+            res = await db.execute(select(SystemConfig).where(SystemConfig.key == "ludo_config"))
+            row = res.scalar_one_or_none()
+            prize_mult = 1.8
+            if row and row.value:
+                stored = json.loads(row.value) if isinstance(row.value, str) else row.value
+                prize_mult = float(stored.get("prize_multiplier", 1.8))
+            prize_pool = float(to_money(entry_fee * prize_mult))
             match = LudoMatch(
                 entry_fee=entry_fee,
                 prize_pool=prize_pool,
