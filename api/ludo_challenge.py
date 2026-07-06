@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from api.deps import get_current_user
+from api.deps import get_current_user, get_current_active_admin
 from core.database import get_db as get_async_db
 from models.ludo import LudoChallenge
 from models.user import User
@@ -27,17 +27,17 @@ from services.wallet_balances import (
     WALLET_BUCKET_BONUS, WALLET_BUCKET_DEPOSIT, WALLET_BUCKET_WINNING,
     ZERO_MONEY, to_money, InsufficientWalletBalanceError,
 )
+from sqlalchemy import func, desc
 
 router = APIRouter(prefix="/challenge", tags=["ludo-challenge"])
 
 PRIZE_MULTIPLIER = Decimal("1.8")
 CHALLENGE_TTL_HOURS = 1
 SYNC_WINDOW_MINUTES = 10
-ALLOWED_ENTRY_FEES = [10, 20, 50, 100]
 
 
 class CreateChallengeRequest(BaseModel):
-    entry_fee: int  # Must be one of ALLOWED_ENTRY_FEES
+    entry_fee: int  # Must be >= 10
 
 
 def _deductions_to_json(d: dict) -> dict:
@@ -78,8 +78,8 @@ async def create_challenge(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_db),
 ):
-    if body.entry_fee not in ALLOWED_ENTRY_FEES:
-        raise HTTPException(400, f"Entry fee must be one of {ALLOWED_ENTRY_FEES}")
+    if body.entry_fee < 10:
+        raise HTTPException(400, "Entry fee must be at least ₹10")
 
     # Max 1 active challenge per user
     existing = await db.execute(
@@ -386,3 +386,131 @@ async def cancel_challenge(
             "message": "Challenge abandoned. Both players receive a 70% refund.",
             "refund_type": "PARTIAL_70"
         }
+
+# ─── Admin Routes ─────────────────────────────────────────────────────────────
+
+@router.get("/admin/stats")
+async def get_challenge_admin_stats(
+    admin: User = Depends(get_current_active_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    live_res = await db.execute(
+        select(func.count(LudoChallenge.id)).where(LudoChallenge.status.in_(["OPEN", "WAITING_SYNC", "PLAYING"]))
+    )
+    live_count = live_res.scalar() or 0
+
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_res = await db.execute(
+        select(func.count(LudoChallenge.id)).where(LudoChallenge.created_at >= today)
+    )
+    today_count = today_res.scalar() or 0
+
+    total_pool_res = await db.execute(
+        select(func.sum(LudoChallenge.prize_pool)).where(LudoChallenge.status == "COMPLETED")
+    )
+    total_paid = float(total_pool_res.scalar() or 0)
+
+    total_entry_res = await db.execute(
+        select(func.sum(LudoChallenge.entry_fee)).where(LudoChallenge.status.in_(["COMPLETED", "PLAYING"]))
+    )
+    total_entry = float(total_entry_res.scalar() or 0) * 2
+
+    revenue = total_entry - total_paid
+
+    return {
+        "live_matches": live_count,
+        "today_matches": today_count,
+        "total_prize_paid": total_paid,
+        "total_entry_collected": total_entry,
+        "platform_revenue": revenue,
+    }
+
+
+@router.get("/admin/live")
+async def get_challenge_admin_live(
+    admin: User = Depends(get_current_active_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    res = await db.execute(
+        select(LudoChallenge)
+        .where(LudoChallenge.status.in_(["OPEN", "WAITING_SYNC", "PLAYING"]))
+        .order_by(desc(LudoChallenge.created_at))
+    )
+    challenges = res.scalars().all()
+    out = []
+    for c in challenges:
+        await db.refresh(c, ["creator", "opponent"])
+        out.append(_challenge_to_dict(c, 0))
+    return out
+
+
+@router.get("/admin/history")
+async def get_challenge_admin_history(
+    limit: int = 50,
+    admin: User = Depends(get_current_active_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    res = await db.execute(
+        select(LudoChallenge)
+        .where(LudoChallenge.status.in_(["COMPLETED", "CANCELLED", "EXPIRED"]))
+        .order_by(desc(LudoChallenge.created_at))
+        .limit(limit)
+    )
+    challenges = res.scalars().all()
+    out = []
+    for c in challenges:
+        await db.refresh(c, ["creator", "opponent"])
+        out.append(_challenge_to_dict(c, 0))
+    return out
+
+
+@router.post("/admin/{challenge_id}/force-cancel")
+async def force_cancel_challenge(
+    challenge_id: int,
+    admin: User = Depends(get_current_active_admin),
+    db: AsyncSession = Depends(get_async_db),
+):
+    challenge = await db.get(LudoChallenge, challenge_id)
+    if not challenge:
+        raise HTTPException(404, "Challenge not found")
+    if challenge.status not in ["OPEN", "WAITING_SYNC", "PLAYING"]:
+        raise HTTPException(400, f"Cannot cancel challenge in state {challenge.status}")
+
+    # Refund creator
+    await db.refresh(challenge, ["creator", "opponent"])
+    if challenge.creator_id:
+        try:
+            creator_user = await db.get(User, challenge.creator_id)
+            if creator_user:
+                credit_wallet(creator_user, challenge.entry_fee, WALLET_BUCKET_DEPOSIT)
+                db.add(WalletTransaction(
+                    user_id=creator_user.id,
+                    amount=to_money(challenge.entry_fee),
+                    transaction_type="LUDO_CHALLENGE_REFUND",
+                    status="SUCCESS",
+                    reference_id=f"CHG-RF-ADM-{uuid.uuid4().hex[:8]}",
+                    remark="Admin forced cancel refund"
+                ))
+        except Exception:
+            pass
+
+    # Refund opponent if joined
+    if challenge.opponent_id:
+        try:
+            opponent_user = await db.get(User, challenge.opponent_id)
+            if opponent_user:
+                credit_wallet(opponent_user, challenge.entry_fee, WALLET_BUCKET_DEPOSIT)
+                db.add(WalletTransaction(
+                    user_id=opponent_user.id,
+                    amount=to_money(challenge.entry_fee),
+                    transaction_type="LUDO_CHALLENGE_REFUND",
+                    status="SUCCESS",
+                    reference_id=f"CHG-RF-ADM-{uuid.uuid4().hex[:8]}",
+                    remark="Admin forced cancel refund"
+                ))
+        except Exception:
+            pass
+
+    challenge.status = "CANCELLED"
+    await db.commit()
+    return {"success": True, "message": "Challenge force cancelled and refunded."}
