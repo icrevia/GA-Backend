@@ -132,7 +132,6 @@ async def list_challenges(
         select(LudoChallenge).where(
             LudoChallenge.status == "OPEN",
             LudoChallenge.expires_at > now,
-            LudoChallenge.creator_id != current_user.id,
         ).order_by(LudoChallenge.created_at.desc()).limit(50)
     )
     challenges = res.scalars().all()
@@ -331,8 +330,10 @@ async def cancel_challenge(
     challenge = await db.get(LudoChallenge, challenge_id)
     if not challenge:
         raise HTTPException(404, "Challenge not found.")
-    if challenge.creator_id != current_user.id:
-        raise HTTPException(403, "Only the creator can cancel this challenge.")
+    if current_user.id not in (challenge.creator_id, challenge.opponent_id):
+        raise HTTPException(403, "Only participants can cancel this challenge.")
+    if challenge.status == "OPEN" and challenge.creator_id != current_user.id:
+        raise HTTPException(403, "Only the creator can cancel an OPEN challenge.")
     if challenge.status not in ("OPEN", "WAITING_SYNC"):
         raise HTTPException(400, "Cannot cancel a challenge that is already in progress or completed.")
 
@@ -360,13 +361,15 @@ async def cancel_challenge(
         creator  = await db.get(User, challenge.creator_id)
         opponent = await db.get(User, challenge.opponent_id) if challenge.opponent_id else None
 
+        abandoner_name = current_user.username
+
         if creator and challenge.creator_deductions:
             await _refund_user(
                 db, creator,
                 _parse_deductions(challenge.creator_deductions),
                 Decimal("0.7"),
                 f"CHG-ABN-{challenge.id}-C",
-                f"Challenge #{challenge.id} abandoned - 70% refund"
+                f"Challenge #{challenge.id} abandoned by {abandoner_name} - 70% refund"
             )
 
         if opponent and challenge.opponent_deductions:
@@ -375,21 +378,22 @@ async def cancel_challenge(
                 _parse_deductions(challenge.opponent_deductions),
                 Decimal("0.7"),
                 f"CHG-ABN-{challenge.id}-O",
-                f"Challenge #{challenge.id} abandoned by creator - 70% refund"
+                f"Challenge #{challenge.id} abandoned by {abandoner_name} - 70% refund"
             )
 
         await db.commit()
 
-        # Notify opponent that challenge was abandoned
-        if challenge.opponent_id:
+        # Notify other player that challenge was abandoned
+        other_player_id = challenge.opponent_id if current_user.id == challenge.creator_id else challenge.creator_id
+        if other_player_id:
             try:
                 from core.websockets import manager
                 await manager.send_personal_message({
                     "type": "challenge_cancelled",
                     "challenge_id": challenge_id,
-                    "reason": "creator_abandoned",
-                    "message": "The challenge creator abandoned. You received a 70% refund.",
-                }, challenge.opponent_id)
+                    "reason": "abandoned",
+                    "message": f"The challenge was abandoned by {abandoner_name}. You received a 70% refund.",
+                }, other_player_id)
             except Exception:
                 pass
 
