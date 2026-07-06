@@ -20,7 +20,7 @@ import json
 from core.database import get_db as get_async_db
 from api.deps import get_current_active_admin, get_current_user
 from models.user import User
-from models.ludo import LudoMatch, LudoParticipant
+from models.ludo import LudoMatch, LudoParticipant, LudoChallenge
 
 router = APIRouter()
 
@@ -366,30 +366,38 @@ async def admin_force_end_match(
     """Admin: force-terminate a live match (no payout — declared void)."""
     from services.ludo_orchestrator import orchestrator
 
-    if match_id not in orchestrator.games:
-        raise HTTPException(status_code=404, detail="Match not live or not found")
-
-    engine = orchestrator.games[match_id]
-    engine.state = "COMPLETED"
-    engine.winner = None
-
-    await orchestrator._broadcast(match_id, engine)
-
     # Mark match as cancelled in DB (no payout)
     res = await db.execute(select(LudoMatch).where(LudoMatch.id == match_id))
     match = res.scalar_one_or_none()
-    if match:
+    
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found in database")
+        
+    if match.status == "PLAYING" or match.status == "WAITING":
         match.status = "CANCELLED"
+        # Also cancel the associated challenge if any
+        ch_res = await db.execute(select(LudoChallenge).where(LudoChallenge.match_id == match_id))
+        challenge = ch_res.scalar_one_or_none()
+        if challenge and challenge.status in ["PLAYING", "WAITING_SYNC"]:
+            challenge.status = "CANCELLED"
+            
         await db.commit()
 
-    # Full cleanup
-    orchestrator._color_cache.pop(match_id, None)
-    timer = orchestrator.timers.pop(match_id, None)
-    if timer:
-        timer.cancel()
-    orchestrator.games.pop(match_id, None)
+    if match_id in orchestrator.games:
+        engine = orchestrator.games[match_id]
+        engine.state = "COMPLETED"
+        engine.winner = None
 
-    return {"status": "cancelled", "match_id": match_id}
+        await orchestrator._broadcast(match_id, engine)
+
+        # Full cleanup
+        orchestrator._color_cache.pop(match_id, None)
+        timer = orchestrator.timers.pop(match_id, None)
+        if timer:
+            timer.cancel()
+        orchestrator.games.pop(match_id, None)
+
+    return {"status": "success", "message": f"Match {match_id} force-ended"}
 
 @router.get("/history")
 async def get_my_ludo_history_endpoint(
