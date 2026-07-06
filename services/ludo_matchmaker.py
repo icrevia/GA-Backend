@@ -88,11 +88,11 @@ class LudoMatchmaker:
                 if entry_fee > 0:
                     from models.config import SystemConfig
                     import json
-                    res = await db.execute(select(SystemConfig).where(SystemConfig.key == "ludo_config"))
+                    res = await db.execute(select(SystemConfig).where(SystemConfig.config_key == "ludo_config"))
                     row = res.scalar_one_or_none()
                     bonus_pct = 0
-                    if row and row.value:
-                        stored = json.loads(row.value) if isinstance(row.value, str) else row.value
+                    if row and row.config_value:
+                        stored = json.loads(row.config_value) if isinstance(row.config_value, str) else row.config_value
                         bonus_pct = stored.get("bonus_usage_percentage", 0)
                     max_b = Decimal(entry_fee) * (Decimal(bonus_pct) / Decimal(100))
                     
@@ -226,11 +226,11 @@ class LudoMatchmaker:
         async with SessionLocal() as db:
             from models.config import SystemConfig
             import json
-            res = await db.execute(select(SystemConfig).where(SystemConfig.key == "ludo_config"))
+            res = await db.execute(select(SystemConfig).where(SystemConfig.config_key == "ludo_config"))
             row = res.scalar_one_or_none()
             prize_mult = 1.8
-            if row and row.value:
-                stored = json.loads(row.value) if isinstance(row.value, str) else row.value
+            if row and row.config_value:
+                stored = json.loads(row.config_value) if isinstance(row.config_value, str) else row.config_value
                 prize_mult = float(stored.get("prize_multiplier", 1.8))
             prize_pool = float(to_money(entry_fee * prize_mult))
             match = LudoMatch(
