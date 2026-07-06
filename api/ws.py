@@ -230,6 +230,7 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     try:
+        import datetime
         from core.database import SessionLocal
         from sqlalchemy.future import select
         from models.ludo import LudoChallenge, LudoParticipant
@@ -242,7 +243,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
             )
             ch = active_ch.scalars().first()
-            if ch and ch.match_id:
+            
+            # Check if match is recent (within 2 hours) to avoid auto-starting stale matches
+            is_recent = False
+            if ch:
+                now = datetime.datetime.now(datetime.timezone.utc)
+                last_updated = ch.updated_at or ch.created_at
+                if last_updated:
+                    if last_updated.tzinfo is None:
+                        last_updated = last_updated.replace(tzinfo=datetime.timezone.utc)
+                    if (now - last_updated).total_seconds() < 2 * 3600:
+                        is_recent = True
+
+            if ch and ch.match_id and is_recent:
                 part_query = await db.execute(
                     select(LudoParticipant.color).where(
                         LudoParticipant.match_id == ch.match_id,
