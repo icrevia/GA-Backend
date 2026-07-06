@@ -105,8 +105,8 @@ class QuizMatchmaker:
             
             # Use configured entry fee if available, otherwise fallback to what client sent (for safety)
             current_entry_fee, _, _, _ = await self._get_battle_config(db)
-            # Use the most restrictive one or just the server one
-            fee_to_deduct = current_entry_fee 
+            # Match client's requested fee to avoid mismatch between UI and deduction
+            fee_to_deduct = entry_fee
             
             try:
                 # Deduct immediately upon searching
