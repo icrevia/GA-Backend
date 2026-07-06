@@ -122,8 +122,11 @@ async def daily_stats_scheduler():
             finally:
                 db.close()
                 
+                
         except Exception as e:
             logger.error(f"Error in daily stats scheduler: {e}")
+            await asyncio.sleep(60)
+            continue
             
         # Check every hour
         await asyncio.sleep(3600)

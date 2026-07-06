@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_POOL_TIMEOUT_SECONDS: int = 30
-    DB_POOL_RECYCLE_SECONDS: int = 1800
+    DB_POOL_RECYCLE_SECONDS: int = 300
 
     # ── Pay0.shop ─────────────────────────────────────────────────────────────
     PAY0_MERCHANT_KEY: str = ""
@@ -225,10 +225,10 @@ class Settings(BaseSettings):
 
         if self.DB_POOL_RECYCLE_SECONDS <= 0:
             print(
-                "[CONFIG WARNING] DB_POOL_RECYCLE_SECONDS must be positive. Falling back to 1800.",
+                "[CONFIG WARNING] DB_POOL_RECYCLE_SECONDS must be positive. Falling back to 300.",
                 file=sys.stderr,
             )
-            object.__setattr__(self, "DB_POOL_RECYCLE_SECONDS", 1800)
+            object.__setattr__(self, "DB_POOL_RECYCLE_SECONDS", 300)
 
         if not self.ALLOWED_ORIGINS:
             if self.DEBUG:
