@@ -52,11 +52,11 @@ async def _load_config_from_db(db: AsyncSession):
     try:
         from models.config import SystemConfig
         res = await db.execute(
-            select(SystemConfig).where(SystemConfig.key == _get_config_key())
+            select(SystemConfig).where(SystemConfig.config_key == _get_config_key())
         )
         row = res.scalar_one_or_none()
-        if row and row.value:
-            stored = json.loads(row.value) if isinstance(row.value, str) else row.value
+        if row and row.config_value:
+            stored = json.loads(row.config_value) if isinstance(row.config_value, str) else row.config_value
             _ludo_config = {**_DEFAULT_CONFIG, **stored}
     except Exception:
         pass  # Fallback to defaults if table doesn't exist yet
@@ -67,13 +67,13 @@ async def _save_config_to_db(db: AsyncSession, config: dict):
     try:
         from models.config import SystemConfig
         res = await db.execute(
-            select(SystemConfig).where(SystemConfig.key == _get_config_key())
+            select(SystemConfig).where(SystemConfig.config_key == _get_config_key())
         )
         row = res.scalar_one_or_none()
         if row:
-            row.value = json.dumps(config)
+            row.config_value = json.dumps(config)
         else:
-            db.add(SystemConfig(key=_get_config_key(), value=json.dumps(config)))
+            db.add(SystemConfig(config_key=_get_config_key(), config_value=json.dumps(config)))
         await db.commit()
     except Exception:
         pass
@@ -346,7 +346,8 @@ async def admin_update_ludo_config(
     allowed_keys = {
         "is_enabled", "entry_fee", "prize_multiplier",
         "max_wait_seconds", "turn_timer_seconds",
-        "match_duration_minutes", "bot_enabled", "bonus_usage_percentage",
+        "match_duration_minutes", "bot_enabled",
+        "bonus_usage_percentage",
     }
     for k, v in body.items():
         if k in allowed_keys:
