@@ -233,13 +233,14 @@ async def websocket_endpoint(websocket: WebSocket):
         import datetime
         from core.database import SessionLocal
         from sqlalchemy.future import select
-        from models.ludo import LudoChallenge, LudoParticipant
+        from models.ludo import LudoChallenge, LudoParticipant, LudoMatch
         from models.user import User
         async with SessionLocal() as db:
             active_ch = await db.execute(
-                select(LudoChallenge).where(
+                select(LudoChallenge).join(LudoMatch, LudoChallenge.match_id == LudoMatch.id).where(
                     (LudoChallenge.creator_id == user_id) | (LudoChallenge.opponent_id == user_id),
-                    LudoChallenge.status == "PLAYING"
+                    LudoChallenge.status == "PLAYING",
+                    LudoMatch.status != "COMPLETED"
                 )
             )
             ch = active_ch.scalars().first()
