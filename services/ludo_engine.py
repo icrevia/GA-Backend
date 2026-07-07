@@ -23,7 +23,7 @@ logger = logging.getLogger("GamerzAdda.LudoEngine")
 SAFE_CELLS: frozenset = frozenset({0, 8, 13, 21, 26, 34, 39, 47})
 TOTAL_CELLS: int = 56          # finish line (inclusive)
 HOME: int = 0                  # token is at the start (no separate home base logic)
-MAIN_TRACK_END: int = 51       # last cell on main track (0-51)
+MAIN_TRACK_END: int = 50       # last cell on main track (0-50, 51 cells)
 
 COLOR_OFFSETS: Dict[str, int] = {
     "RED": 0,

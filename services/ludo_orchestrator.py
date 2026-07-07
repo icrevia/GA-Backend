@@ -32,7 +32,7 @@ from typing import Dict, Optional, Tuple
 from core.websockets import manager
 from services.ludo_engine import LudoEngine
 from core.database import SessionLocal
-from models.ludo import LudoMatch, LudoParticipant
+from models.ludo import LudoMatch, LudoParticipant, LudoChallenge
 from sqlalchemy.future import select
 
 logger = logging.getLogger("GamerzAdda.LudoOrchestrator")
@@ -347,6 +347,14 @@ class LudoOrchestrator:
                     await self._credit_winner(
                         db, match.winner_id, prize_pool, match_id
                     )
+
+                # Update associated LudoChallenge if any
+                challenge_res = await db.execute(
+                    select(LudoChallenge).where(LudoChallenge.match_id == match_id)
+                )
+                challenge = challenge_res.scalar_one_or_none()
+                if challenge and challenge.status in ["PLAYING", "WAITING_SYNC"]:
+                    challenge.status = "COMPLETED"
 
                 await db.commit()
                 logger.info(
