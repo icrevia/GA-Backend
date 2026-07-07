@@ -9,7 +9,7 @@ from models.tournament import Tournament
 from models.ludo import LudoMatch, LudoParticipant
 
 MODE_KEYS = ("free_fire", "fan_battle", "free_fire_max", "clash_squad", "ludo")
-LEADERBOARD_CATEGORIES = ("free_fire", "free_fire_max", "clash_squad")
+LEADERBOARD_CATEGORIES = ("free_fire", "free_fire_max", "clash_squad", "ludo", "quiz")
 LEADERBOARD_PRIZE_PAYMENT_PREFIX = "LEADERBOARD_PRIZE:"
 
 
@@ -69,6 +69,10 @@ def normalize_leaderboard_category(raw: str | None) -> str | None:
         "cs": "clash_squad",
         "clashsquad": "clash_squad",
         "clash_squad": "clash_squad",
+        "ludo": "ludo",
+        "quiz": "quiz",
+        "quizbattle": "quiz",
+        "quiz_battle": "quiz",
     }
     normalized = aliases.get(clean, clean)
     if normalized in LEADERBOARD_CATEGORIES:

@@ -270,8 +270,59 @@ class BotManager:
                 await asyncio.sleep(1.0)
                 continue
 
-            selected_token_idx = random.choice(valid_moves)
-            await asyncio.sleep(random.uniform(1.5, 3.0))  # human-like moving delay
+            # ── Smart Bot Heuristics (target: ~90% win rate) ─────────────────
+            # Priority order:
+            #  1. Move a token that CAPTURES an opponent (highest reward)
+            #  2. Move the token that is FURTHEST along the path (closest to home)
+            #  3. Move a token ONTO a safe cell to protect it
+            #  4. Move any token OUT of base (pos == 0) if dice == 6
+            #  5. Fall back to random if no priority applies
+
+            from services.ludo_engine import SAFE_CELLS
+
+            def _score_move(token_idx: int) -> float:
+                """Returns a higher score for better moves."""
+                bot_pos = engine.positions[bot_color][token_idx]
+                dice = engine.last_dice_roll
+                new_pos = bot_pos + dice
+
+                # Cap at finish (position 56 in our engine)
+                if new_pos > 56:
+                    return -1.0  # invalid move; won't appear in valid_moves but guard anyway
+
+                score = float(new_pos)  # base: prefer tokens further ahead
+
+                # Bonus: lands on a safe cell
+                if new_pos in SAFE_CELLS:
+                    score += 5.0
+
+                # Big bonus: captures an opponent (opponent token sent back to 0)
+                for opp_color, opp_positions in engine.positions.items():
+                    if opp_color == bot_color:
+                        continue
+                    for opp_pos in opp_positions:
+                        # Tokens in base (0), safe cells, or finished (56) can't be captured
+                        if opp_pos > 0 and opp_pos != 56 and opp_pos not in SAFE_CELLS:
+                            if opp_pos == new_pos:
+                                score += 30.0  # Capture is highest priority
+                                break
+
+                # Bonus: reaches home
+                if new_pos == 56:
+                    score += 50.0
+
+                return score
+
+            # Only score tokens that are in valid_moves list
+            scored = [(idx, _score_move(idx)) for idx in valid_moves]
+            # Filter out invalid scores and pick the best
+            valid_scored = [(idx, s) for idx, s in scored if s >= 0]
+            if valid_scored:
+                selected_token_idx = max(valid_scored, key=lambda x: x[1])[0]
+            else:
+                selected_token_idx = random.choice(valid_moves)
+
+            await asyncio.sleep(random.uniform(1.2, 2.5))  # human-like moving delay
             await orchestrator.handle_action(
                 match_id, bot_user_id,
                 {"action": "MOVE_TOKEN", "token_index": selected_token_idx}

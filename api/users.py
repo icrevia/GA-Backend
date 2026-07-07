@@ -450,7 +450,7 @@ def get_leaderboard(
     if not normalized_category:
         raise HTTPException(
             status_code=400,
-            detail="Invalid category. Use one of: free_fire, free_fire_max, clash_squad",
+            detail="Invalid category. Use one of: free_fire, free_fire_max, clash_squad, ludo, quiz",
         )
 
     normalized_time_range = _normalize_leaderboard_time_range(time_range)
@@ -560,6 +560,152 @@ def get_leaderboard(
         )
         .limit(limit)
     )
+
+    # --- Ludo Leaderboard (uses LudoMatch/LudoParticipant, not tournaments) ---
+    if normalized_category == "ludo":
+        from models.ludo import LudoMatch, LudoParticipant
+        ludo_stats_q = (
+            db.query(
+                LudoParticipant.user_id,
+                sqlfunc.count(LudoParticipant.id).label("matches"),
+                sqlfunc.sum(
+                    sqcase((LudoMatch.status == "COMPLETED", 1), else_=0)
+                ).label("wins")
+            )
+            .join(LudoMatch, LudoMatch.id == LudoParticipant.match_id)
+            .filter(LudoMatch.status == "COMPLETED")
+        )
+        if range_start:
+            ludo_stats_q = ludo_stats_q.filter(LudoMatch.updated_at >= range_start)
+        ludo_stats_q = ludo_stats_q.group_by(LudoParticipant.user_id).subquery()
+
+        ludo_earnings_q = (
+            db.query(
+                WalletTransaction.user_id,
+                sqlfunc.sum(WalletTransaction.amount).label("earnings")
+            )
+            .filter(
+                WalletTransaction.status == "SUCCESS",
+                or_(
+                    WalletTransaction.transaction_type == "LUDO_WIN",
+                    WalletTransaction.transaction_type == "LUDO_PRIZE",
+                    and_(
+                        WalletTransaction.transaction_type == "PRIZE_WIN",
+                        WalletTransaction.failure_reason.ilike("%ludo%")
+                    )
+                )
+            )
+        )
+        if range_start:
+            ludo_earnings_q = ludo_earnings_q.filter(WalletTransaction.created_at >= range_start)
+        ludo_earnings_subq = ludo_earnings_q.group_by(WalletTransaction.user_id).subquery()
+
+        final_query = (
+            db.query(
+                User,
+                sqlfunc.coalesce(ludo_stats_q.c.matches, 0).label("total_matches"),
+                sqlfunc.coalesce(ludo_stats_q.c.wins, 0).label("total_wins"),
+                sqlfunc.coalesce(ludo_earnings_subq.c.earnings, 0.0).label("total_earnings")
+            )
+            .outerjoin(ludo_stats_q, User.id == ludo_stats_q.c.user_id)
+            .outerjoin(ludo_earnings_subq, User.id == ludo_earnings_subq.c.user_id)
+            .filter(User.is_active == True, User.id < 99000)  # exclude bots
+            .filter(or_(ludo_stats_q.c.user_id.isnot(None), ludo_earnings_subq.c.user_id.isnot(None)))
+            .order_by(
+                sqlfunc.coalesce(ludo_earnings_subq.c.earnings, 0.0).desc(),
+                sqlfunc.coalesce(ludo_stats_q.c.wins, 0).desc(),
+                sqlfunc.coalesce(ludo_stats_q.c.matches, 0).desc(),
+                User.username.asc()
+            )
+            .limit(limit)
+        )
+        leaderboard_users = final_query.all()
+        return [
+            {
+                "id": row.User.id,
+                "username": row.User.username,
+                "bio": row.User.bio,
+                "profile_pic": row.User.profile_pic,
+                "total_matches": int(row.total_matches or 0),
+                "total_wins": int(row.total_wins or 0),
+                "total_earnings": float(row.total_earnings or 0.0),
+                "win_rate": int(round((row.total_wins or 0) * 100.0 / max(row.total_matches or 1, 1))),
+            }
+            for row in leaderboard_users
+        ]
+
+    # --- Quiz Leaderboard ---
+    if normalized_category == "quiz":
+        from models.quiz import QuizParticipant, QuizMatch
+        quiz_stats_q = (
+            db.query(
+                QuizParticipant.user_id,
+                sqlfunc.count(QuizParticipant.id).label("matches"),
+                sqlfunc.sum(
+                    sqcase((QuizParticipant.rank == 1, 1), else_=0)
+                ).label("wins")
+            )
+            .join(QuizMatch, QuizMatch.id == QuizParticipant.quiz_id)
+            .filter(QuizParticipant.status == "COMPLETED")
+        )
+        if range_start:
+            quiz_stats_q = quiz_stats_q.filter(QuizMatch.end_time >= range_start)
+        quiz_stats_q = quiz_stats_q.group_by(QuizParticipant.user_id).subquery()
+
+        quiz_earnings_q = (
+            db.query(
+                WalletTransaction.user_id,
+                sqlfunc.sum(WalletTransaction.amount).label("earnings")
+            )
+            .filter(
+                WalletTransaction.status == "SUCCESS",
+                or_(
+                    WalletTransaction.transaction_type == "QUIZ_WIN",
+                    WalletTransaction.transaction_type == "QUIZ_PRIZE",
+                    and_(
+                        WalletTransaction.transaction_type == "PRIZE_WIN",
+                        WalletTransaction.failure_reason.ilike("%quiz%")
+                    )
+                )
+            )
+        )
+        if range_start:
+            quiz_earnings_q = quiz_earnings_q.filter(WalletTransaction.created_at >= range_start)
+        quiz_earnings_subq = quiz_earnings_q.group_by(WalletTransaction.user_id).subquery()
+
+        final_query = (
+            db.query(
+                User,
+                sqlfunc.coalesce(quiz_stats_q.c.matches, 0).label("total_matches"),
+                sqlfunc.coalesce(quiz_stats_q.c.wins, 0).label("total_wins"),
+                sqlfunc.coalesce(quiz_earnings_subq.c.earnings, 0.0).label("total_earnings")
+            )
+            .outerjoin(quiz_stats_q, User.id == quiz_stats_q.c.user_id)
+            .outerjoin(quiz_earnings_subq, User.id == quiz_earnings_subq.c.user_id)
+            .filter(User.is_active == True, User.id < 99000)  # exclude bots
+            .filter(or_(quiz_stats_q.c.user_id.isnot(None), quiz_earnings_subq.c.user_id.isnot(None)))
+            .order_by(
+                sqlfunc.coalesce(quiz_earnings_subq.c.earnings, 0.0).desc(),
+                sqlfunc.coalesce(quiz_stats_q.c.wins, 0).desc(),
+                sqlfunc.coalesce(quiz_stats_q.c.matches, 0).desc(),
+                User.username.asc()
+            )
+            .limit(limit)
+        )
+        leaderboard_users = final_query.all()
+        return [
+            {
+                "id": row.User.id,
+                "username": row.User.username,
+                "bio": row.User.bio,
+                "profile_pic": row.User.profile_pic,
+                "total_matches": int(row.total_matches or 0),
+                "total_wins": int(row.total_wins or 0),
+                "total_earnings": float(row.total_earnings or 0.0),
+                "win_rate": int(round((row.total_wins or 0) * 100.0 / max(row.total_matches or 1, 1))),
+            }
+            for row in leaderboard_users
+        ]
 
     leaderboard_users = final_query.all()
     
