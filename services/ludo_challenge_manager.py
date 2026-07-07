@@ -64,6 +64,27 @@ async def _refund_user(db, user, deductions, rate, ref_prefix, remark):
 async def expire_challenges():
     now = datetime.now(timezone.utc)
     async with SessionLocal() as db:
+        # 1. Cleanup orphaned PLAYING challenges (stuck due to server restarts)
+        cutoff = now - timedelta(hours=2)
+        res_orphaned = await db.execute(
+            select(LudoChallenge).where(
+                LudoChallenge.status == "PLAYING",
+                LudoChallenge.created_at < cutoff
+            )
+        )
+        orphaned = res_orphaned.scalars().all()
+        for challenge in orphaned:
+            challenge.status = "COMPLETED"
+            logger.info("Fixed orphaned PLAYING challenge %d", challenge.id)
+            if challenge.match_id:
+                from models.ludo import LudoMatch
+                match = await db.get(LudoMatch, challenge.match_id)
+                if match and match.status == "PLAYING":
+                    match.status = "COMPLETED"
+        if orphaned:
+            await db.commit()
+
+        # 2. Expire OPEN challenges
         res = await db.execute(
             select(LudoChallenge).where(
                 LudoChallenge.status == "OPEN",
