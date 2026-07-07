@@ -343,18 +343,18 @@ async def cancel_challenge(
     challenge.status = "CANCELLED"
 
     if original_status == "OPEN":
-        # Full refund to creator only
+        # 70% refund to creator (30% penalty for manual cancellation)
         creator = await db.get(User, current_user.id)
         if creator and challenge.creator_deductions:
             await _refund_user(
                 db, creator,
                 _parse_deductions(challenge.creator_deductions),
-                Decimal("1.0"),
+                Decimal("0.7"),
                 f"CHG-CANCEL-{challenge.id}",
-                f"Challenge #{challenge.id} cancelled - full refund"
+                f"Challenge #{challenge.id} cancelled - 70% refund"
             )
         await db.commit()
-        return {"success": True, "message": "Challenge cancelled. Full refund issued.", "refund_type": "FULL"}
+        return {"success": True, "message": "Challenge cancelled. 70% refund issued.", "refund_type": "PARTIAL_70"}
 
     else:
         # WAITING_SYNC: 70% refund to both players
