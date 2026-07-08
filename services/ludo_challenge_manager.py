@@ -121,11 +121,12 @@ async def expire_challenges():
         await db.commit()
 
 
-_warned_sync_challenges = set()
+_warned_sync_challenges_5m = set()
+_warned_sync_challenges_2m = set()
 
 async def handle_sync_warnings():
     now = datetime.now(timezone.utc)
-    warning_threshold = now + timedelta(minutes=3)
+    warning_threshold = now + timedelta(minutes=5)
     
     async with SessionLocal() as db:
         res = await db.execute(
@@ -141,39 +142,67 @@ async def handle_sync_warnings():
             return
             
         for challenge in warning_candidates:
-            if challenge.id in _warned_sync_challenges:
-                continue
-                
             creator = await db.get(User, challenge.creator_id)
             opponent = await db.get(User, challenge.opponent_id) if challenge.opponent_id else None
             
             from services.push_notifications import send_push
             
-            # If creator hasn't synced
-            if creator and not challenge.creator_synced and getattr(creator, "fcm_token", None):
-                try:
-                    send_push(
-                        fcm_token=creator.fcm_token,
-                        title="Hurry up! ⚠️",
-                        body="Only 3 minutes left to sync your Ludo Challenge! Join now or you will lose your entry fee.",
-                        data={"type": "LUDO_CHALLENGE", "challenge_id": str(challenge.id)}
-                    )
-                except Exception as e:
-                    logger.error(f"Push error: {e}")
-                    
-            # If opponent hasn't synced
-            if opponent and not challenge.opponent_synced and getattr(opponent, "fcm_token", None):
-                try:
-                    send_push(
-                        fcm_token=opponent.fcm_token,
-                        title="Hurry up! ⚠️",
-                        body="Only 3 minutes left to sync your Ludo Challenge! Join now or you will lose your entry fee.",
-                        data={"type": "LUDO_CHALLENGE", "challenge_id": str(challenge.id)}
-                    )
-                except Exception as e:
-                    logger.error(f"Push error: {e}")
-                    
-            _warned_sync_challenges.add(challenge.id)
+            time_left = challenge.sync_deadline.replace(tzinfo=timezone.utc) - now
+            is_under_5m = time_left <= timedelta(minutes=5)
+            is_under_2m = time_left <= timedelta(minutes=2)
+            
+            # Send 5 min warning if not sent
+            if is_under_5m and challenge.id not in _warned_sync_challenges_5m:
+                if creator and not challenge.creator_synced and getattr(creator, "fcm_token", None):
+                    try:
+                        send_push(
+                            fcm_token=creator.fcm_token,
+                            title="Hurry up! ⚠️",
+                            body="Only 5 minutes left to sync your Ludo Challenge! Join now or you will lose 30% of your entry fee.",
+                            data={"type": "LUDO_CHALLENGE", "challenge_id": str(challenge.id)}
+                        )
+                    except Exception as e:
+                        logger.error(f"Push error: {e}")
+                        
+                if opponent and not challenge.opponent_synced and getattr(opponent, "fcm_token", None):
+                    try:
+                        send_push(
+                            fcm_token=opponent.fcm_token,
+                            title="Hurry up! ⚠️",
+                            body="Only 5 minutes left to sync your Ludo Challenge! Join now or you will lose 30% of your entry fee.",
+                            data={"type": "LUDO_CHALLENGE", "challenge_id": str(challenge.id)}
+                        )
+                    except Exception as e:
+                        logger.error(f"Push error: {e}")
+                        
+                _warned_sync_challenges_5m.add(challenge.id)
+                
+            # Send 2 min warning if not sent
+            if is_under_2m and challenge.id not in _warned_sync_challenges_2m:
+                if creator and not challenge.creator_synced and getattr(creator, "fcm_token", None):
+                    try:
+                        send_push(
+                            fcm_token=creator.fcm_token,
+                            title="Hurry up! ⚠️",
+                            body="Only 2 minutes left to sync your Ludo Challenge! Join now or you will lose 30% of your entry fee.",
+                            data={"type": "LUDO_CHALLENGE", "challenge_id": str(challenge.id)}
+                        )
+                    except Exception as e:
+                        logger.error(f"Push error: {e}")
+                        
+                if opponent and not challenge.opponent_synced and getattr(opponent, "fcm_token", None):
+                    try:
+                        send_push(
+                            fcm_token=opponent.fcm_token,
+                            title="Hurry up! ⚠️",
+                            body="Only 2 minutes left to sync your Ludo Challenge! Join now or you will lose 30% of your entry fee.",
+                            data={"type": "LUDO_CHALLENGE", "challenge_id": str(challenge.id)}
+                        )
+                    except Exception as e:
+                        logger.error(f"Push error: {e}")
+                        
+                _warned_sync_challenges_2m.add(challenge.id)
+
 async def handle_sync_timeouts():
     now = datetime.now(timezone.utc)
     async with SessionLocal() as db:
@@ -188,8 +217,10 @@ async def handle_sync_timeouts():
             return
 
         for challenge in timed_out:
-            if challenge.id in _warned_sync_challenges:
-                _warned_sync_challenges.discard(challenge.id)
+            if challenge.id in _warned_sync_challenges_5m:
+                _warned_sync_challenges_5m.discard(challenge.id)
+            if challenge.id in _warned_sync_challenges_2m:
+                _warned_sync_challenges_2m.discard(challenge.id)
             challenge.status = "CANCELLED"
             creator_late  = not challenge.creator_synced
             opponent_late = not challenge.opponent_synced

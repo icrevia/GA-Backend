@@ -252,7 +252,7 @@ async def join_challenge(
             send_push(
                 fcm_token=creator.fcm_token,
                 title="Challenge Accepted! ⚔️",
-                body=f"{current_user.username} has joined your Ludo Challenge. Tap to sync and play!",
+                body=f"{current_user.username} has joined your Ludo Challenge. Tap to sync and start the match. If you don't join within 10 minutes, 30% of your entry amount will be deducted as a platform fee.",
                 data={"type": "LUDO_CHALLENGE", "challenge_id": str(challenge_id)}
             )
     except Exception as e:
