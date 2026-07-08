@@ -280,7 +280,8 @@ async def enter_sync(
     db: AsyncSession = Depends(get_async_db),
 ):
     """Tap Play Now - mark this player as synced. When both are synced, game launches."""
-    challenge = await db.get(LudoChallenge, challenge_id)
+    res = await db.execute(select(LudoChallenge).where(LudoChallenge.id == challenge_id).with_for_update())
+    challenge = res.scalar_one_or_none()
     if not challenge:
         raise HTTPException(404, "Challenge not found.")
     if challenge.status != "WAITING_SYNC":
