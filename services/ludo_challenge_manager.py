@@ -302,8 +302,10 @@ async def launch_game(challenge_id: int):
             challenge.status   = "PLAYING"
             await db.commit()
             
-            if challenge_id in _warned_sync_challenges:
-                _warned_sync_challenges.discard(challenge_id)
+            if challenge_id in _warned_sync_challenges_5m:
+                _warned_sync_challenges_5m.discard(challenge_id)
+            if challenge_id in _warned_sync_challenges_2m:
+                _warned_sync_challenges_2m.discard(challenge_id)
 
             match_id = match.id
             c_id     = challenge.creator_id
