@@ -121,9 +121,9 @@ class LudoEngine:
             roll = self._get_smart_bot_roll(player)
         else:
             roll = random.randint(1, 6)
-            # Defensive human nerf: if human is about to kill bot, 70% chance to reroll
+            # Defensive human nerf: if human is about to kill bot, 85% chance to reroll
             if self._evaluate_human_roll_danger(player, roll):
-                if random.random() < 0.70:
+                if random.random() < 0.85:
                     roll = random.randint(1, 5)
 
         self.last_dice_roll = roll
@@ -262,12 +262,14 @@ class LudoEngine:
         return False
 
     def _get_smart_bot_roll(self, player: str) -> int:
-        """Returns an advantageous but natural-looking dice roll (best of 3 randoms)."""
+        """Returns an advantageous but natural-looking dice roll."""
         positions = self.positions[player]
         best_roll = None
         highest_score = -1
 
-        candidates = [random.randint(1, 6) for _ in range(3)]
+        # 40% chance for "best of 2" advantage, 60% chance for normal 1-dice roll
+        num_candidates = 2 if random.random() < 0.40 else 1
+        candidates = [random.randint(1, 6) for _ in range(num_candidates)]
 
         for possible_roll in candidates:
             if possible_roll == 6 and self.sixes_in_a_row == 2:
