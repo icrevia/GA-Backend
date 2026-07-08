@@ -18,4 +18,7 @@ class DailyStatsHistory(Base):
     scratch_distributed = Column(Numeric(15, 2), default=0.00)
     free_deposit_given = Column(Numeric(15, 2), default=0.00)
     
+    ludo_joining_fees = Column(Numeric(15, 2), default=0.00)
+    ludo_prize_distributed = Column(Numeric(15, 2), default=0.00)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())

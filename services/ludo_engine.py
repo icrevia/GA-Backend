@@ -99,7 +99,7 @@ class LudoEngine:
     def start_game(self) -> None:
         self.state = "PLAYING"
 
-    def roll_dice(self, player: str) -> int:
+    def roll_dice(self, player: str, is_bot: bool = False) -> int:
         """
         Roll for `player`.
         Returns:
@@ -117,7 +117,10 @@ class LudoEngine:
         positions = self.positions[player]
 
         # In Rush Ludo, we don't boost 6 since they are all on the board
-        roll = random.randint(1, 6)
+        if is_bot:
+            roll = self._get_smart_bot_roll(player)
+        else:
+            roll = random.randint(1, 6)
 
         self.last_dice_roll = roll
         self.dice_rolled = True
@@ -235,6 +238,65 @@ class LudoEngine:
     # ------------------------------------------------------------------
     # Internal helpers — NOT called from outside
     # ------------------------------------------------------------------
+
+    def _get_smart_bot_roll(self, player: str) -> int:
+        """Returns the most advantageous dice roll for the bot to cheat slightly."""
+        positions = self.positions[player]
+        best_roll = None
+        highest_score = -1
+
+        for possible_roll in range(1, 7):
+            if possible_roll == 6 and self.sixes_in_a_row == 2:
+                continue  # don't forfeit by rolling a third 6
+
+            score = 0
+            has_valid_move = False
+
+            # evaluate score for this roll across all tokens
+            for token_index, pos in enumerate(positions):
+                if pos == TOTAL_CELLS: 
+                    continue
+                new_pos = pos + possible_roll
+                if new_pos > TOTAL_CELLS: 
+                    continue
+                if self._has_block(player, new_pos): 
+                    continue
+
+                has_valid_move = True
+                move_score = 0
+                if possible_roll == 6: move_score += 10 # 6 gives extra turn
+                if new_pos == TOTAL_CELLS: move_score += 100 # home
+                if new_pos in SAFE_CELLS: move_score += 5
+                
+                # Check for kills
+                killed = False
+                if new_pos <= MAIN_TRACK_END and new_pos not in SAFE_CELLS:
+                    g = self._global_cell(player, new_pos)
+                    occupants = self._cell_occupants.get(g)
+                    if occupants:
+                        for opp, _ in occupants:
+                            if opp != player:
+                                killed = True
+                                break
+                if killed: move_score += 50
+
+                if move_score > score:
+                    score = move_score
+
+            # Give a base score if there's any valid move
+            if has_valid_move and score == 0:
+                score = possible_roll
+
+            if score > highest_score:
+                highest_score = score
+                best_roll = possible_roll
+
+        if best_roll is None:
+            # fallback
+            if self.sixes_in_a_row == 2: return random.randint(1, 5)
+            return 6
+        
+        return best_roll
 
     def _has_block(self, current_player: str, new_rel_pos: int) -> bool:
         if new_rel_pos > MAIN_TRACK_END:

@@ -4290,6 +4290,8 @@ def get_daily_history(
             "spin_distributed": float(r.spin_distributed),
             "scratch_distributed": float(r.scratch_distributed),
             "free_deposit_given": float(r.free_deposit_given),
+            "ludo_joining_fees": float(r.ludo_joining_fees) if r.ludo_joining_fees else 0.0,
+            "ludo_prize_distributed": float(r.ludo_prize_distributed) if r.ludo_prize_distributed else 0.0,
         }
         for r in records
     ]
@@ -4313,6 +4315,8 @@ def get_daily_today(
         "spin_distributed": float(snapshot.spin_distributed),
         "scratch_distributed": float(snapshot.scratch_distributed),
         "free_deposit_given": float(snapshot.free_deposit_given),
+        "ludo_joining_fees": float(snapshot.ludo_joining_fees) if snapshot.ludo_joining_fees else 0.0,
+        "ludo_prize_distributed": float(snapshot.ludo_prize_distributed) if snapshot.ludo_prize_distributed else 0.0,
     }
 
 # ─────────────────────────────────────────────────────────────────

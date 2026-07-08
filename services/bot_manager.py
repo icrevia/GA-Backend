@@ -259,7 +259,7 @@ class BotManager:
                 await asyncio.sleep(random.uniform(1.5, 2.5))  # human-like thinking delay, allows user's previous animations to finish
                 if engine.get_current_player() != bot_color:  # re-check after delay
                     continue
-                await orchestrator.handle_action(match_id, bot_user_id, {"action": "ROLL_DICE"})
+                await orchestrator.handle_action(match_id, bot_user_id, {"action": "ROLL_DICE", "is_bot": True})
                 await asyncio.sleep(0.5)
                 continue
 

@@ -140,7 +140,8 @@ class LudoOrchestrator:
 
         # ---------- ROLL_DICE ----------
         if action_type == "ROLL_DICE":
-            roll = engine.roll_dice(player_color)
+            is_bot = action_data.get("is_bot", False)
+            roll = engine.roll_dice(player_color, is_bot=is_bot)
             if roll == -1:
                 return  # illegal — don't broadcast noise
             await self._broadcast(match_id, engine)

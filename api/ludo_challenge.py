@@ -31,7 +31,7 @@ from sqlalchemy import func, desc
 
 router = APIRouter(prefix="/challenge", tags=["ludo-challenge"])
 
-PRIZE_MULTIPLIER = Decimal("1.8")
+CHALLENGE_TTL_HOURS = 1
 CHALLENGE_TTL_HOURS = 1
 SYNC_WINDOW_MINUTES = 10
 
@@ -97,7 +97,17 @@ async def create_challenge(
     except InsufficientWalletBalanceError:
         raise HTTPException(400, "Insufficient balance.")
 
-    prize_pool = Decimal(body.entry_fee) * PRIZE_MULTIPLIER
+    # Get platform fee percentage (default 10%)
+    fee_res = await db.execute(select(SystemConfig).where(SystemConfig.config_key == "LUDO_CHALLENGE_FEE_PERCENT"))
+    fee_cfg = fee_res.scalar_one_or_none()
+    fee_percent = Decimal("10.0")
+    if fee_cfg and fee_cfg.config_value:
+        try:
+            fee_percent = Decimal(fee_cfg.config_value)
+        except Exception:
+            pass
+            
+    prize_pool = (Decimal(body.entry_fee) * Decimal("2.0") * (Decimal("100.0") - fee_percent)) / Decimal("100.0")
     now = datetime.now(timezone.utc)
     challenge = LudoChallenge(
         creator_id=current_user.id,

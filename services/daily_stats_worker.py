@@ -59,6 +59,19 @@ def generate_daily_snapshot(db: Session, target_date: date) -> DailyStatsHistory
     scratch_distributed = get_sum("SCRATCH_CARD_REWARD", status=None)
     free_deposit_given = get_sum(FREE_DEPOSIT_TX_TYPES, status=None)
 
+    from models.ludo import LudoChallenge
+    ludo_joining_fees = db.query(func.sum(LudoChallenge.entry_fee * 2)).filter(
+        LudoChallenge.status == "COMPLETED",
+        LudoChallenge.created_at >= start_dt_utc,
+        LudoChallenge.created_at < end_dt_utc
+    ).scalar() or Decimal("0.00")
+    
+    ludo_prize_distributed = db.query(func.sum(LudoChallenge.prize_pool)).filter(
+        LudoChallenge.status == "COMPLETED",
+        LudoChallenge.created_at >= start_dt_utc,
+        LudoChallenge.created_at < end_dt_utc
+    ).scalar() or Decimal("0.00")
+
     # Check if record already exists
     record = db.query(DailyStatsHistory).filter(DailyStatsHistory.date == target_date).first()
     if not record:
@@ -74,6 +87,8 @@ def generate_daily_snapshot(db: Session, target_date: date) -> DailyStatsHistory
     record.spin_distributed = spin_distributed
     record.scratch_distributed = scratch_distributed
     record.free_deposit_given = free_deposit_given
+    record.ludo_joining_fees = ludo_joining_fees
+    record.ludo_prize_distributed = ludo_prize_distributed
 
     db.commit()
     return record
