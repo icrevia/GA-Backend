@@ -121,6 +121,10 @@ class LudoEngine:
             roll = self._get_smart_bot_roll(player)
         else:
             roll = random.randint(1, 6)
+            # Defensive human nerf: if human is about to kill bot, 70% chance to reroll
+            if self._evaluate_human_roll_danger(player, roll):
+                if random.random() < 0.70:
+                    roll = random.randint(1, 5)
 
         self.last_dice_roll = roll
         self.dice_rolled = True
@@ -239,13 +243,33 @@ class LudoEngine:
     # Internal helpers — NOT called from outside
     # ------------------------------------------------------------------
 
+    def _evaluate_human_roll_danger(self, player: str, possible_roll: int) -> bool:
+        """Returns True if this roll allows the human to kill an opponent's token."""
+        positions = self.positions[player]
+        for token_index, pos in enumerate(positions):
+            if pos == TOTAL_CELLS: continue
+            new_pos = pos + possible_roll
+            if new_pos > TOTAL_CELLS: continue
+            if self._has_block(player, new_pos): continue
+            
+            if new_pos <= MAIN_TRACK_END and new_pos not in SAFE_CELLS:
+                g = self._global_cell(player, new_pos)
+                occupants = self._cell_occupants.get(g)
+                if occupants:
+                    for opp, _ in occupants:
+                        if opp != player:
+                            return True
+        return False
+
     def _get_smart_bot_roll(self, player: str) -> int:
-        """Returns the most advantageous dice roll for the bot to cheat slightly."""
+        """Returns an advantageous but natural-looking dice roll (best of 3 randoms)."""
         positions = self.positions[player]
         best_roll = None
         highest_score = -1
 
-        for possible_roll in range(1, 7):
+        candidates = [random.randint(1, 6) for _ in range(3)]
+
+        for possible_roll in candidates:
             if possible_roll == 6 and self.sixes_in_a_row == 2:
                 continue  # don't forfeit by rolling a third 6
 
@@ -294,7 +318,7 @@ class LudoEngine:
         if best_roll is None:
             # fallback
             if self.sixes_in_a_row == 2: return random.randint(1, 5)
-            return 6
+            return candidates[0]
         
         return best_roll
 
