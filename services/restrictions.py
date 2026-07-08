@@ -25,6 +25,7 @@ VALID_RESTRICTION_PAGE_KEYS = {
     "PROFILE",
     "SUPPORT",
     "QUIZ",
+    "LUDO",
 }
 
 _PAGE_KEY_ALIASES = {
