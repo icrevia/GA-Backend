@@ -343,42 +343,44 @@ async def cancel_challenge(
     challenge.status = "CANCELLED"
 
     if original_status == "OPEN":
-        # 70% refund to creator (30% penalty for manual cancellation)
+        # 100% refund to creator since no one joined yet
         creator = await db.get(User, current_user.id)
         if creator and challenge.creator_deductions:
             await _refund_user(
                 db, creator,
                 _parse_deductions(challenge.creator_deductions),
-                Decimal("0.7"),
+                Decimal("1.0"),
                 f"CHG-CANCEL-{challenge.id}",
-                f"Challenge #{challenge.id} cancelled - 70% refund"
+                f"Challenge #{challenge.id} cancelled - 100% refund"
             )
         await db.commit()
-        return {"success": True, "message": "Challenge cancelled. 70% refund issued.", "refund_type": "PARTIAL_70"}
+        return {"success": True, "message": "Challenge cancelled. Full refund issued.", "refund_type": "FULL_100"}
 
     else:
-        # WAITING_SYNC: 70% refund to both players
+        # WAITING_SYNC: 70% refund to abandoner, 100% to other player
         creator  = await db.get(User, challenge.creator_id)
         opponent = await db.get(User, challenge.opponent_id) if challenge.opponent_id else None
 
         abandoner_name = current_user.username
+        creator_rate = Decimal("0.7") if current_user.id == challenge.creator_id else Decimal("1.0")
+        opponent_rate = Decimal("0.7") if current_user.id == challenge.opponent_id else Decimal("1.0")
 
         if creator and challenge.creator_deductions:
             await _refund_user(
                 db, creator,
                 _parse_deductions(challenge.creator_deductions),
-                Decimal("0.7"),
+                creator_rate,
                 f"CHG-ABN-{challenge.id}-C",
-                f"Challenge #{challenge.id} abandoned by {abandoner_name} - 70% refund"
+                f"Challenge #{challenge.id} cancelled by {abandoner_name} - {int(creator_rate * 100)}% refund"
             )
 
         if opponent and challenge.opponent_deductions:
             await _refund_user(
                 db, opponent,
                 _parse_deductions(challenge.opponent_deductions),
-                Decimal("0.7"),
+                opponent_rate,
                 f"CHG-ABN-{challenge.id}-O",
-                f"Challenge #{challenge.id} abandoned by {abandoner_name} - 70% refund"
+                f"Challenge #{challenge.id} cancelled by {abandoner_name} - {int(opponent_rate * 100)}% refund"
             )
 
         await db.commit()
@@ -388,19 +390,20 @@ async def cancel_challenge(
         if other_player_id:
             try:
                 from core.websockets import manager
+                other_rate_pct = 70 if other_player_id == current_user.id else 100
                 await manager.send_personal_message({
                     "type": "challenge_cancelled",
                     "challenge_id": challenge_id,
                     "reason": "abandoned",
-                    "message": f"The challenge was abandoned by {abandoner_name}. You received a 70% refund.",
+                    "message": f"The challenge was cancelled by {abandoner_name}. You received a {other_rate_pct}% refund.",
                 }, other_player_id)
             except Exception:
                 pass
 
         return {
             "success": True,
-            "message": "Challenge abandoned. Both players receive a 70% refund.",
-            "refund_type": "PARTIAL_70"
+            "message": "Challenge cancelled. You received a 70% refund.",
+            "refund_type": "MIXED"
         }
 
 # ─── Admin Routes ─────────────────────────────────────────────────────────────
