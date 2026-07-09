@@ -39,6 +39,12 @@ def upgrade() -> None:
     op.create_index(op.f('ix_tournaments_created_at'), 'tournaments', ['created_at'], unique=False)
     op.create_index(op.f('ix_tournaments_match_time'), 'tournaments', ['match_time'], unique=False)
     op.create_index(op.f('ix_tournaments_status'), 'tournaments', ['status'], unique=False)
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS deposit_balance NUMERIC(12,2) DEFAULT 0.00")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS winning_balance NUMERIC(12,2) DEFAULT 0.00")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS bonus_balance NUMERIC(12,2) DEFAULT 0.00")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_limit INTEGER DEFAULT 1")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_spin_used INTEGER DEFAULT 0")
+
     op.alter_column('users', 'deposit_balance',
                existing_type=sa.NUMERIC(precision=12, scale=2),
                nullable=False,
