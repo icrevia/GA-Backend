@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from sqlalchemy.exc import IntegrityError
@@ -553,6 +553,7 @@ def create_tournament(
 def update_tournament(
     tournament_id: int,
     tournament_in: TournamentUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_admin)
 ):
@@ -598,13 +599,14 @@ def update_tournament(
                         "LIVE":      "The match has started. Open the app immediately!",
                         "COMPLETED": "The match has ended. Check your result and winnings! 💰",
                     }
-                    import threading
-                    threading.Thread(
-                        target=send_push_to_many,
-                        args=(tokens, title_map[new_status], body_map[new_status]),
-                        kwargs={"data": {"tournament_id": str(tournament_id), "status": new_status}},
-                        daemon=True,
-                    ).start()
+                    # BUG-013 / BUG-026 FIX: Use FastAPI BackgroundTasks instead of raw threading.Thread
+                    background_tasks.add_task(
+                        send_push_to_many,
+                        tokens,
+                        title_map[new_status],
+                        body_map[new_status],
+                        data={"tournament_id": str(tournament_id), "status": new_status}
+                    )
         except Exception as notif_err:
             import logging
             logging.getLogger("GamerzAdda").warning("Push notification error: %s", notif_err)
@@ -677,12 +679,18 @@ def join_tournament(
     if tournament.status != "UPCOMING":
         raise HTTPException(status_code=400, detail="Tournament is already Live or Completed")
 
-    # Slot check (done after lock — now race-condition-safe)
-    participant_count = db.query(TournamentParticipant).filter(
+    # BUG-008 FIX: Count distinct filled slot numbers — NOT raw participant rows.
+    # For DUO/SQUAD tournaments multiple participants share one slot_no, so a
+    # raw .count() would block joins far too early (e.g. blocking a 10-team
+    # SQUAD tournament after only 3 teams because raw rows = 12, not 3 slots).
+    from sqlalchemy import func as sa_func
+    filled_slots = db.query(
+        sa_func.count(sa_func.distinct(TournamentParticipant.slot_no))
+    ).filter(
         TournamentParticipant.tournament_id == tournament_id
-    ).count()
+    ).scalar() or 0
     max_slots = int(tournament.max_slots or 100)
-    if participant_count >= max_slots:
+    if filled_slots >= max_slots:
         raise HTTPException(status_code=400, detail="Arena is full! Try another one.")
 
     # Already joined?
@@ -965,7 +973,7 @@ def join_tournament(
             status="SUCCESS",
             reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
             failure_reason=_build_join_failure_reason(tournament_id, deductions),
-            remark=tournament.title
+            remark=(tournament.title or "").strip()[:200]
         )
         db.add(transaction)
 
@@ -981,6 +989,13 @@ def join_tournament(
         # Joiner still needs their player info (name + uid)
         member_payload: dict[str, object] = {}
         if request.players and len(request.players) > 0:
+            # BUG-035 FIX: Reject requests that include extra players when joining a team.
+            # When joining an existing team, the user is only supposed to supply their own player info.
+            if len(request.players) > 1:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="When joining a team, provide only YOUR OWN player details. Do not add teammates' details again."
+                )
             p = request.players[0]
             name = (p.name or "").strip()
             uid = (p.uid or "").strip()
@@ -1142,7 +1157,7 @@ def join_tournament(
         status="SUCCESS",
         reference_id=f"GA-{uuid.uuid4().hex[:6].upper()}",
         failure_reason=_build_join_failure_reason(tournament_id, deductions),
-        remark=tournament.title
+        remark=(tournament.title or "").strip()[:200]
     )
     db.add(transaction)
 

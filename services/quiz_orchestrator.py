@@ -61,25 +61,31 @@ def _resolve_quiz_entry_refund(
         .order_by(WalletTransaction.id.desc())
         .first()
     )
+    # BUG-016 FIX: Do NOT fall back to an unrelated quiz's entry transaction.
+    # If we cannot find the specific entry tx, use a safe deposit-bucket fallback.
+    # Falling back to the most-recent QUIZ_ENTRY would refund to the wrong bucket
+    # (e.g., refund to 'winning' when the original deduction was from 'deposit'),
+    # which corrupts the bucket semantics that govern withdrawal eligibility.
     if not tx:
-        tx = (
-            db.query(WalletTransaction)
-            .filter(
-                WalletTransaction.user_id == user_id,
-                WalletTransaction.transaction_type == "QUIZ_ENTRY",
-                WalletTransaction.status == "SUCCESS",
-            )
-            .order_by(WalletTransaction.id.desc())
-            .first()
+        logger.warning(
+            "_resolve_quiz_entry_refund: no QUIZ_ENTRY tx found for user=%d quiz=%d; "
+            "using safe deposit-bucket fallback",
+            user_id, quiz_id,
         )
+        buckets = {
+            WALLET_BUCKET_BONUS: ZERO_MONEY,
+            WALLET_BUCKET_DEPOSIT: to_money(fallback_amount),
+            WALLET_BUCKET_WINNING: ZERO_MONEY,
+        }
+        return buckets, None
 
-    buckets = _parse_deductions_from_reason(tx.failure_reason if tx else None)
+    buckets = _parse_deductions_from_reason(tx.failure_reason)
     total = sum(buckets.values(), ZERO_MONEY)
     if total <= ZERO_MONEY:
         buckets = {
             WALLET_BUCKET_BONUS: ZERO_MONEY,
-            WALLET_BUCKET_DEPOSIT: ZERO_MONEY,
-            WALLET_BUCKET_WINNING: to_money(fallback_amount),
+            WALLET_BUCKET_DEPOSIT: to_money(fallback_amount),
+            WALLET_BUCKET_WINNING: ZERO_MONEY,
         }
 
     return buckets, tx
@@ -233,30 +239,39 @@ class QuizOrchestrator:
             }
 
             # 3. Enter real-time sync loop
-            # This loop sends updates every second to keep all players perfectly synced
+            # Broadcasts elapsed_seconds every second — question pool was already sent once at start.
+            # BUG-012/BUG-020 FIX:
+            #  - The full question_pool is NOT re-sent every second (major bandwidth saving).
+            #  - DB status check is done every 5 seconds using asyncio.to_thread so the event
+            #    loop is NOT blocked (SyncSessionLocal.query is a blocking call).
             logger.info(f"Quiz {quiz_id} sync loop started. Duration: {session_duration}s")
-            
+
+            tick_count = 0
             while True:
                 now_utc = datetime.now(timezone.utc)
                 if now_utc >= end_time:
                     break
-                
-                # Check if quiz was completed early (e.g. BATTLE finished by all players)
-                # We do this every 2 seconds to save DB calls, or use a cached status if available
-                # For now, let's just check every second since it's critical for UX
-                db_check = SyncSessionLocal()
-                try:
-                    q_status = db_check.query(QuizMatch.status).filter(QuizMatch.id == quiz_id).scalar()
+
+                # Check DB for early completion every 5 ticks (5 seconds) to reduce DB load
+                # and avoid blocking the event loop on every tick.
+                tick_count += 1
+                if tick_count % 5 == 0:
+                    def _check_status(qid=quiz_id):
+                        with SyncSessionLocal() as _db:
+                            return _db.query(QuizMatch.status).filter(QuizMatch.id == qid).scalar()
+                    q_status = await asyncio.to_thread(_check_status)
                     if q_status == "COMPLETED":
                         logger.info(f"Quiz {quiz_id} completed early. Breaking sync loop.")
                         break
-                finally:
-                    db_check.close()
 
-                # Compute elapsed so Android timer moves correctly every second
                 elapsed_secs = int((now_utc - start_time_dt).total_seconds())
-                sync_payload["elapsed_seconds"] = elapsed_secs
-                await ws_manager.broadcast_to_quiz(quiz_id, sync_payload)
+                # Only send the lightweight ticker payload — NOT the full question_pool
+                ticker_payload = {
+                    "type": "quiz_sync",
+                    "quiz_id": quiz_id,
+                    "elapsed_seconds": elapsed_secs,
+                }
+                await ws_manager.broadcast_to_quiz(quiz_id, ticker_payload)
                 await asyncio.sleep(1)
             
             # 4. Calculate results
@@ -276,14 +291,17 @@ class QuizOrchestrator:
 
     async def process_battle_results(self, quiz_id: int, surrendered_user_id: int | None = None, force: bool = False):
         """
-        Specialized result calculation for 1v1 Battles. 
+        Specialized result calculation for 1v1 Battles.
         Calculates winner based on Score -> then Response Time.
         Distributes prizes immediately.
         """
         db = SyncSessionLocal()
         try:
-            quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).first()
-            if not quiz or quiz.match_type != "BATTLE" or quiz.status == "COMPLETED": 
+            # BUG-003 + BUG-004 FIX: Lock the QuizMatch row BEFORE reading status.
+            # This ensures only ONE concurrent call (timer vs surrender vs normal completion)
+            # can proceed past this point. All others will see status == "COMPLETED" and exit.
+            quiz = db.query(QuizMatch).filter(QuizMatch.id == quiz_id).with_for_update().first()
+            if not quiz or quiz.match_type != "BATTLE" or quiz.status == "COMPLETED":
                 return
 
             from models.quiz import QuizResponse, QuizParticipant
@@ -340,7 +358,9 @@ class QuizOrchestrator:
             # Distribute Prizes
             prize_pool = to_money(quiz.prize_pool)
             if winner_id:
-                winner_user = db.query(User).filter(User.id == winner_id).first()
+                # BUG-003 FIX: Lock the winner's User row before crediting to prevent
+                # concurrent double-credit if two end-game triggers fire simultaneously.
+                winner_user = db.query(User).filter(User.id == winner_id).with_for_update().first()
                 if winner_user:
                     credit_wallet(winner_user, prize_pool, WALLET_BUCKET_WINNING)
                     db.add(WalletTransaction(

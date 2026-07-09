@@ -27,26 +27,26 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
-def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
-    """
-    Creates a signed JWT containing the provided claims.
-
     'data' must include:
     - 'sub': str(user_id)
     - 'tv':  user.token_version  (for instant revocation support)
+    """
+def create_access_token(data: dict, expires_delta: timedelta = None, audience: str = "user") -> str:
+    """
+    Creates a signed JWT containing the provided claims.
     """
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "aud": audience})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def decode_access_token(token: str) -> dict:
+def decode_access_token(token: str, audience: str = "user") -> dict:
     """Decode and verify JWT signature. Raises 401 on failure."""
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM], audience=audience)
         return payload
     except JWTError:
         # Don't leak JWT error details (avoids algorithm confusion attack hints)

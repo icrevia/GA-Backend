@@ -331,7 +331,10 @@ async def legacy_support_ws_endpoint(
         return
 
     try:
-        payload = decode_access_token(token)
+        try:
+            payload = decode_access_token(token, audience="user")
+        except Exception:
+            payload = decode_access_token(token, audience="admin")
         token_uid = int(payload.get("sub"))
     except Exception:
         await websocket.close(code=1008)

@@ -315,17 +315,31 @@ class LudoOrchestrator:
 
         try:
             async with SessionLocal() as db:
+                # BUG-005 FIX: Lock the match row before reading its status.
+                # Without this lock, two concurrent end_game tasks (e.g., one from a
+                # winning move and one from the timer) can both read status='PLAYING'
+                # and both credit the winner's wallet.
+                from sqlalchemy import select as _sel
                 match_res = await db.execute(
-                    select(LudoMatch).where(LudoMatch.id == match_id)
+                    _sel(LudoMatch).where(LudoMatch.id == match_id).with_for_update()
                 )
                 match = match_res.scalar_one_or_none()
                 if not match:
                     logger.error("end_game: match %d not found in DB", match_id)
                     return
 
+                # Re-check status after acquiring the lock.
+                # If another task already completed this match, exit without paying again.
+                if match.status == "COMPLETED":
+                    logger.info(
+                        "end_game: match %d already COMPLETED (concurrent call) — skipping payout",
+                        match_id
+                    )
+                    return
+
                 # Mark match completed
                 match.status = "COMPLETED"
-                match.end_time = datetime.datetime.utcnow()
+                match.end_time = datetime.datetime.now(datetime.timezone.utc)
                 prize_pool = match.prize_pool
 
                 # Update participants with scores and status
@@ -379,9 +393,16 @@ class LudoOrchestrator:
             from models.user import User
             from models.wallet import WalletTransaction
             from services.wallet_balances import credit_wallet, WALLET_BUCKET_WINNING, to_money
+            from sqlalchemy import select as _sel
             import uuid
 
-            user = await db.get(User, user_id)
+            # BUG-017 FIX: Use with_for_update() to lock the User row before crediting.
+            # Without this, a concurrent Ludo win, quiz win, or wallet operation could
+            # overwrite this credit with a stale balance.
+            user_res = await db.execute(
+                _sel(User).where(User.id == user_id).with_for_update()
+            )
+            user = user_res.scalar_one_or_none()
             if not user:
                 logger.error("_credit_winner: user %d not found", user_id)
                 return

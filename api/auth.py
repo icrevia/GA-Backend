@@ -827,8 +827,12 @@ async def verify_otp(
 
     token_version = getattr(db_user, "token_version", 0) or 0
     user_payload = UserResponse.model_validate(db_user).model_dump(mode="json")
+    
+    # ARCH-003 FIX: Explicitly assign audience based on role to prevent JWT cross-contamination
+    audience = "admin" if db_user.role == "ADMIN" else "user"
+    
     response = {
-        "access_token": create_access_token({"sub": str(db_user.id), "tv": token_version}),
+        "access_token": create_access_token({"sub": str(db_user.id), "tv": token_version}, audience=audience),
         "token_type": "bearer",
         "role": db_user.role,
         "user": user_payload,
@@ -988,8 +992,10 @@ async def login(request: Request, login_data: LoginRequest, db: AsyncSession = D
 
         token_version = getattr(user, "token_version", 0) or 0
         user_payload = UserResponse.model_validate(user).model_dump(mode="json")
+        
+        # ARCH-003 FIX: Admin token gets audience="admin"
         response = {
-            "access_token": create_access_token({"sub": str(user.id), "tv": token_version}),
+            "access_token": create_access_token({"sub": str(user.id), "tv": token_version}, audience="admin"),
             "token_type": "bearer",
             "role": user.role,
             "user": user_payload,

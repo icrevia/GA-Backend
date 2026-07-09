@@ -229,7 +229,8 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    payload = decode_access_token(token)
+    # Standard users must have audience="user"
+    payload = decode_access_token(token, audience="user")
 
     user_id: str = payload.get("sub")
     if user_id is None:
@@ -278,7 +279,8 @@ async def get_current_user_async(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    payload = decode_access_token(token)
+    # Standard users must have audience="user"
+    payload = decode_access_token(token, audience="user")
     user_id: str = payload.get("sub")
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
@@ -373,7 +375,38 @@ async def get_user_for_support_async(
     return user
 
 
-def get_current_active_admin(current_user: User = Depends(get_current_user)) -> User:
+def get_admin_user(
+    request: Request,
+    db: Session = Depends(get_db_sync),
+    token: str | None = Depends(oauth2_scheme),
+) -> User:
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated.")
+    
+    # ARCH-003 FIX: Admin token must explicitly have audience="admin"
+    payload = decode_access_token(token, audience="admin")
+    
+    user_id: str = payload.get("sub")
+    if user_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+
+    token_version = payload.get("tv", 0)
+    db_token_version = getattr(user, "token_version", 0) or 0
+    if int(token_version) != int(db_token_version):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_session_revoked_detail(user))
+
+    ensure_admin_access_session_sync(db, user, request)
+    return user
+
+
+def get_current_active_admin(current_user: User = Depends(get_admin_user)) -> User:
     if current_user.role != "ADMIN":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current_user

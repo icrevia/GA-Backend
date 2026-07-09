@@ -137,7 +137,8 @@ async def _send_otp_hsp(phone_e164: str) -> dict:
         "expires_at": time.time() + 300  # 5 mins expiry
     }
 
-    url = "http://sms.hspsms.com/sendSMS"
+    # BUG-028 FIX: Use HTTPS to protect API credentials from plain-text interception.
+    url = "https://sms.hspsms.com/sendSMS"
     params = {
         "username": username,
         "message": message,

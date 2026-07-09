@@ -998,17 +998,28 @@ def get_payment_status(
     ).with_for_update().first()
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    
+
+    # BUG-002 FIX: Re-check status AFTER acquiring the row lock.
+    # If the webhook already processed this payment while we were waiting for the lock,
+    # tx.status will no longer be PENDING and we must NOT re-credit the wallet.
     if tx.status == "PENDING":
         status_res = check_pay0_order_status(settings.PAY0_MERCHANT_KEY, txnid)
         if status_res["status"] == "SUCCESS":
             status_amount = Decimal(str(status_res.get("amount", 0)))
             if status_amount == tx.amount:
-                tx.status = "SUCCESS"
-                tx.gateway_payment_id = status_res.get("utr")
-                tx.gateway_order_id = status_res.get("order_id") or tx.gateway_order_id or txnid
+                # Re-read inside the user lock in case of concurrent updates
                 user = db.query(User).filter(User.id == tx.user_id).with_for_update().first()
-                credit_wallet(user, tx.amount, WALLET_BUCKET_DEPOSIT)
+                # Final idempotency guard: re-check tx.status after acquiring user lock
+                if tx.status != "PENDING":
+                    logger.info(
+                        "Status poll: tx %s already processed (status=%s) — skipping credit",
+                        txnid, tx.status
+                    )
+                else:
+                    tx.status = "SUCCESS"
+                    tx.gateway_payment_id = status_res.get("utr")
+                    tx.gateway_order_id = status_res.get("order_id") or tx.gateway_order_id or txnid
+                    credit_wallet(user, tx.amount, WALLET_BUCKET_DEPOSIT)
                 deposit_bonus = apply_deposit_bonus_if_eligible(
                     db=db,
                     user=user,
@@ -1138,12 +1149,16 @@ def request_withdrawal(
     if not normalized_upi_id:
         raise HTTPException(status_code=400, detail="UPI ID is required")
 
+    # BUG-014 FIX: Count same-day withdrawals AFTER acquiring the user row lock.
+    # Without the lock, two concurrent withdrawal requests could both read count=0
+    # and both be charged the cheaper first-withdrawal fee.
     _, cycle_start, cycle_end = _current_withdrawal_cycle_ist()
     same_day_withdraw_count = (
         db.query(WalletTransaction.id)
         .filter(
             WalletTransaction.user_id == user.id,
             WalletTransaction.transaction_type == "WITHDRAWAL",
+            WalletTransaction.status.in_(["PENDING", "SUCCESS"]),
             WalletTransaction.created_at >= cycle_start,
             WalletTransaction.created_at < cycle_end,
         )

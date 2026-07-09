@@ -101,7 +101,8 @@ def get_current_staff(
             detail="Not authenticated.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_access_token(token)
+    # ARCH-003 FIX: Staff tokens are Admin tokens, so they must have audience="admin"
+    payload = decode_access_token(token, audience="admin")
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")

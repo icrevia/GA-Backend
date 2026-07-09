@@ -126,10 +126,13 @@ async def get_user_from_token(token: str) -> tuple[int | None, bool, str | None,
         return None, False, None, None, None, None
 
     try:
-        payload = decode_access_token(token)
-    except Exception as e:
-        logger.warning(f"WS Auth Token Decode Error: {e}")
-        return None, False, None, None, None, None
+        payload = decode_access_token(token, audience="user")
+    except Exception:
+        try:
+            payload = decode_access_token(token, audience="admin")
+        except Exception as e:
+            logger.warning(f"WS Auth Token Decode Error: {e}")
+            return None, False, None, None, None, None
 
     user_id = payload.get("sub")
     if user_id is None:
@@ -284,8 +287,24 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WS Auto-send challenge_started error: {e}")
 
     try:
+        import time
+        from collections import deque
+        # Rate limit: max 20 messages per second
+        msg_timestamps = deque(maxlen=20)
+
         while True:
             data = await websocket.receive_text()
+
+            now = time.time()
+            msg_timestamps.append(now)
+            if len(msg_timestamps) == 20 and (now - msg_timestamps[0] < 1.0):
+                logger.warning(f"WS Rate limit exceeded for user {user_id}. Disconnecting.")
+                try:
+                    await websocket.send_text(json.dumps({"type": "error", "message": "Rate limit exceeded"}))
+                    await websocket.close(code=1008)
+                except Exception:
+                    pass
+                break
 
             if data == "ping":
                 await websocket.send_text(json.dumps({"type": "pong"}))
