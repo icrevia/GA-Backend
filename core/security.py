@@ -27,10 +27,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
-    'data' must include:
-    - 'sub': str(user_id)
-    - 'tv':  user.token_version  (for instant revocation support)
-    """
+
 def create_access_token(data: dict, expires_delta: timedelta = None, audience: str = "user") -> str:
     """
     Creates a signed JWT containing the provided claims.
