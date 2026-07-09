@@ -361,9 +361,9 @@ def _validate_developer_otp_session(admin_id: int, otp_session_token: str) -> tu
     if not otp_session_token:
         return False, 0
 
-    # BUG-021 FIX: Use timezone-aware datetime to avoid Python 3.12+ deprecation
-    # and ensure correct comparison even if server timezone is non-UTC.
-    now = datetime.now(timezone.utc)
+    # Revert to naive datetime to match how expires_at is generated (datetime.utcnow())
+    # and prevent TypeError when comparing naive and aware datetimes.
+    now = datetime.utcnow()
     with _DEVELOPER_OTP_LOCK:
         _cleanup_developer_otp_state(now)
         record = _DEVELOPER_OTP_SESSIONS.get(otp_session_token)
