@@ -19,8 +19,34 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Add score column to ludo_participants table
-    op.add_column('ludo_participants', sa.Column('score', sa.Integer(), nullable=True))
+    from core.database import Base
+    import models.user
+    import models.tournament
+    import models.wallet
+    import models.participant
+    import models.support
+    import models.ludo
+    import models.quiz
+    import models.admin_access_session
+    import models.banner
+    import models.config
+    import models.daily_stats
+    import models.notification
+    import models.otp_phone_lock
+    import models.pending_otp
+    import models.promo
+    import models.restriction
+    import models.user_activity_lock
+    import models.withdraw_upi_account
+    
+    conn = op.get_bind()
+    Base.metadata.create_all(conn)
+
+    # Add score column to ludo_participants table if it doesn't exist
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('ludo_participants')]
+    if 'score' not in columns:
+        op.add_column('ludo_participants', sa.Column('score', sa.Integer(), nullable=True))
 
 
 def downgrade() -> None:
