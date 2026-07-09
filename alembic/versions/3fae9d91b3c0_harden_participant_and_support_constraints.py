@@ -42,13 +42,15 @@ def upgrade() -> None:
     ))
 
     # Normalize existing rows so the new max-length check can be applied safely.
-    conn.execute(sa.text(
-        """
-        UPDATE chat_messages
-        SET content = substr(content, 1, 1000)
-        WHERE length(content) > 1000
-        """
-    ))
+    inspector = sa.inspect(conn)
+    if 'chat_messages' in inspector.get_table_names():
+        conn.execute(sa.text(
+            """
+            UPDATE chat_messages
+            SET content = substr(content, 1, 1000)
+            WHERE length(content) > 1000
+            """
+        ))
 
     with op.batch_alter_table("tournament_participants") as batch_op:
         batch_op.create_unique_constraint(
@@ -56,16 +58,17 @@ def upgrade() -> None:
             ["tournament_id", "user_id"],
         )
 
-    with op.batch_alter_table("chat_messages") as batch_op:
-        batch_op.create_check_constraint(
-            "ck_chat_messages_content_len",
-            "length(content) <= 1000",
-        )
-        batch_op.create_index(
-            "ix_chat_messages_session_timestamp",
-            ["session_id", "timestamp"],
-            unique=False,
-        )
+    if 'chat_messages' in inspector.get_table_names():
+        with op.batch_alter_table("chat_messages") as batch_op:
+            batch_op.create_check_constraint(
+                "ck_chat_messages_content_len",
+                sa.text("length(content) <= 1000")
+            )
+            batch_op.create_index(
+                "ix_chat_messages_session_timestamp",
+                ["session_id", "timestamp"],
+                unique=False,
+            )
 
 
 def downgrade() -> None:
