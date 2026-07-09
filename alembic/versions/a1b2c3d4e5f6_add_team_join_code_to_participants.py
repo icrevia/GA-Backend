@@ -22,7 +22,7 @@ def upgrade() -> None:
     with op.batch_alter_table("tournament_participants") as batch_op:
         batch_op.add_column(sa.Column("team_name", sa.String(), nullable=True))
         batch_op.add_column(sa.Column("team_join_code", sa.String(), nullable=True))
-        batch_op.add_column(sa.Column("is_team_captain", sa.Boolean(), nullable=True, server_default=sa.text("0")))
+        batch_op.add_column(sa.Column("is_team_captain", sa.Boolean(), nullable=True, server_default=sa.text("false")))
         batch_op.create_index("ix_tp_team_join_code", ["team_join_code"], unique=False)
 
 
