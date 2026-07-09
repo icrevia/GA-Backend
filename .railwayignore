@@ -1,0 +1,34 @@
+# Keep runtime app files; exclude local/dev artifacts to speed Railway snapshot.
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local env and editor clutter
+.env
+.idea/
+.vscode/
+
+# Local temp and verification scripts not needed in production container
+tmp/
+tmp_*.py
+tmp_*.txt
+tmp_*.md
+verification/
+
+# Debug/scratch scripts — never deploy to production
+scratch/
+scratch_*.py
+
+# One-off admin utility scripts
+delete_non_admins.py
+query.py
+migrate_prize_distribution.py
+
+# Test scripts
+test_*.py
+
+# Git metadata is not required in build context
+.git/

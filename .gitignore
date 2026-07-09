@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Firebase private key — NEVER commit this
+firebase-service-account.json
+
+# Database
+*.sqlite3
+*.db
+
+# Local scratch and diagnostics
+tmp_*.py
+tmp_*.txt
+tmp_*.md
+test_status.py
+*.log
+
+# Scratch/debug files — never commit
+scratch_*.py
+scratch/
+delete_non_admins.py
+query.py
+migrate_prize_distribution.py
+test_*.py
+
+# Generated verification artifacts
+verification/*_traces.json
+verification/*_proof.json
+
+# OS
+.DS_Store
+Thumbs.db
