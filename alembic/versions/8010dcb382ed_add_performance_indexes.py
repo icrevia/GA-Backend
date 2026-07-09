@@ -87,6 +87,7 @@ def upgrade() -> None:
         op.create_index(op.f('ix_chat_messages_session_is_read'), 'chat_messages', ['session_id', 'is_read'], unique=False)
         op.create_index(op.f('ix_chat_messages_media_expires_at'), 'chat_messages', ['media_expires_at'], unique=False)
         op.create_index(op.f('ix_chat_messages_id'), 'chat_messages', ['id'], unique=False)
+    op.alter_column('tournament_participants', 'team_name',
                existing_type=sa.TEXT(),
                type_=sa.String(),
                existing_nullable=True)
