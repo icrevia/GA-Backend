@@ -28,6 +28,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 
+from typing import Union, List
+
 def create_access_token(data: dict, expires_delta: timedelta = None, audience: str = "user") -> str:
     """
     Creates a signed JWT containing the provided claims.
@@ -40,10 +42,17 @@ def create_access_token(data: dict, expires_delta: timedelta = None, audience: s
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def decode_access_token(token: str, audience: str = "user") -> dict:
+def decode_access_token(token: str, audience: Union[str, List[str]] = "user") -> dict:
     """Decode and verify JWT signature. Raises 401 on failure."""
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM], audience=audience)
+        if isinstance(audience, (list, tuple)):
+            # Disable automatic audience verification to manually check against a list
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM], options={"verify_aud": False})
+            token_aud = payload.get("aud")
+            if token_aud not in audience:
+                raise JWTError("Invalid audience")
+        else:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM], audience=audience)
         return payload
     except JWTError:
         # Don't leak JWT error details (avoids algorithm confusion attack hints)

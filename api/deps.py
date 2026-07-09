@@ -229,8 +229,8 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Standard users must have audience="user"
-    payload = decode_access_token(token, audience="user")
+    # Admins and users can access standard routes
+    payload = decode_access_token(token, audience=["user", "admin"])
 
     user_id: str = payload.get("sub")
     if user_id is None:
@@ -279,8 +279,8 @@ async def get_current_user_async(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Standard users must have audience="user"
-    payload = decode_access_token(token, audience="user")
+    # Admins and users can access standard routes
+    payload = decode_access_token(token, audience=["user", "admin"])
     user_id: str = payload.get("sub")
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
@@ -325,7 +325,7 @@ def get_user_for_support(
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    payload = decode_access_token(token)
+    payload = decode_access_token(token, audience=["user", "admin"])
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
@@ -354,7 +354,7 @@ async def get_user_for_support_async(
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
-    payload = decode_access_token(token)
+    payload = decode_access_token(token, audience=["user", "admin"])
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
