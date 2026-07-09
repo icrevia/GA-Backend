@@ -40,12 +40,18 @@ async def init_db():
             ))
             alembic_exists = result.scalar()
             
-            if not alembic_exists:
-                logger.info("Fresh database detected. Creating all tables from models...")
+            # Check if chat_messages exists
+            result = await conn.execute(text(
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'chat_messages')"
+            ))
+            chat_messages_exists = result.scalar()
+            
+            if not alembic_exists or not chat_messages_exists:
+                logger.info("Fresh or broken database detected. Creating all tables from models...")
                 await conn.run_sync(Base.metadata.create_all)
                 is_fresh_db = True
             else:
-                logger.info("Database is not empty. Skipping table creation.")
+                logger.info("Database is fully initialized. Skipping table creation.")
                 
         if is_fresh_db:
             logger.info("Stamping alembic head...")
