@@ -25,17 +25,17 @@ def upgrade() -> None:
     op.add_column('chat_messages', sa.Column('read_at', sa.DateTime(), nullable=True))
     op.add_column('chat_messages', sa.Column('is_delivered', sa.Boolean(), nullable=True))
     op.add_column('chat_messages', sa.Column('delivered_at', sa.DateTime(), nullable=True))
-    op.drop_index(op.f('ix_chat_messages_session_is_read'), table_name='chat_messages')
-    op.drop_index(op.f('ix_chat_messages_session_timestamp'), table_name='chat_messages')
-    op.drop_index(op.f('ix_chat_messages_unread'), table_name='chat_messages')
+    op.execute("DROP INDEX IF EXISTS ix_chat_messages_session_is_read")
+    op.execute("DROP INDEX IF EXISTS ix_chat_messages_session_timestamp")
+    op.execute("DROP INDEX IF EXISTS ix_chat_messages_unread")
     op.create_index(op.f('ix_chat_messages_sender_id'), 'chat_messages', ['sender_id'], unique=False)
     op.create_index('ix_chat_messages_status', 'chat_messages', ['thread_user_id', 'is_admin', 'is_read', 'is_delivered'], unique=False)
     op.create_index('ix_chat_messages_thread_timestamp', 'chat_messages', ['thread_user_id', 'timestamp'], unique=False)
     op.create_index(op.f('ix_chat_messages_thread_user_id'), 'chat_messages', ['thread_user_id'], unique=False)
     op.create_foreign_key(None, 'chat_messages', 'users', ['thread_user_id'], ['id'])
-    op.drop_index(op.f('ix_chat_sessions_user_created_at'), table_name='chat_sessions')
-    op.drop_index(op.f('ix_wallet_tx_created_at'), table_name='wallet_transactions')
-    op.drop_index(op.f('ix_wallet_tx_type_status_created_at'), table_name='wallet_transactions')
+    op.execute("DROP INDEX IF EXISTS ix_chat_sessions_user_created_at")
+    op.execute("DROP INDEX IF EXISTS ix_wallet_tx_created_at")
+    op.execute("DROP INDEX IF EXISTS ix_wallet_tx_type_status_created_at")
     # ### end Alembic commands ###
 
 
