@@ -416,14 +416,14 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 class BodySizeLimitMiddleware(BaseHTTPMiddleware):
-    MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
+    MAX_BODY_SIZE = 50 * 1024 * 1024  # 50 MB
 
     async def dispatch(self, request: Request, call_next):
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > self.MAX_BODY_SIZE:
             return JSONResponse(
                 status_code=413,
-                content={"detail": "Request body too large. Maximum allowed size is 10MB."},
+                content={"detail": "Request body too large. Maximum allowed size is 50MB."},
             )
         return await call_next(request)
 

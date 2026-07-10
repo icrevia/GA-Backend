@@ -1222,7 +1222,8 @@ async def upload_quiz_image(
 
         logger.info(f"Calling storage.upload_file for {safe_name}...")
         from services.storage import upload_file
-        public_url = upload_file(data, safe_name, sub_dir="quiz")
+        from starlette.concurrency import run_in_threadpool
+        public_url = await run_in_threadpool(upload_file, data, safe_name, "quiz")
         
         logger.info(f"Upload SUCCESS: {public_url}")
         return {"image_url": public_url}

@@ -443,7 +443,7 @@ def get_leaderboard(
     current_user: User = Depends(get_current_user_profile),
     category: str = Query(default="free_fire"),
     time_range: str = Query(default="lifetime"),
-    limit: int = Query(default=200, ge=1, le=200),
+    limit: int = Query(default=100, ge=1, le=100),
 ):
 
     normalized_category = normalize_leaderboard_category(category)

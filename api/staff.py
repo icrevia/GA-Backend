@@ -47,12 +47,13 @@ GAME_PERMISSION_MAP = {
     "clash_squad": "STAFF:CS",
 }
 
-STAFF_PERMISSION_KEYS = {"STAFF:FF", "STAFF:MAX", "STAFF:CS"}
+STAFF_PERMISSION_KEYS = {"STAFF:FF", "STAFF:MAX", "STAFF:CS", "STAFF:RPS"}
 
 PERMISSION_LABEL_MAP = {
     "STAFF:FF": "Free Fire",
     "STAFF:MAX": "Free Fire MAX",
     "STAFF:CS": "CS",
+    "STAFF:RPS": "Rock Paper Scissors",
 }
 
 
@@ -526,3 +527,37 @@ def staff_conclude_tournament(
         "total_prizes_distributed": float(total_paid),
         "winners_count": len(winners_set)
     }
+
+@router.get('/rps/history')
+def staff_rps_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_staff),
+    limit: int = 30
+):
+    perms = _get_staff_permissions(current_user)
+    if 'STAFF:RPS' not in perms:
+        raise HTTPException(status_code=403, detail='You are not assigned to RPS')
+
+    from models.rps import RPSMatch, RPSParticipant
+    matches = db.query(RPSMatch).order_by(RPSMatch.created_at.desc()).limit(limit).all()
+    out = []
+    for m in matches:
+        parts_data = db.query(RPSParticipant, User).join(User, User.id == RPSParticipant.user_id).filter(RPSParticipant.match_id == m.id).all()
+        enriched_parts = []
+        for p, u in parts_data:
+            enriched_parts.append({
+                'user_id': p.user_id,
+                'username': u.username,
+                'move': p.move,
+                'status': p.status
+            })
+        out.append({
+            'match_id': m.id,
+            'entry_fee': float(m.entry_fee or 0),
+            'prize_pool': float(m.prize_pool or 0),
+            'status': m.status,
+            'winner_id': m.winner_id,
+            'created_at': m.created_at.isoformat() if m.created_at else None,
+            'participants': enriched_parts,
+        })
+    return out

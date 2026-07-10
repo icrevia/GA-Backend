@@ -215,7 +215,20 @@ class LudoMatchmaker:
         if len(pool) == 1:
             user = pool[0]
             wait_time = now - user["joined_at"]
-            if wait_time > 10:
+            
+            max_wait_seconds = 10
+            bot_enabled = True
+            async with SessionLocal() as db:
+                from models.config import SystemConfig
+                import json
+                res = await db.execute(select(SystemConfig).where(SystemConfig.config_key == "ludo_config"))
+                row = res.scalar_one_or_none()
+                if row and row.config_value:
+                    stored = json.loads(row.config_value) if isinstance(row.config_value, str) else row.config_value
+                    max_wait_seconds = stored.get("max_wait_seconds", 10)
+                    bot_enabled = stored.get("bot_enabled", True)
+                    
+            if bot_enabled and wait_time > max_wait_seconds:
                 logger.info(f"Ludo Timeout for {user['username']}. Spawning BOT.")
                 self.match_pools[entry_fee].remove(user)
                 bot = await bot_manager.get_random_bot()

@@ -9,7 +9,8 @@ logger = logging.getLogger("GamerzAdda.ws")
 ALLOWED_WS_EVENTS = {
     "chat_message", "support_escalation", "support_activity",
     "join_quiz", "leave_quiz", "quiz_answer", "quiz_sync", "quiz_surrender",
-    "join_ludo", "leave_ludo", "ludo_action"
+    "join_ludo", "leave_ludo", "ludo_action",
+    "join_rps_matchmaking", "cancel_rps_matchmaking", "rps_action"
 }
 
 SUPPORT_EVENT_TYPES = {

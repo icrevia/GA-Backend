@@ -339,6 +339,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 await ludo_matchmaker.cancel_user_matchmaking(user_id)
                 continue
 
+            if msg_type == "join_rps_matchmaking":
+                entry_fee = int(msg.get("entry_fee", 0))
+                from services.rps_matchmaker import matchmaker as rps_matchmaker
+                await rps_matchmaker.add_to_pool(user_id, entry_fee)
+                continue
+
+            if msg_type == "cancel_rps_matchmaking":
+                from services.rps_matchmaker import matchmaker as rps_matchmaker
+                await rps_matchmaker.cancel_matchmaking(user_id)
+                continue
+
+            if msg_type == "rps_action":
+                match_id = int(msg.get("match_id", 0))
+                if match_id:
+                    from services.rps_orchestrator import orchestrator as rps_orchestrator
+                    await rps_orchestrator.handle_action(match_id, user_id, msg)
+                continue
+
             if msg_type == "join_ludo":
                 match_id = int(msg.get("match_id", 0))
                 if match_id:
