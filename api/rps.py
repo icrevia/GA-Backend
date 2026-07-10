@@ -239,6 +239,7 @@ async def admin_update_config(
     db: AsyncSession = Depends(get_async_db),
     current_user: User = Depends(get_current_active_admin),
 ):
+    global _rps_config
     import json
     from models.config import SystemConfig
     await _load_config_from_db(db)
@@ -253,7 +254,6 @@ async def admin_update_config(
         db.add(row)
     await db.commit()
     
-    global _rps_config
     _rps_config = new_cfg
     return {'status': 'success'}
 
