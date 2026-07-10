@@ -3596,6 +3596,16 @@ def delete_user_account(
         db.execute(_t("UPDATE otp_phone_locks SET user_id              = NULL WHERE user_id              = :uid"), {"uid": uid})
         db.execute(_t("UPDATE otp_phone_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id = :uid"), {"uid": uid})
 
+        # ludo_matches: winner_id
+        db.execute(_t("UPDATE ludo_matches SET winner_id = NULL WHERE winner_id = :uid"), {"uid": uid})
+        
+        # rps_matches: winner_id
+        db.execute(_t("UPDATE rps_matches SET winner_id = NULL WHERE winner_id = :uid"), {"uid": uid})
+        
+        # ludo_challenges: opponent_id
+        db.execute(_t("UPDATE ludo_challenges SET opponent_id = NULL WHERE opponent_id = :uid"), {"uid": uid})
+
+
         # users: self-referential referral
         db.execute(_t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id = :uid"), {"uid": uid})
         referred_updates_r = db.execute(_t("SELECT COUNT(*) FROM users WHERE referred_by_id IS NULL AND id != :uid"), {"uid": uid})
@@ -3618,6 +3628,22 @@ def delete_user_account(
         # notifications
         r = db.execute(_t("DELETE FROM notifications WHERE user_id = :uid"), {"uid": uid})
         deleted_notifications = r.rowcount
+
+        # ludo_challenges (where they are the creator)
+        db.execute(_t("DELETE FROM ludo_challenges WHERE creator_id = :uid"), {"uid": uid})
+
+        # ludo_participants
+        db.execute(_t("DELETE FROM ludo_participants WHERE user_id = :uid"), {"uid": uid})
+
+        # quiz_responses
+        db.execute(_t("DELETE FROM quiz_responses WHERE user_id = :uid"), {"uid": uid})
+
+        # quiz_participants
+        db.execute(_t("DELETE FROM quiz_participants WHERE user_id = :uid"), {"uid": uid})
+
+        # rps_participants
+        db.execute(_t("DELETE FROM rps_participants WHERE user_id = :uid"), {"uid": uid})
+
 
         # tournament_participants
         r = db.execute(_t("DELETE FROM tournament_participants WHERE user_id = :uid"), {"uid": uid})
@@ -4970,6 +4996,12 @@ def delete_sub_admin(
         db.execute(_t("UPDATE otp_phone_locks SET user_id              = NULL WHERE user_id              = :uid"), {"uid": uid})
         db.execute(_t("UPDATE otp_phone_locks SET unlocked_by_admin_id = NULL WHERE unlocked_by_admin_id = :uid"), {"uid": uid})
 
+        # ludo_matches, rps_matches, ludo_challenges
+        db.execute(_t("UPDATE ludo_matches SET winner_id = NULL WHERE winner_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE rps_matches SET winner_id = NULL WHERE winner_id = :uid"), {"uid": uid})
+        db.execute(_t("UPDATE ludo_challenges SET opponent_id = NULL WHERE opponent_id = :uid"), {"uid": uid})
+
+
         db.execute(_t("UPDATE users SET referred_by_id = NULL WHERE referred_by_id = :uid"), {"uid": uid})
 
         # PHASE 2 — DELETE child rows where user_id is NOT NULL
@@ -4980,6 +5012,12 @@ def delete_sub_admin(
 
         db.execute(_t("DELETE FROM chat_sessions WHERE user_id = :uid"), {"uid": uid})
         db.execute(_t("DELETE FROM notifications WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM ludo_challenges WHERE creator_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM ludo_participants WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM quiz_responses WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM quiz_participants WHERE user_id = :uid"), {"uid": uid})
+        db.execute(_t("DELETE FROM rps_participants WHERE user_id = :uid"), {"uid": uid})
+
         db.execute(_t("DELETE FROM tournament_participants WHERE user_id = :uid"), {"uid": uid})
         db.execute(_t("DELETE FROM wallet_transactions WHERE user_id = :uid"), {"uid": uid})
         db.execute(_t("DELETE FROM user_restrictions WHERE user_id = :uid"), {"uid": uid})
